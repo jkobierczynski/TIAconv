@@ -43,6 +43,9 @@ struct SaveMarker {
 
 struct ContainerOptions {
     bool verifyHashes = false;
+    // Read the project as it was after this many saves; 0 = as it is now.
+    // The file is append-only, so every saved state is still in it.
+    size_t throughSave = 0;
 };
 
 class Container {
@@ -69,6 +72,12 @@ public:
     // supersede earlier ones.
     const std::map<std::pair<uint32_t, uint64_t>, size_t>& latest() const { return latest_; }
 
+    // Number of completed saves recorded in the file. In the newer layout
+    // each save ends with one system object of type 0x7000C (verified by
+    // saving a V21 project 23 times, one change per save); in the older one
+    // with a commit marker.
+    size_t saveCount() const { return saveCount_; }
+
     size_t hashErrors() const { return hashErrors_; }
     bool hashesVerified() const { return hashesVerified_; }
     // False when the block list stopped before the end of the file.
@@ -81,6 +90,7 @@ private:
     std::vector<Block> blocks_;
     std::vector<SaveMarker> markers_;
     std::map<std::pair<uint32_t, uint64_t>, size_t> latest_;
+    size_t saveCount_ = 0;
     size_t hashErrors_ = 0;
     bool hashesVerified_ = false;
     bool complete_ = true;

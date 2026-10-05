@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <map>
 
 namespace tia {
@@ -58,8 +60,63 @@ std::string expandoIp(const Object& o, const char* name) {
     return (v && v->asUInt(u)) ? ipv4(u) : std::string();
 }
 
+void readSetting(const Object& o, const char* name, Setting& s) {
+    if (const Value* v = o.expandoValue(name)) {
+        if (v->isNull()) return;
+        s.stored = true;
+        s.on = v->truthy();
+    }
+}
+
+bool readNumber(const Object& o, const char* name, int64_t& out) {
+    const Value* v = o.expandoValue(name);
+    uint64_t u = 0;
+    if (!v || !v->asUInt(u)) return false;
+    out = static_cast<int64_t>(u);
+    return true;
+}
+
+// What one object says about the security settings of its controller.
+struct ItemSecurity {
+    Security s;
+    Setting webAccess;  // EnableWebServerAccess4IE, on an interface item
+};
+
+ItemSecurity readSecurity(const Object& o) {
+    ItemSecurity r;
+    Security& s = r.s;
+    s.hasAccessLevel = readNumber(o, "ProtectionLevel", s.accessLevel);
+    readSetting(o, "EnablePutGetConnections", s.putGet);
+    readSetting(o, "WebServerActive", s.webServer);
+    readSetting(o, "WebServerSSLOnly", s.webServerHttpsOnly);
+    readSetting(o, "OpcUaEnableServer", s.opcUaServer);
+    readSetting(o, "EnableDisplayProtection", s.displayProtection);
+    readSetting(o, "AccessControlAtRuntime", s.accessControl);
+    readSetting(o, "EnableLegacyAccessControlViaAccessLevel", s.accessControlViaAccessLevels);
+    // The option itself where it is stored; otherwise a configured password
+    // for it means it is on.
+    readSetting(o, "ProtectPlcConfiguration", s.configDataProtection);
+    if (!s.configDataProtection.stored) {
+        Setting secret;
+        readSetting(o, "IsMasterSecretConfigured", secret);
+        if (secret.stored && secret.on) s.configDataProtection = secret;
+    }
+    s.hasCommunicationMode = readNumber(o, "OmsCommunicationMode", s.communicationMode);
+    s.hasTimeSyncRole = readNumber(o, "TimeSyncRole", s.timeSyncRole);
+    for (const char* key : {"TimeSyncNtpServer1", "TimeSyncNtpServer2", "TimeSyncNtpServer3", "TimeSyncNtpServer4"})
+        if (const Value* v = o.expandoValue(key))
+            if (v->type == Value::Type::String && !v->s.empty()) s.ntpServers.push_back(v->s);
+    readSetting(o, "EnableWebServerAccess4IE", r.webAccess);
+    return r;
+}
+
+void take(Setting& into, const Setting& from) {
+    if (from.stored) into = from;
+}
+
 struct ItemRec {
     Module module;
+    ItemSecurity security;
     Key parent{0, 0};     // BaseDeviceItemData.Parent: the device or the enclosing item
     bool hasParent = false;
     Key container{0, 0};  // BaseDeviceItemData.Container: where it is plugged in
@@ -68,6 +125,40 @@ struct ItemRec {
 };
 
 }  // namespace
+
+bool Security::empty() const {
+    return !hasAccessLevel && !putGet.stored && !webServer.stored && !webServerHttpsOnly.stored &&
+           webServerInterfaces.empty() && !opcUaServer.stored && !displayProtection.stored && !accessControl.stored &&
+           !accessControlViaAccessLevels.stored && !configDataProtection.stored && !hasCommunicationMode &&
+           !hasTimeSyncRole;
+}
+
+// Checked against TIA Portal V21 for an S7-1500 with firmware V1.8 and V4.1
+// and an S7-1200 with firmware V2.2 (tests/fixtures/s09_security). The S7-1200
+// got the four S7-1500 levels with firmware V4; that numbering has not been
+// checked, so it gets no name here.
+std::string accessLevelName(const std::string& type, const std::string& firmware, int64_t level) {
+    auto startsWith = [&](const char* p) { return type.compare(0, std::char_traits<char>::length(p), p) == 0; };
+    if (startsWith("S71500.")) {
+        switch (level) {
+            case 1: return "Full access (no protection)";
+            case 2: return "Read access";
+            case 3: return "HMI access";
+            case 4: return "No access (complete protection)";
+        }
+    } else if (startsWith("S71200.")) {
+        const size_t digit = firmware.find_first_of("0123456789");
+        const int major = digit == std::string::npos ? 0 : std::atoi(firmware.c_str() + digit);
+        if (major >= 1 && major <= 3) {
+            switch (level) {
+                case 1: return "No protection";
+                case 2: return "Write protection";
+                case 3: return "Write/read protection";
+            }
+        }
+    }
+    return std::string();
+}
 
 Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
     Inventory inv;
@@ -83,6 +174,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
         inv.warnings.push_back("the type model lacks the hardware relations; no devices can be listed");
 
     inv.stats.blocks = c.blocks().size();
+    inv.stats.saves = c.saveCount();
     for (const auto& m : c.markers())
         if (m.kind == "commit") inv.saves.push_back(formatTicks(m.ticks));
 
@@ -175,6 +267,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             m.position = intAttr(o, "IDeviceItemData", "PositionNumber", &m.hasPosition);
             m.itemType = intAttr(o, "IDeviceItemData", "DeviceItemType");
             r.controller = meta.derivesFrom(o.def->name, kControllerTarget);
+            r.security = readSecurity(o);
             r.hasParent = o.relationTarget(relParent, r.parent);
             r.hasContainer = o.relationTarget(relContainer, r.container);
             items[key] = std::move(r);
@@ -294,6 +387,56 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
         items[target].module.interfaces.push_back(n.iface);
     }
 
+    // Settings sit on the controller and on the items below it; bring them
+    // together on the controller.
+    for (auto& kv : items) {
+        const ItemSecurity& from = kv.second.security;
+        Key k = kv.first;
+        ItemRec* ctrl = nullptr;
+        for (int depth = 0; depth < 64 && !ctrl; ++depth) {
+            auto it = items.find(k);
+            if (it == items.end()) break;
+            if (it->second.controller) ctrl = &it->second;
+            else if (!it->second.hasParent) break;
+            else k = it->second.parent;
+        }
+        if (!ctrl) continue;
+        Security& s = ctrl->module.security;
+        const Security& f = from.s;
+        if (f.hasAccessLevel) {
+            s.hasAccessLevel = true;
+            s.accessLevel = f.accessLevel;
+        }
+        take(s.putGet, f.putGet);
+        take(s.webServer, f.webServer);
+        take(s.webServerHttpsOnly, f.webServerHttpsOnly);
+        take(s.opcUaServer, f.opcUaServer);
+        take(s.displayProtection, f.displayProtection);
+        take(s.accessControl, f.accessControl);
+        take(s.accessControlViaAccessLevels, f.accessControlViaAccessLevels);
+        take(s.configDataProtection, f.configDataProtection);
+        if (f.hasCommunicationMode) {
+            s.hasCommunicationMode = true;
+            s.communicationMode = f.communicationMode;
+        }
+        if (f.hasTimeSyncRole) {
+            s.hasTimeSyncRole = true;
+            s.timeSyncRole = f.timeSyncRole;
+            if (f.timeSyncRole == 2)
+                s.ntpServers.insert(s.ntpServers.end(), f.ntpServers.begin(), f.ntpServers.end());
+        }
+        if (from.webAccess.stored && from.webAccess.on) {
+            const Module& im = kv.second.module;
+            s.webServerInterfaces.push_back(im.typeName.empty() ? im.name : im.typeName);
+        }
+    }
+    for (auto& kv : items) {
+        Module& m = kv.second.module;
+        if (kv.second.controller && m.security.hasAccessLevel)
+            m.security.accessLevelName = accessLevelName(m.type, m.firmware, m.security.accessLevel);
+        std::sort(m.security.webServerInterfaces.begin(), m.security.webServerInterfaces.end());
+    }
+
     for (auto& kv : items) {
         ItemRec& r = kv.second;
         Module& m = r.module;
@@ -314,7 +457,19 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             auto ci = items.find(r.container);
             if (ci != items.end()) m.container = ci->second.module.name;
         }
-        const bool listed = opt.allItems || (!m.orderNumber.empty() && !port) || !m.interfaces.empty();
+        if (!opt.allItems) {
+            // Newer CPUs carry an internal "virtual" interface without an
+            // address and a pseudo module for it; neither is a real port.
+            m.interfaces.erase(std::remove_if(m.interfaces.begin(), m.interfaces.end(),
+                                              [](const Interface& i) {
+                                                  return i.hasIpSettings && i.ip == "0.0.0.0" && i.mask == "0.0.0.0" &&
+                                                         !i.ipAssignedElsewhere && i.subnet.empty() && !i.hasBusAddress;
+                                              }),
+                               m.interfaces.end());
+        }
+        const bool pseudo = m.orderNumber.compare(0, 8, "Virtual ") == 0;
+        const bool listed =
+            opt.allItems || (!m.orderNumber.empty() && !port && !pseudo) || !m.interfaces.empty();
         if (listed) devices[dev].modules.push_back(m);
     }
 

@@ -11,6 +11,7 @@
 
 #include "bytes.hpp"
 #include "container.hpp"
+#include "inventory.hpp"
 #include "meta.hpp"
 #include "miniz.h"
 #include "program.hpp"
@@ -870,6 +871,70 @@ void testProgram() {
     CHECK(survived > 800);
 }
 
+// The state of a project after an earlier save is still in the file: each
+// save ends with a system object of type 0x7000C.
+void testSaves() {
+    Bytes f(98, 0);
+    f[0] = 0x40;
+    f[4] = 1;
+    auto hh = tia::sha256(f.data(), 65);
+    std::memcpy(f.data() + 65, hh.data(), 32);
+    f[97] = 0xff;
+    auto add = [&](const Bytes& blk) {
+        size_t from = f.size();
+        append(f, blk);
+        appendHash(f, from);
+    };
+    auto saved = [&](uint64_t n) { add(block(0x7000c, n, 0, 0, systemBody(Bytes(8, 0)))); };
+    add(block(0x70000, 1, 0, 0, systemBody(deflated(kProgramMeta))));
+    auto plc = [](const std::string& n) { return object(0x1002, 2, {segment({fs(n), fnone()})}, {}, {}); };
+    add(plc("first"));
+    saved(1);
+    add(plc("second"));
+    add(object(0x1002, 3, {segment({fs("other"), fnone()})}, {}, {}));
+    saved(2);
+    add(plc("third"));
+    add(block(0x1002, 3, 4, 0, Bytes{0xff}));  // deleted in the third save
+    saved(3);
+
+    auto nameAt = [&](size_t save) {
+        tia::ContainerOptions opt;
+        opt.throughSave = save;
+        tia::Project p(tia::Container::parse(f, opt));
+        CHECK(p.container().saveCount() == 3);
+        tia::Object o;
+        const tia::Block* b = p.live(0x1002, 2);
+        return b && p.decode(*b, o) ? o.attrString("ICoreAttributes", "Name") : std::string("-");
+    };
+    CHECK(nameAt(1) == "first");
+    CHECK(nameAt(2) == "second");
+    CHECK(nameAt(3) == "third" && nameAt(0) == "third" && nameAt(99) == "third");
+    tia::ContainerOptions two;
+    two.throughSave = 2;
+    tia::Project p2(tia::Container::parse(f, two));
+    CHECK(p2.live(0x1002, 3) != nullptr);  // still there after the second save
+    tia::Project p3(tia::Container::parse(f, {}));
+    CHECK(p3.live(0x1002, 3) == nullptr);
+}
+
+void testAccessLevels() {
+    CHECK(tia::accessLevelName("S71500.CPU", "V1.8", 1) == "Full access (no protection)");
+    CHECK(tia::accessLevelName("S71500.CPU", "V4.1", 4) == "No access (complete protection)");
+    CHECK(tia::accessLevelName("S71200.CPU", "V2.2", 2) == "Write protection");
+    CHECK(tia::accessLevelName("S71200.CPU", "V2.2", 3) == "Write/read protection");
+    // the same number means something else there, and what has not been
+    // checked gets no name at all
+    CHECK(tia::accessLevelName("S71500.CPU", "V1.8", 3) == "HMI access");
+    CHECK(tia::accessLevelName("S71200.CPU", "V4.1", 3).empty());
+    CHECK(tia::accessLevelName("S71200.CPU", "", 2).empty());
+    CHECK(tia::accessLevelName("S7300.CPU", "V3.3", 2).empty());
+    CHECK(tia::accessLevelName("S71500.CPU", "V1.8", 9).empty());
+    tia::Security none;
+    CHECK(none.empty());
+    none.putGet.stored = true;
+    CHECK(!none.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -883,6 +948,8 @@ int main() {
     testStorageRule();
     testBlob();
     testProgram();
+    testSaves();
+    testAccessLevels();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

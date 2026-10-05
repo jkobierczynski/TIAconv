@@ -7,6 +7,7 @@
 // value checked here was typed into TIA Portal by hand.
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "container.hpp"
 #include "inventory.hpp"
@@ -37,19 +38,22 @@ struct Loaded {
     tia::Inventory inv;
     tia::ProgramData prog;
     size_t hashErrors = 0;
+    size_t saves = 0;
     tia::Layout layout = tia::Layout::V11;
 };
 
-Loaded load(const std::string& name) {
-    current = name;
+Loaded load(const std::string& name, size_t throughSave = 0) {
+    current = throughSave ? name + " after save " + std::to_string(throughSave) : name;
     tia::LoadedSource src = tia::loadProjectData(std::string(TIACONV_FIXTURES) + "/" + name);
     tia::ContainerOptions opt;
     opt.verifyHashes = true;
+    opt.throughSave = throughSave;
     tia::Project p(tia::Container::parse(std::move(src.data), opt));
     Loaded l;
     l.inv = tia::buildInventory(p);
     l.prog = tia::buildProgramData(p);
     l.hashErrors = p.container().hashErrors();
+    l.saves = p.container().saveCount();
     l.layout = p.container().layout();
     return l;
 }
@@ -300,6 +304,111 @@ int main() {
                 }
             }
         }
+    }
+    {
+        // s09_security: one project, one security setting changed per save
+        // (see tests/fixtures/README.md). Every row is the state after one
+        // save, i.e. after one known action in TIA Portal V21.
+        using S = tia::Security;
+        struct Step {
+            size_t save;
+            const char* plc;
+            const char* what;
+            bool (*holds)(const S&);
+        };
+        const Step steps[] = {
+            {28, "ZZBRAVO", "before any change: nothing stored",
+             [](const S& s) { return s.empty(); }},
+            {29, "ZZBRAVO", "PUT/GET ticked",
+             [](const S& s) { return s.putGet.stored && s.putGet.on && !s.hasAccessLevel; }},
+            {30, "ZZBRAVO", "Read access",
+             [](const S& s) { return s.accessLevel == 2 && s.accessLevelName == "Read access" && s.putGet.on; }},
+            {31, "ZZBRAVO", "HMI access",
+             [](const S& s) { return s.accessLevel == 3 && s.accessLevelName == "HMI access"; }},
+            {32, "ZZBRAVO", "No access; TIA Portal switched PUT/GET off with it",
+             [](const S& s) {
+                 return s.accessLevel == 4 && s.accessLevelName == "No access (complete protection)" &&
+                        s.putGet.stored && !s.putGet.on;
+             }},
+            {33, "ZZBRAVO", "back to Full access",
+             [](const S& s) { return s.accessLevel == 1 && s.accessLevelName == "Full access (no protection)"; }},
+            {34, "ZZBRAVO", "HMI access again, PUT/GET on again",
+             [](const S& s) { return s.accessLevel == 3 && s.putGet.stored && s.putGet.on; }},
+            {35, "ZZBRAVO", "web server access ticked on interface X1 only",
+             [](const S& s) { return s.webServerInterfaces == std::vector<std::string>{"X1"} && !s.webServer.stored; }},
+            {36, "ZZBRAVO", "... and unticked",
+             [](const S& s) { return s.webServerInterfaces.empty() && !s.webServer.stored; }},
+            {37, "ZZBRAVO", "web server activated on the module; TIA Portal ticked the interface with it",
+             [](const S& s) { return s.webServer.stored && s.webServer.on && s.webServerInterfaces.size() == 1; }},
+            {38, "ZZBRAVO", "interface unticked",
+             [](const S& s) { return s.webServer.on && s.webServerInterfaces.empty(); }},
+            {39, "ZZBRAVO", "interface ticked",
+             [](const S& s) { return s.webServer.on && s.webServerInterfaces.size() == 1 && !s.webServerHttpsOnly.stored; }},
+            {40, "ZZBRAVO", "HTTPS only",
+             [](const S& s) { return s.webServerHttpsOnly.stored && s.webServerHttpsOnly.on && !s.hasTimeSyncRole; }},
+            {41, "ZZBRAVO", "NTP with server 192.168.77.50",
+             [](const S& s) {
+                 return s.timeSyncRole == 2 && s.ntpServers == std::vector<std::string>{"192.168.77.50"} &&
+                        !s.displayProtection.stored;
+             }},
+            {42, "ZZBRAVO", "display protection",
+             [](const S& s) { return s.displayProtection.stored && s.displayProtection.on && !s.opcUaServer.stored; }},
+            {42, "ZZALPHA", "before any change: nothing stored",
+             [](const S& s) { return s.empty(); }},
+            {43, "ZZALPHA", "Write protection",
+             [](const S& s) { return s.accessLevel == 2 && s.accessLevelName == "Write protection" && !s.webServer.stored; }},
+            {44, "ZZALPHA", "web server activated",
+             [](const S& s) { return s.webServer.stored && s.webServer.on && s.webServerInterfaces.empty(); }},
+            {45, "ZZALPHA", "Write/read protection",
+             [](const S& s) { return s.accessLevel == 3 && s.accessLevelName == "Write/read protection"; }},
+            // ZZCHARLIE, firmware V4.1, as the security wizard left it: its
+            // overview page said protection of confidential data enabled,
+            // legacy access protection "No access", and listed secure
+            // communication and access control, which are defaults and so
+            // not stored.
+            {46, "ZZCHARLIE", "added with the wizard's defaults",
+             [](const S& s) {
+                 return s.accessLevel == 4 && s.accessLevelName == "No access (complete protection)" &&
+                        s.putGet.stored && !s.putGet.on && s.configDataProtection.stored && s.configDataProtection.on &&
+                        !s.accessControl.stored && !s.hasCommunicationMode && !s.opcUaServer.stored;
+             }},
+            {47, "ZZCHARLIE", "OPC UA server activated",
+             [](const S& s) { return s.opcUaServer.stored && s.opcUaServer.on && !s.hasCommunicationMode; }},
+            {48, "ZZCHARLIE", "\"only secure communication\" unticked",
+             [](const S& s) { return s.hasCommunicationMode && s.communicationMode == 0 && s.configDataProtection.on; }},
+            {49, "ZZCHARLIE", "protection of confidential configuration data unticked",
+             [](const S& s) { return s.configDataProtection.stored && !s.configDataProtection.on && !s.accessControl.stored; }},
+            {50, "ZZCHARLIE", "access control disabled",
+             [](const S& s) { return s.accessControl.stored && !s.accessControl.on; }},
+            {51, "ZZCHARLIE", "access control enabled, via access levels",
+             [](const S& s) {
+                 return s.accessControl.stored && s.accessControl.on && s.accessControlViaAccessLevels.stored &&
+                        s.accessControlViaAccessLevels.on && s.accessLevel == 4;
+             }},
+        };
+        size_t loadedSave = 0;
+        Loaded l;
+        for (const Step& st : steps) {
+            if (st.save != loadedSave) {
+                l = load("s09_security", st.save);
+                loadedSave = st.save;
+                CHECK(l.hashErrors == 0 && l.inv.stats.objectsWithProblems == 0);
+            }
+            current = "s09_security after save " + std::to_string(st.save) + ", " + st.plc + ": " + st.what;
+            const tia::Module* m = module(l.inv, st.plc);
+            CHECK(m != nullptr && m->kind == "controller");
+            if (m) CHECK(st.holds(m->security));
+        }
+        // ZZCHARLIE does not exist before the save that added it
+        l = load("s09_security", 45);
+        CHECK(module(l.inv, "ZZCHARLIE") == nullptr && l.inv.devices.size() == 2);
+        // the whole file: 51 saves, three stations, and the new CPU's internal
+        // interface without an address is not listed
+        l = load("s09_security");
+        CHECK(l.saves == 51 && l.inv.devices.size() == 3);
+        const tia::Module* c = module(l.inv, "ZZCHARLIE");
+        CHECK(c && c->firmware == "V4.1" && c->orderNumber == "6ES7 511-1AL03-0AB0" && c->interfaces.size() == 1);
+        CHECK(module(l.inv, "Virtual CP interface port_1") == nullptr);
     }
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

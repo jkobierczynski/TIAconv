@@ -18,6 +18,7 @@ constexpr size_t kHeaderV14 = 98;
 constexpr size_t kBlockHeaderV11 = 28;
 constexpr size_t kBlockHeaderV14 = 44;
 constexpr size_t kHashLen = 32;
+constexpr uint32_t kSaveObject = 0x7000c;  // newer layout: written once at the end of every save
 constexpr size_t kMarkerLen = 20;  // 0x0A, 10 characters, 8-byte timestamp, 0xFF
 
 const char kCommit[] = "\x0a$$COMMIT$$";
@@ -57,6 +58,14 @@ Container Container::parse(std::vector<uint8_t> data, const ContainerOptions& op
         if (std::memcmp(h.data(), d.data() + 65, kHashLen) != 0) ++c.hashErrors_;
     }
 
+    // Once the requested save is reached, later blocks are still walked (and
+    // counted) but no longer replace what was current at that save.
+    bool frozen = false;
+    auto saveDone = [&]() {
+        ++c.saveCount_;
+        if (opt.throughSave && c.saveCount_ >= opt.throughSave) frozen = true;
+    };
+
     while (off < d.size()) {
         if (!hashed && d.has(off, kMarkerLen)) {
             const char* p = reinterpret_cast<const char*>(d.data() + off);
@@ -68,6 +77,7 @@ Container Container::parse(std::vector<uint8_t> data, const ContainerOptions& op
                 m.kind = commit ? "commit" : "close";
                 m.ticks = d.u64(off + 11);
                 c.markers_.push_back(m);
+                if (commit) saveDone();
                 off += kMarkerLen;
                 continue;
             }
@@ -95,8 +105,9 @@ Container Container::parse(std::vector<uint8_t> data, const ContainerOptions& op
             auto h = sha256(d.data() + off, b.size);
             if (std::memcmp(h.data(), d.data() + off + b.size, kHashLen) != 0) ++c.hashErrors_;
         }
-        c.latest_[{b.type, b.id}] = c.blocks_.size();
+        if (!frozen) c.latest_[{b.type, b.id}] = c.blocks_.size();
         c.blocks_.push_back(b);
+        if (hashed && b.type == kSaveObject) saveDone();
         off += total;
     }
     return c;

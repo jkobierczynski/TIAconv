@@ -101,6 +101,97 @@ std::string pad(const std::string& s, size_t w) {
 
 namespace {
 
+std::string joined(const std::vector<std::string>& v) {
+    std::string out;
+    for (const auto& s : v) out += (out.empty() ? "" : ", ") + s;
+    return out;
+}
+
+// Security settings of a controller. Only what the project stores is stated
+// as a fact; the rest is listed as not set, because the default depends on
+// the CPU and its firmware.
+void textSecurity(std::ostream& out, const Module& m) {
+    const Security& s = m.security;
+    const char* in = "        ";
+    std::vector<std::string> unset;
+    out << in << "Security settings:\n";
+    in = "          ";
+    if (s.hasAccessLevel) {
+        out << in << "Access level: ";
+        if (s.accessLevelName.empty()) out << "level " << s.accessLevel;
+        else out << s.accessLevelName;
+        out << "\n";
+    } else {
+        unset.push_back("access level");
+    }
+    auto line = [&](const Setting& v, const char* label, const char* on, const char* off, const char* unsetName) {
+        if (v.stored) out << in << label << ": " << (v.on ? on : off) << "\n";
+        else unset.push_back(unsetName);
+    };
+    line(s.putGet, "PUT/GET access", "permitted", "not permitted", "PUT/GET access");
+    if (s.webServer.stored) {
+        out << in << "Web server: " << (s.webServer.on ? "activated" : "not activated");
+        if (s.webServer.on && s.webServerHttpsOnly.stored) out << (s.webServerHttpsOnly.on ? ", HTTPS only" : ", HTTP allowed");
+        if (s.webServer.on && !s.webServerInterfaces.empty()) out << ", access enabled on " << joined(s.webServerInterfaces);
+        out << "\n";
+    } else {
+        unset.push_back("web server");
+    }
+    line(s.opcUaServer, "OPC UA server", "activated", "not activated", "OPC UA server");
+    if (s.hasTimeSyncRole) {
+        out << in << "Time synchronisation: ";
+        if (s.timeSyncRole == 2) out << "NTP" << (s.ntpServers.empty() ? "" : ", server " + joined(s.ntpServers));
+        else out << "mode " << s.timeSyncRole;
+        out << "\n";
+    } else {
+        unset.push_back("NTP");
+    }
+    line(s.displayProtection, "Display protection", "on", "off", "display protection");
+    // Settings of current CPUs: said only when stored, an older CPU has none of them.
+    if (s.accessControl.stored)
+        out << in << "Access control: " << (s.accessControl.on ? "enabled" : "disabled")
+            << (s.accessControl.on && s.accessControlViaAccessLevels.stored && s.accessControlViaAccessLevels.on
+                    ? ", via access levels"
+                    : "")
+            << "\n";
+    if (s.hasCommunicationMode) {
+        out << in << "PG/PC and HMI communication: ";
+        if (s.communicationMode == 0) out << "legacy communication permitted";
+        else out << "mode " << s.communicationMode;
+        out << "\n";
+    }
+    if (s.configDataProtection.stored)
+        out << in << "Protection of confidential configuration data: " << (s.configDataProtection.on ? "on" : "off")
+            << "\n";
+    if (!unset.empty()) out << in << "Not set in the project (TIA Portal default applies): " << joined(unset) << "\n";
+}
+
+std::string settingJson(const Setting& v) { return v.stored ? tf(v.on) : "null"; }
+
+void jsonSecurity(std::ostream& out, const Security& s) {
+    out << "{\"access_level\": ";
+    if (s.hasAccessLevel) out << s.accessLevel;
+    else out << "null";
+    out << ", \"access_level_name\": " << qn(s.accessLevelName) << ", \"put_get\": " << settingJson(s.putGet)
+        << ", \"web_server\": " << settingJson(s.webServer) << ", \"web_server_https_only\": "
+        << settingJson(s.webServerHttpsOnly) << ", \"web_server_interfaces\": [";
+    for (size_t i = 0; i < s.webServerInterfaces.size(); ++i) out << (i ? ", " : "") << q(s.webServerInterfaces[i]);
+    out << "], \"opc_ua_server\": " << settingJson(s.opcUaServer) << ", \"time_sync_role\": ";
+    if (s.hasTimeSyncRole) out << s.timeSyncRole;
+    else out << "null";
+    out << ", \"ntp_servers\": [";
+    for (size_t i = 0; i < s.ntpServers.size(); ++i) out << (i ? ", " : "") << q(s.ntpServers[i]);
+    out << "], \"display_protection\": " << settingJson(s.displayProtection) << ", \"access_control\": "
+        << settingJson(s.accessControl) << ", \"access_control_via_access_levels\": "
+        << settingJson(s.accessControlViaAccessLevels) << ", \"pg_hmi_communication_mode\": ";
+    if (s.hasCommunicationMode) out << s.communicationMode;
+    else out << "null";
+    out << ", \"legacy_pg_hmi_communication\": " << (s.hasCommunicationMode && s.communicationMode == 0 ? "true" : "null")
+        << ", \"config_data_protection\": " << settingJson(s.configDataProtection) << "}";
+}
+
+std::string settingCsv(const Setting& v) { return v.stored ? (v.on ? "yes" : "no") : ""; }
+
 // Comments can hold line breaks; the text report keeps one line per item.
 std::string oneLine(const std::string& s) {
     std::string out;
@@ -315,6 +406,7 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
                 if (!i.subnet.empty()) out << "  subnet " << i.subnet;
                 out << "\n";
             }
+            if (m.kind == "controller") textSecurity(out, m);
         }
     }
     if (shown == 0) out << "\nNo devices found.\n";
@@ -329,7 +421,7 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
     textProgram(out, prog, ctx);
     out << "\n" << inv.stats.liveObjects << " objects in " << inv.stats.blocks << " blocks";
     if (inv.stats.deletedObjects) out << ", " << inv.stats.deletedObjects << " deleted";
-    if (!inv.saves.empty()) out << ", " << inv.saves.size() << " save" << (inv.saves.size() == 1 ? "" : "s") << " recorded";
+    if (inv.stats.saves) out << ", " << inv.stats.saves << " save" << (inv.stats.saves == 1 ? "" : "s") << " recorded";
     if (ctx.hashesVerified) out << ", block hashes " << (ctx.hashErrors ? "FAILED" : "ok");
     out << ".\n";
     if (hidden)
@@ -345,7 +437,8 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
     out << "  \"source\": {\"path\": " << q(ctx.source) << ", \"layout\": " << q(ctx.layout)
         << ", \"blocks\": " << inv.stats.blocks << ", \"live_objects\": " << inv.stats.liveObjects
         << ", \"deleted_objects\": " << inv.stats.deletedObjects << ", \"hashes_verified\": "
-        << tf(ctx.hashesVerified) << ", \"hash_errors\": " << ctx.hashErrors << ", \"saves\": [";
+        << tf(ctx.hashesVerified) << ", \"hash_errors\": " << ctx.hashErrors << ", \"save_count\": "
+        << inv.stats.saves << ", \"saves\": [";
     for (size_t i = 0; i < inv.saves.size(); ++i) out << (i ? ", " : "") << q(inv.saves[i]);
     out << "]},\n";
     if (inv.project.found) {
@@ -370,7 +463,12 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
             if (m.hasPosition) out << m.position;
             else out << "null";
             out << ", \"item_type\": " << m.itemType << ", \"container\": " << qn(m.container)
-                << ", \"author\": " << qn(m.author) << ", \"modified\": " << qn(m.modified) << ", \"interfaces\": [";
+                << ", \"author\": " << qn(m.author) << ", \"modified\": " << qn(m.modified);
+            if (m.kind == "controller") {
+                out << ", \"security\": ";
+                jsonSecurity(out, m.security);
+            }
+            out << ", \"interfaces\": [";
             for (size_t ii = 0; ii < m.interfaces.size(); ++ii) {
                 const Interface& i = m.interfaces[ii];
                 out << (ii ? ",\n" : "\n") << "        {\"name\": " << q(i.name) << ", \"item\": " << qn(i.item)
@@ -419,8 +517,12 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
 void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx) {
     out << "device,device_type,in_project,position,kind,name,type,type_name,order_number,firmware,container,"
            "interface,interface_item,ip,mask,router,ip_assigned_elsewhere,ip_set_by_user,bus_address,profinet_name,"
-           "profinet_name_auto,subnet\r\n";
+           "profinet_name_auto,subnet,access_level,access_level_name,put_get,web_server,web_server_https_only,"
+           "web_server_interfaces,opc_ua_server,ntp_servers,display_protection,access_control,"
+           "legacy_pg_hmi_communication,config_data_protection\r\n";
     auto row = [&](const Device& d, const Module& m, const Interface* i) {
+        const bool ctl = m.kind == "controller";
+        const Security& s = m.security;
         const std::string cols[] = {d.name, d.type, d.inProject ? "yes" : "no",
                                     m.hasPosition ? std::to_string(m.position) : "", m.kind, m.name, m.type,
                                     m.typeName, m.orderNumber, m.firmware, m.container,
@@ -429,7 +531,16 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
                                     (i && i->hasIpSetByUser) ? (i->ipSetByUser ? "yes" : "no") : "",
                                     (i && i->hasBusAddress) ? std::to_string(i->busAddress) : "",
                                     i ? i->profinetName : "", i ? (i->profinetNameAuto ? "yes" : "no") : "",
-                                    i ? i->subnet : ""};
+                                    i ? i->subnet : "",
+                                    // settings of a controller, on each of its rows
+                                    ctl && s.hasAccessLevel ? std::to_string(s.accessLevel) : "",
+                                    ctl ? s.accessLevelName : "", ctl ? settingCsv(s.putGet) : "",
+                                    ctl ? settingCsv(s.webServer) : "", ctl ? settingCsv(s.webServerHttpsOnly) : "",
+                                    ctl ? joined(s.webServerInterfaces) : "", ctl ? settingCsv(s.opcUaServer) : "",
+                                    ctl ? joined(s.ntpServers) : "", ctl ? settingCsv(s.displayProtection) : "",
+                                    ctl ? settingCsv(s.accessControl) : "",
+                                    ctl && s.hasCommunicationMode && s.communicationMode == 0 ? "yes" : "",
+                                    ctl ? settingCsv(s.configDataProtection) : ""};
         bool first = true;
         for (const auto& col : cols) {
             if (!first) out << ',';
@@ -482,7 +593,11 @@ void writeValues(std::ostream& out, const NamedValues& vals) {
         if (!first) out << ", ";
         first = false;
         out << q(kv.first) << ": ";
-        writeValue(out, kv.second);
+        // Whatever a project keeps in a password attribute stays out of the
+        // output: a text is not shown, and bytes only ever by their size.
+        const bool password = kv.first.find("assword") != std::string::npos;
+        if (password && kv.second.type == Value::Type::String && !kv.second.s.empty()) out << "{\"redacted\": true}";
+        else writeValue(out, kv.second);
     }
     out << "}";
 }

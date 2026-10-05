@@ -24,7 +24,8 @@ New in these notes: the older layout, the slot count in the block header,
 relation lists, the older expando segment, the deleted flag in the older
 layout, the rule for which attributes are stored, the page format of large
 values, texts in several languages, attributes that carry their own names,
-and how hardware, network, tags, data blocks and comments map onto objects.
+how saves are delimited, and how hardware, network, security settings, tags,
+data blocks and comments map onto objects.
 
 ## A project on disk
 
@@ -93,6 +94,14 @@ In the older layout two bare 20-byte records can appear between blocks, written
 when a save completes: `0A "$$COMMIT$$"` or `0A "##CLOSE###"`, an 8-byte
 timestamp, `FF` (**verified**). They have no size field and must be recognised
 by content.
+
+In the newer layout every save ends with one system object of type `0x7000C`
+(**verified**: a V21 project saved 23 times in a row, one change per save,
+gained exactly one per save, and the blocks before each one hold exactly that
+change). Reading the block list only up to the n-th of them gives the project
+as it was after save n; `ContainerOptions::throughSave` does that. "Save as"
+keeps the history; a project archive (`.zap`) of the V19 sample has a single
+save, so archiving appears to drop it.
 
 Timestamps are .NET `DateTime` values: 100 ns ticks since 0001-01-01 in the low
 62 bits, kind in the top two (1 = UTC).
@@ -164,9 +173,9 @@ space in the segment.
   result. The rule gives the same answer for every attribute of all 2 629
   object types listed there.
 - With the rule, the fixed part of a segment plus the strings and blobs it
-  points to cover the segment exactly, with no gap and no overlap, in 33 587
-  of 33 589 segments that hold no nested structure (the four public samples,
-  `s07_second` and `s08_program`). The
+  points to cover the segment exactly, with no gap and no overlap, in 36 066
+  of 36 068 segments that hold no nested structure (the four public samples,
+  `s07_second`, `s08_program` and `s09_security`). The
   two others are one `HmiAuditTrailLogData` object each in the V15.1 and V19
   samples; why they differ is **unknown**.
 
@@ -352,6 +361,69 @@ is **inferred**.
 `0x2` module, `0x4` submodule, `0x8` set on CPUs, `0x4000` port, `0x80000`
 bus adapter.
 
+## Controller security settings
+
+All of these are expando attributes, and all are **stored only once changed
+from the default**: a CPU whose settings were never touched has none of them.
+A setting that was switched on and off again stays, as `false`.
+
+The CPU itself is the `S7ControllerTargetData` object; the items below it
+(relation `Parent`) are plain `DeviceItemData` objects.
+
+| attribute | on | values |
+|---|---|---|
+| `ProtectionLevel` | item named like the PLC | access level, see below |
+| `EnablePutGetConnections` | same item | bool: "Permit access with PUT/GET communication from remote partner" |
+| `AccessControlAtRuntime` | same item | 0 / 1: access control disabled / enabled (current CPUs) |
+| `EnableLegacyAccessControlViaAccessLevel` | same item | bool: "Use access control via access levels" |
+| `OmsCommunicationMode` | same item | 0 = legacy PG/PC and HMI communication permitted; absent = only secure |
+| `ProtectPlcConfiguration` | same item | bool: "Protect confidential PLC configuration data" |
+| `IsMasterSecretConfigured` | same item | bool: a password for that protection is set |
+| `WebServerActive` | the CPU | bool: "Activate web server on this module" |
+| `WebServerSSLOnly` | the CPU | bool: "Permit access only with HTTPS" |
+| `EnableWebServerAccess4IE` | interface item | bool: "Enable Web server via IP address of this interface" |
+| `TimeSyncRole` | interface item | 2 = time synchronisation via NTP |
+| `TimeSyncNtpServer1` .. | interface item | server address, as text |
+| `OpcUaEnableServer` | item `OPC UA_1` | bool |
+| `EnableDisplayProtection` | item `CPU display_1` | bool |
+
+`ProtectionLevel`:
+
+| value | S7-1500 (firmware V1.8, V4.1) | S7-1200 (firmware V2.2) |
+|---|---|---|
+| absent, 1 | Full access (no protection) | No protection |
+| 2 | Read access | Write protection |
+| 3 | HMI access | Write/read protection |
+| 4 | No access (complete protection) | – |
+
+Everything in these two tables is **verified** with `s09_security`: each row
+was changed in TIA Portal V21 in a save of its own (see
+`tests/fixtures/README.md`). Two things TIA Portal does by itself showed up
+there: choosing "No access" switches PUT/GET off in the same save, and
+activating the web server on the module ticks the interface box.
+
+Also seen, not interpreted: `OmsCertificateId`, `LastLoadedOmsCertificateId`,
+`ServerCertificateId`, `AccountLockedFor`, `NoOfFailedLoginAttempts`,
+`TimeBetweenFailedLoginAttempts`, `EnableLockUserAccountAtRunTime`, the web
+server user containers and `PkiContainerCache` on the CPU.
+
+### Passwords
+
+`EncryptedPassword1` .. `3` and `EncryptedPasswordFailsafe` (one
+`EncryptedPassword` on the S7-1200 with firmware V2.2,
+`EncryptedDisplayPassword` on the display) are blobs that exist whether or
+not a password is set; their size depends on the firmware. Setting the access
+level back to "Full access" writes one new value into the three slots that
+differs from the value they had before any password was set, so an empty slot
+cannot be told from a used one by looking at it. Which slot belongs to which
+access level is **unknown** (the observations on two CPUs contradict each
+other). Text attributes such as `DisplayPassword` hold one placeholder
+character per character of the password, not the password.
+
+`tiaconv` reads none of this. Blobs appear in `--objects` by size only, and
+text in any attribute with "password" in its name is replaced by
+`{"redacted": true}`.
+
 ## Tags
 
 A PLC tag is an `EAMTZTagData` object (**verified** against TIA Portal's
@@ -500,7 +572,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 6 574 | 5 279 | `tests/fixtures` (nine projects, in this repository) |
+| V21 | v14 | 8 295 | 6 402 | `tests/fixtures` (ten projects, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -544,6 +616,8 @@ all three configured items (both CPUs and the signal module) are as decoded.
 - Offsets in instance blocks with standard access (section offset plus member
   offset) have only been seen in the V13 sample.
 - The `h` attribute of a start value.
+- Access level numbers of an S7-1200 from firmware V4 and of other CPU
+  families; other values of `OmsCommunicationMode` and `TimeSyncRole`.
 - User constants.
 - Comments in V13 projects.
 - Which language TIA Portal treats as the one without a language id.

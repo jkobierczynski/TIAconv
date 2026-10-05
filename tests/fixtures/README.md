@@ -34,4 +34,37 @@ numbers, number of tags per table), the calls of the two function blocks in
 OB1, and the editors of `DB_Standard` and `DB_Optimized` with every member,
 offset and start value.
 
+`s09_security` continues from `s08_program` and is a different kind of
+fixture: **one project, one security setting changed per save**. A project
+file is append-only, so the state after every save is still in it, and the
+test reads the project as it was after each one. Saves 1 to 28 are the
+history of the earlier projects; the steps are:
+
+| save | PLC | action in TIA Portal V21 |
+|---|---|---|
+| 29 | ZZBRAVO (CPU 1511-1 PN, FW V1.8) | "Permit access with PUT/GET communication" ticked |
+| 30 | | access level Read access |
+| 31 | | access level HMI access |
+| 32 | | access level No access (complete protection); TIA Portal unticked PUT/GET with it |
+| 33 | | back to Full access (no protection) |
+| 34 | | HMI access again, with passwords of ten characters; PUT/GET ticked again |
+| 35 | | PROFINET interface [X1] > Web server access: "Enable Web server via IP address of this interface" ticked |
+| 36 | | ... unticked |
+| 37 | | Web server > "Activate web server on this module"; TIA Portal ticked the interface box with it |
+| 38, 39 | | interface box unticked, ticked |
+| 40 | | "Permit access only with HTTPS" ticked |
+| 41 | | time synchronisation via NTP, server 192.168.77.50 |
+| 42 | | display protection enabled |
+| 43 | ZZALPHA (CPU 1212C, FW V2.2) | protection: Write protection |
+| 44 | | web server activated |
+| 45 | | protection: Write/read protection |
+| 46 | ZZCHARLIE (CPU 1511-1 PN 6ES7 511-1AL03-0AB0, FW V4.1) | added; security wizard left at its defaults. Its overview page: protection of confidential PLC data enabled, only secure PG/PC communication, access protection enabled with local user management, anonymous access disabled, legacy access protection "No access (complete protection)" |
+| 47 | | OPC UA server activated |
+| 48 | | "Only allow secure PG/PC and HMI communication" unticked |
+| 49 | | "Protect confidential PLC configuration data" unticked |
+| 50 | | access control disabled |
+| 51 | | access control enabled, "Use access control via access levels" ticked |
+
+All passwords in it are throwaway test passwords.
+
 `tests/fixtures_test.cpp` checks these facts.
