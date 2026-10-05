@@ -1,0 +1,10 @@
+build/
+build-*/
+*.plf
+*.idx
+__pycache__/
+.vscode/
+.idea/
+
+# test projects made for this repository
+!tests/fixtures/**/PEData.plf

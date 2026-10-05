@@ -1,0 +1,35 @@
+FUNCTION_BLOCK "Block_2"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      MB12 : Byte := 16#3;   // My input byte
+   END_VAR
+
+   VAR_OUTPUT 
+      MB14 : Byte := 16#4;   // My output byte
+   END_VAR
+
+   VAR_IN_OUT 
+      MB15 : Byte;   // My In/Out byte
+   END_VAR
+
+   VAR 
+      "666" : DInt := 666;   // My Static
+   END_VAR
+
+
+BEGIN
+NETWORK
+TITLE = 
+END_FUNCTION_BLOCK
+
+DATA_BLOCK "Block_2_DB"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+"Block_2"
+
+BEGIN
+
+END_DATA_BLOCK
+
