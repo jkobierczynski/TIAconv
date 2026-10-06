@@ -814,7 +814,7 @@ void testProgram() {
     const tia::DataBlock& g = d.blocks[0];
     CHECK(g.name == "Data" && g.hasNumber && g.number == 7 && g.kind == "global" && g.plc == "PLC_1");
     CHECK(g.hasAccess && !g.symbolicAccessOnly);
-    CHECK(g.comment == "nur deutsch");  // only one language: that one
+    CHECK(g.title == "nur deutsch" && g.comment.empty());  // only one language: that one
     CHECK(g.members.size() == 7 && g.memberCount == 11);
     if (g.members.size() == 7) {
         const auto& m = g.members;
@@ -855,6 +855,37 @@ void testProgram() {
     const tia::DataBlock& bare = d.blocks[2];
     CHECK(bare.name == "Bare" && bare.members.empty() && !bare.notes.empty());
     CHECK(d.stats.blocksWithoutInterface == 1 && d.warnings.size() == 1);
+
+    // The list of blocks: the three data blocks and the two objects with an
+    // interface of their own, data blocks after code blocks, by number.
+    CHECK(d.blockList.size() == 5 && d.stats.listedBlocksOutsideProject == 0);
+    if (d.blockList.size() == 5) {
+        const auto& l = d.blockList;
+        CHECK(l[0].name == "Data" && l[0].hasNumber && l[0].number == 7 && l[0].kind == "global");
+        CHECK(l[0].title == "nur deutsch" && l[0].plc == "PLC_1" && l[0].hasAccess && !l[0].symbolicAccessOnly);
+        CHECK(l[1].name == "Inst" && l[1].number == 8 && l[1].kind == "instance" && l[1].instanceOf == "FB1");
+        CHECK(l[2].name == "Bare" && l[2].number == 9);
+        CHECK(!l[3].hasNumber && !l[4].hasNumber && l[3].kind.empty());
+        // nothing is stored about protection, folders or downloads here
+        CHECK(l[0].protection.empty() && l[0].folder.empty() && l[0].downloaded.empty() && l[0].downloads.empty());
+        CHECK(!l[0].hasLoadMemory && !l[0].hasNetworks && !l[0].writeProtectedInDevice.stored);
+    }
+    // The download history of a block as stored in a public V19 project;
+    // its first entry is the block's DownloadTime there.
+    {
+        const auto h = tia::parseDownloadHistory("FB3-638682897237619877;FB3-638682472174389229;FB?-0");
+        CHECK(h.size() == 2);
+        if (h.size() == 2) CHECK(h[0] == "2024-11-27T07:35:23.761Z" && h[1] == "2024-11-26T19:46:57.438Z");
+        CHECK(tia::parseDownloadHistory("DB?-0").empty() && tia::parseDownloadHistory("").empty());
+        // anything that is not a number after the last dash is passed over
+        CHECK(tia::parseDownloadHistory(";;-;FB1-;FB1-12x;FB1-99999999999999999999999;x").empty());
+        CHECK(tia::parseDownloadHistory("FB1-9999999999999999999;FB1-4000000000000000000").empty());  // not times
+        std::string many;
+        for (int i = 0; i < 200; ++i) many += "FB1-638682897237619877;";
+        CHECK(tia::parseDownloadHistory(many).size() == 64);
+    }
+    CHECK(tia::languageName("LAD_CLASSIC") == "LAD" && tia::languageName("FBD_CLASSIC") == "FBD");
+    CHECK(tia::languageName("SCL") == "SCL" && tia::languageName("LAD_IEC") == "LAD_IEC" && tia::languageName("").empty());
 
     // corrupted copies must not crash the member walk
     size_t survived = 0;

@@ -12,7 +12,8 @@ function(first_bytes file out)
 endfunction()
 
 execute_process(
-  COMMAND "${TIACONV}" -q --csv "${OUT}/hw.csv" --tags-csv "${OUT}/tags.csv" --blocks-csv "${OUT}/blocks.csv" "${PROJECT}"
+  COMMAND "${TIACONV}" -q --csv "${OUT}/hw.csv" --tags-csv "${OUT}/tags.csv" --blocks-csv "${OUT}/blocks.csv"
+          --block-list-csv "${OUT}/list.csv" "${PROJECT}"
   RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
   message(FATAL_ERROR "tiaconv failed: ${rc}")
@@ -23,6 +24,15 @@ first_bytes("${OUT}/tags.csv" tags)
 first_bytes("${OUT}/blocks.csv" blocks)
 if(NOT hw STREQUAL "efbbbf646576" OR NOT tags STREQUAL "efbbbf706c63" OR NOT blocks STREQUAL "efbbbf706c63")
   message(FATAL_ERROR "byte-order mark missing: ${hw} ${tags} ${blocks}")
+endif()
+
+# the list of blocks: mark, header, and one row per block of the project
+first_bytes("${OUT}/list.csv" list)
+file(STRINGS "${OUT}/list.csv" rows)
+list(LENGTH rows count)
+list(GET rows 3 fb1)
+if(NOT list STREQUAL "efbbbf706c63" OR NOT count EQUAL 10 OR NOT fb1 MATCHES "^ZZBRAVO,FB,1,Block_1,,,FBD,")
+  message(FATAL_ERROR "unexpected list of blocks: ${list}, ${count} lines, ${fb1}")
 endif()
 
 execute_process(

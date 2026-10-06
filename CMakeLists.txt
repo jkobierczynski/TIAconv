@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tiaconv VERSION 0.6.0 LANGUAGES C CXX)
+project(tiaconv VERSION 0.7.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,6 +10,12 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(TIACONV_STATIC "Link the executable statically where the platform allows it" OFF)
+
+# With Visual C++ a static build needs the static runtime library, and every
+# target has to agree on it: the libraries, the executable and the tests.
+if(MSVC AND TIACONV_STATIC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 # miniz (MIT): inflate for the embedded type model, zip for project archives.
 add_library(miniz STATIC third_party/miniz/miniz.c)
@@ -40,9 +46,6 @@ target_link_libraries(tiaconv PRIVATE tiacore)
 target_compile_definitions(tiaconv PRIVATE TIACONV_VERSION="${PROJECT_VERSION}")
 if(MSVC)
   target_compile_options(tiaconv PRIVATE /W4 /utf-8)
-  if(TIACONV_STATIC)
-    set_property(TARGET tiaconv tiacore miniz PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-  endif()
 else()
   target_compile_options(tiaconv PRIVATE -Wall -Wextra -Wpedantic)
   if(TIACONV_STATIC AND NOT APPLE)
@@ -63,6 +66,10 @@ if(BUILD_TESTING)
   target_compile_definitions(tiaconv_fixture_tests PRIVATE
     TIACONV_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   add_test(NAME fixtures COMMAND tiaconv_fixture_tests)
+  if(MSVC)
+    target_compile_options(tiaconv_tests PRIVATE /utf-8)
+    target_compile_options(tiaconv_fixture_tests PRIVATE /utf-8)
+  endif()
 
   add_test(NAME cli_csv COMMAND ${CMAKE_COMMAND}
     -DTIACONV=$<TARGET_FILE:tiaconv>

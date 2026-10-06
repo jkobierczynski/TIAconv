@@ -29,6 +29,8 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
 
 // One row per tag.
 void writeTagsCsv(std::ostream& out, const ProgramData& prog);
+// One row per block or data type of a PLC.
+void writeBlockListCsv(std::ostream& out, const ProgramData& prog);
 // One row per data block member, nested members as dotted paths.
 void writeBlocksCsv(std::ostream& out, const ProgramData& prog);
 

@@ -84,8 +84,8 @@ every block hash matches).
 | 28 / 44 | | object data |
 | `s` | 32 | SHA-256 of bytes 0..`s`-1 – newer layout only |
 
-The file is append-only. Saving writes new versions of changed objects at the
-end; the **last block with a given (type id, object id) wins**. A deleted
+Saving normally appends: new versions of changed objects are written at the
+end, and the **last block with a given (type id, object id) wins**. A deleted
 object gets a tombstone block that is just a header with the deleted flag:
 33 bytes in the older layout, 49 in the newer (**verified**: 654 objects of
 the V13 sample and 4 objects of the V21 test projects end that way).
@@ -102,6 +102,16 @@ change). Reading the block list only up to the n-th of them gives the project
 as it was after save n; `ContainerOptions::throughSave` does that. "Save as"
 keeps the history; a project archive (`.zap`) of the V19 sample has a single
 save, so archiving appears to drop it.
+
+**TIA Portal sometimes rewrites the whole file**, and then the history is
+gone. Seen once (V21): a file of 2.9 MB with 80 saves was 1.2 MB with two
+save markers a few saves later, the first right after the type model, the
+second at the end, and only the current version of every object in between.
+In those saves a block was edited, the program compiled, one block know-how
+protected and one write-protected; which of these caused it is **unknown**.
+Removing the old, readable versions of a block when it becomes protected
+would be a reason, but that is a guess. The saves after it were appended
+again, including the one that removed the protection.
 
 Timestamps are .NET `DateTime` values: 100 ns ticks since 0001-01-01 in the low
 62 bits, kind in the top two (1 = UTC).
@@ -173,9 +183,10 @@ space in the segment.
   result. The rule gives the same answer for every attribute of all 2 629
   object types listed there.
 - With the rule, the fixed part of a segment plus the strings and blobs it
-  points to cover the segment exactly, with no gap and no overlap, in 39 062
-  of 39 064 segments that hold no nested structure (the four public samples,
-  `s07_second`, `s08_program`, `s09_security` and `s10_connections`). The
+  points to cover the segment exactly, with no gap and no overlap, in 45 166
+  of 45 168 segments that hold no nested structure (the four public samples,
+  `s07_second`, `s08_program`, `s09_security`, `s10_connections` and the two
+  `s11_blocks` files). The
   two others are one `HmiAuditTrailLogData` object each in the V15.1 and V19
   samples; why they differ is **unknown**.
 
@@ -564,9 +575,95 @@ access level is **unknown** (the observations on two CPUs contradict each
 other). Text attributes such as `DisplayPassword` hold one placeholder
 character per character of the password, not the password.
 
+Protecting a block adds to it (V21): `ICoreAttributes.Password`, and the
+expando attributes `ProtectionSalt`, `ProtectionIV`, `VerificationTag`,
+`ProtectionVersionId`, `KHP_BLOCK_MODEL_VERSION` for know-how protection;
+`WriteProtectionPassword`, `WriteProtectionSalt`, `WriteProtectionIV`,
+`WriteProtectionData` for write protection. Removing the know-how protection
+resets `Protection` and removes the version attributes.
+
 `tiaconv` reads none of this. Blobs appear in `--objects` by size only, and
-text in any attribute with "password" in its name is replaced by
-`{"redacted": true}`.
+text in any attribute with "password", "Salt", "ProtectionIV" or
+"VerificationTag" in its name is replaced by `{"redacted": true}`.
+
+## Blocks
+
+Everything TIA Portal lists under "Program blocks" and "PLC data types" is an
+object with the attribute set `IGeneralBlockSourceData` (`IGeneralBlockData`
+in V13):
+
+| object type | what |
+|---|---|
+| `CodeBlockData` | OB, FB, FC; also the system functions in use (SFB, SFC) |
+| `DataBlockData`, `TechnologicalDataBlockData` | DB |
+| `UserTypeData` | PLC data type (UDT) |
+| `SystemDatatypeData` | system data type in use (SDT) |
+
+Relations `Target` (the CPU) and `Environment` (the project; copies kept for
+library types have something else) as for tags.
+
+| attribute | meaning |
+|---|---|
+| `ICoreAttributes.Name`, `.Subtype` | name; `OB.ProgramCycle`, `OB.CyclicInterrupt`, `FB`, `DB`, `FB.TO.PID.Compact.Compact_3.0` |
+| `ICoreAttributes.Comment` | the block **title** (multilingual text) |
+| relation `GeneralBlockSourceData.BlockComment` → `CoreText` object, `ICoreTextRepository.Text` | the block **comment**; the object exists once a comment was entered |
+| `IGeneralBlockSourceData.BlockType` | `OB`, `FB`, `FC`, `DB`, `UDT`, `SFB`, `SFC`, `SDT` (V13: `IGeneralBlockData.DosType`) |
+| `.Number`, `.AutoNumber` | block number; whether TIA Portal assigns it |
+| `.BlockLanguage` | `LAD_CLASSIC`, `FBD_CLASSIC`, `STL`, `SCL`, `GRAPH`, ...; `DB`, `UDT`, `SDT` for what is not code. TIA Portal shows the first two as LAD and FBD |
+| `.OnlySymbolicAccess` | optimized block access |
+| `.CompileArtifacts` | why the block has to be compiled again: `UpToDate`, or flags such as `Binary` (V13: `IGeneralBlockData.CompileStatus`) |
+| `IPlcHeaderData.HeaderAuthor`, `.HeaderFamily`, `.HeaderVersion`, `.HeaderName` | author, family, version and "user-defined ID" of the block properties |
+| `ICoreAttributes.Protection` | `NoProtection`, `KnowHowProtection`, `SystemKnowHowProtection` (protected blocks of Siemens libraries); the type model also has `WriteProtection`, not seen in use |
+| expando `WriteProtection` | bool: the write protection of a code block |
+| `IGeneralBindingData.CopyProtectionMode`, `.CopyProtectionAssignment`, `.CopyProtectionSerialNumber` | copy protection: `BindToPLC` / `BindToSDCard`, `Manual` / `Auto`, the serial number entered (V13: the same names in `IGeneralBlockData`). Stored once it is set |
+| `ICoreAttributes.CreationTime`; `ITimestampData.Modified`, `.CodeModified`, `.InterfaceModified` | time stamps, UTC |
+| relation `FolderElementData.AggregatingFolder` → `FolderData` | the folder; follow it upwards for the path |
+| relation `Parent4LoadableBinaryData.LoadableBinaries` → `LoadablePlus...BlockData` | result of the last compilation: `IGeneralBlockResultData.CompileTime`, `.DownloadTime`, `.LoadMemoryRequired`, `.WorkMemoryRequired` (V13: the times are on the block, the sizes in `ILoadableObjectOmspData`) |
+| expando `DownloadHistory` | `FB3-638682897237619877;FB3-...;FB?-0`: one entry per download, newest first, at most 20 seen: the block's address then, and the time as .NET ticks. `FB?-0` = never. The newest entry equals `DownloadTime` to the millisecond |
+| relation `Parent4SourceData.Sources` → `CompileUnitData` | one per network (one in all for a block written as text); each has its own title, comment and `ProgrammingLanguage` |
+| expando `IsWriteProtectedInAS` | data block: "Data block write-protected in the device" |
+| expando `DBAccessibleFromOPCUA`, `DBAccessibleFromWebserver` | data block: absent while the two "accessible from" boxes are ticked, as on a new block; `false` once unticked. In the V19 sample every data block has the first one as `false` |
+| expando `Unlinked`, `NonRetain` | data block: presumably "Only store in load memory" and the retain setting; **not checked** |
+
+`FolderData` has `ICoreAttributes.Subtype` `ProgramBlocksFolder` (Program
+blocks), `ProgramBlocksFolder.Subfolder` (a group, named by the user),
+`SystemBlocksFolder` and `ProgramResourcesFolder` (System blocks > Program
+resources), `ControllerDataTypeFolder` (PLC data types), `SystemDataTypeFolder`,
+`TechnologicalParamFolder` (Technology objects).
+
+What a know-how or write protection adds to the block is described under
+[Passwords](#passwords): `tiaconv` reads the two settings and nothing else.
+
+**Verified** with `tests/fixtures/s11_blocks_a` and `s11_blocks`, one action
+per save in TIA Portal V21: new FB and OB with type, number, language and
+kind of OB; a group and a block moved into it; a number set by hand; title,
+comment, author, family, version and user-defined ID; title and comment of a
+data block; write protection of a data block in the device; `CompileArtifacts`
+going from `UpToDate` to `Binary` on a change and back on compiling; know-how
+protection set and removed; write protection; copy protection with a serial
+number; the two "accessible from" options of a data block. Independently: title, comment, author, family and version of the
+five function blocks of the V19 sample are those of the SCL sources published
+with it.
+
+Also compared with TIA Portal at the end of that test: the four time stamps
+of a block with its "Time stamps" page (which shows them in local time; the
+file has UTC, and `LoadRelevantModified` is the fifth one shown there); the
+number of `Sources` with the networks of two OBs (3 and 1); and the memory
+sizes with Program info > Resources, for every block of a PLC. For those:
+
+- the load memory TIA Portal lists is the expando `LoadMemorySize` of the
+  block. It equals `LoadMemoryRequired` of the compilation result, except
+  for a PLC data type, where the result says 0;
+- TIA Portal removes `LoadMemorySize` when the block changes and shows "?"
+  until it is compiled again. The old compilation result stays;
+- "Code work-memory" and "Data work-memory" are `WorkMemoryRequired` of a
+  code block and of a data block.
+
+**Not verified:** the download times (no test project was ever downloaded;
+in the four public samples they lie within the project's lifetime and the two
+places that store them agree). `Modified` and `CodeModified` are not "last
+edited": compiling sets them too (seen on an OB that had only to be
+recompiled).
 
 ## Tags
 
@@ -716,7 +813,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 10 560 | 7 803 | `tests/fixtures` (eleven projects, in this repository) |
+| V21 | v14 | 14 589 | 10 654 | `tests/fixtures` (thirteen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -764,6 +861,11 @@ all three configured items (both CPUs and the signal module) are as decoded.
   be those of V4.7) and of other CPU families; whether the level follows the
   Anonymous user on an S7-1500 as it does on the S7-1200; other values of `OmsCommunicationMode` and `TimeSyncRole`.
 - User constants.
+- What makes TIA Portal rewrite the project file.
+- Blocks: fail-safe blocks, GRAPH and other languages not in the samples,
+  blocks that are instances of library types (relation `IsInstanceOf`),
+  the call list kept with the compiled block, download times against a real
+  download.
 - PROFIBUS master systems, I-devices, shared devices, MRP domains, IO systems
   with more than one controller interface.
 - Connection types other than S7 and HMI; TSAPs; an HMI connection in a

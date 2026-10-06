@@ -229,6 +229,90 @@ std::string blockAccess(const DataBlock& b) {
     return b.symbolicAccessOnly ? "optimized" : "standard";
 }
 
+std::string blockAddress(const BlockInfo& b) {
+    if (b.type.empty()) return "-";
+    return b.hasNumber ? b.type + std::to_string(b.number) : b.type;
+}
+
+std::string blockKind(const BlockInfo& b) {
+    if (b.kind == "instance" && !b.instanceOf.empty()) return "instance of " + b.instanceOf;
+    return b.kind.empty() ? "-" : b.kind;
+}
+
+std::string blockProtection(const BlockInfo& b) {
+    std::string s = b.protection;
+    if (!b.copyProtection.empty()) {
+        const std::string to = b.copyProtection == "cpu" ? "CPU"
+                               : b.copyProtection == "memory-card" ? "memory card" : b.copyProtection;
+        s += (s.empty() ? "" : ", ") + ("bound to " + to);
+    }
+    // a data block that programs in the CPU cannot write to
+    if (b.writeProtectedInDevice.stored && b.writeProtectedInDevice.on)
+        s += (s.empty() ? "" : ", ") + std::string("write-protected in device");
+    return s.empty() ? "-" : s;
+}
+
+// A data block or data type is not written in a programming language; the
+// project repeats the block type there.
+std::string textLanguage(const BlockInfo& b) {
+    return b.language.empty() || b.language == b.type ? "-" : b.language;
+}
+
+// Whether the block is compiled and unchanged since: "yes", "no" (it has to
+// be compiled again), "-" when the project does not say.
+std::string textCompiled(const BlockInfo& b) {
+    if (b.compileNeeded.empty()) return "-";
+    return b.compileNeeded == "UpToDate" ? "yes" : "no";
+}
+
+// "2026-10-05T19:01:42.061Z" as "2026-10-05 19:01"; the times are UTC.
+std::string shortTime(const std::string& iso) {
+    if (iso.size() < 16 || iso[10] != 'T') return iso.empty() ? "-" : iso;
+    return iso.substr(0, 10) + " " + iso.substr(11, 5);
+}
+
+// What the firmware provides (system functions, system data types) and the
+// data types that come with library blocks: not listed in the text report.
+bool firmwareItem(const BlockInfo& b) {
+    return b.type == "SFB" || b.type == "SFC" || b.type == "SDT" || (b.system && b.type == "UDT");
+}
+
+void textBlockList(std::ostream& out, const ProgramData& prog) {
+    std::vector<const BlockInfo*> rows;
+    size_t hidden = 0;
+    for (const auto& b : prog.blockList) {
+        if (firmwareItem(b)) ++hidden;
+        else rows.push_back(&b);
+    }
+    if (rows.empty() && !hidden) return;
+    out << "\nBlocks:\n";
+    if (!rows.empty()) {
+        size_t wPlc = 3, wAddr = 5, wName = 4, wKind = 4, wLang = 8, wProt = 10, wFolder = 6;
+        for (const BlockInfo* b : rows) {
+            wPlc = std::max(wPlc, width(b->plc));
+            wAddr = std::max(wAddr, width(blockAddress(*b)));
+            wName = std::max(wName, width(b->name));
+            wKind = std::max(wKind, width(blockKind(*b)));
+            wLang = std::max(wLang, width(textLanguage(*b)));
+            wProt = std::max(wProt, width(blockProtection(*b)));
+            wFolder = std::max(wFolder, width(b->folder));
+        }
+        out << "  " << pad("PLC", wPlc + 2) << pad("Block", wAddr + 2) << pad("Name", wName + 2) << pad("Kind", wKind + 2)
+            << pad("Language", wLang + 2) << pad("Protection", wProt + 2) << pad("Folder", wFolder + 2)
+            << pad("Compiled", 10) << pad("Modified", 18) << "Downloaded\n";
+        for (const BlockInfo* b : rows)
+            out << "  " << pad(dash(b->plc), wPlc + 2) << pad(blockAddress(*b), wAddr + 2) << pad(b->name, wName + 2)
+                << pad(blockKind(*b), wKind + 2) << pad(textLanguage(*b), wLang + 2)
+                << pad(blockProtection(*b), wProt + 2) << pad(dash(b->folder), wFolder + 2)
+                << pad(textCompiled(*b), 10) << pad(shortTime(b->modified), 18) << shortTime(b->downloaded) << "\n";
+        out << "  Times are UTC.\n";
+    }
+    if (hidden)
+        out << "  " << hidden << " system function" << (hidden == 1 ? "" : "s")
+            << " or data type" << (hidden == 1 ? "" : "s")
+            << " in use not listed (SFB, SFC, system data types); the JSON and the block list CSV have them.\n";
+}
+
 void textMembers(std::ostream& out, const std::vector<BlockMember>& members, int depth) {
     for (const auto& m : members) {
         out << std::string(8 + 2 * static_cast<size_t>(depth), ' ');
@@ -244,6 +328,7 @@ void textMembers(std::ostream& out, const std::vector<BlockMember>& members, int
 }
 
 void textProgram(std::ostream& out, const ProgramData& prog, const ReportContext& ctx) {
+    textBlockList(out, prog);
     if (!prog.tags.empty()) {
         out << "\nTags:\n";
         size_t wPlc = 3, wTable = 5, wName = 4, wType = 4;
@@ -283,7 +368,8 @@ void textProgram(std::ostream& out, const ProgramData& prog, const ReportContext
                 << pad(b.name, wName + 2) << pad(blockKind(b), wKind + 2) << pad(blockAccess(b), 11)
                 << b.memberCount;
             for (const auto& n : b.notes) out << "  (" << n << ")";
-            if (!b.comment.empty()) out << "  // " << oneLine(b.comment);
+            if (!b.title.empty()) out << "  // " << oneLine(b.title);
+            else if (!b.comment.empty()) out << "  // " << oneLine(b.comment);
             out << "\n";
             if (ctx.members) textMembers(out, b.members, 0);
         }
@@ -313,7 +399,50 @@ void jsonMembers(std::ostream& out, const std::vector<BlockMember>& members, con
     out << "\n" << indent << "]";
 }
 
+std::string flagJson(const Flag& f) { return f.stored ? tf(f.on) : "null"; }
+std::string flagCsv(const Flag& f) { return f.stored ? (f.on ? "yes" : "no") : ""; }
+
+void jsonBlockList(std::ostream& out, const ProgramData& prog) {
+    out << "  \"blocks\": [";
+    for (size_t i = 0; i < prog.blockList.size(); ++i) {
+        const BlockInfo& b = prog.blockList[i];
+        out << (i ? ",\n" : "\n") << "    {\"plc\": " << qn(b.plc) << ", \"type\": " << qn(b.type) << ", \"number\": ";
+        if (b.hasNumber) out << b.number;
+        else out << "null";
+        out << ", \"name\": " << q(b.name) << ", \"kind\": " << qn(b.kind) << ", \"instance_of\": "
+            << qn(b.instanceOf) << ", \"language\": " << qn(b.language) << ", \"language_stored\": "
+            << qn(b.languageStored) << ", \"protection\": " << qn(b.protection) << ", \"protection_stored\": "
+            << qn(b.protectionStored) << ", \"copy_protection\": " << qn(b.copyProtection)
+            << ", \"copy_protection_stored\": " << qn(b.copyProtectionStored) << ", \"copy_protection_serial\": "
+            << qn(b.copyProtectionSerial) << ", \"write_protection\": " << flagJson(b.writeProtection)
+            << ", \"compile_needed\": " << qn(b.compileNeeded) << ", \"folder\": " << qn(b.folder)
+            << ", \"system\": " << tf(b.system) << ", \"title\": " << qn(b.title) << ", \"comment\": "
+            << qn(b.comment) << ", \"author\": " << qn(b.author) << ", \"family\": " << qn(b.family)
+            << ", \"user_id\": " << qn(b.userId) << ", \"version\": " << qn(b.version)
+            << ", \"optimized_access\": " << (b.hasAccess ? tf(b.symbolicAccessOnly) : "null") << ", \"created\": "
+            << qn(b.created) << ", \"modified\": " << qn(b.modified) << ", \"code_modified\": "
+            << qn(b.codeModified) << ", \"interface_modified\": " << qn(b.interfaceModified) << ", \"compiled\": "
+            << qn(b.compiled) << ", \"downloaded\": " << qn(b.downloaded) << ", \"download_history\": [";
+        for (size_t n = 0; n < b.downloads.size(); ++n) out << (n ? ", " : "") << q(b.downloads[n]);
+        out << "], \"load_memory\": ";
+        if (b.hasLoadMemory) out << b.loadMemory;
+        else out << "null";
+        out << ", \"work_memory\": ";
+        if (b.hasWorkMemory) out << b.workMemory;
+        else out << "null";
+        out << ", \"networks\": ";
+        if (b.hasNetworks) out << b.networks;
+        else out << "null";
+        out << ", \"write_protected_in_device\": " << flagJson(b.writeProtectedInDevice)
+            << ", \"only_in_load_memory\": " << flagJson(b.onlyInLoadMemory) << ", \"accessible_from_opc_ua\": "
+            << flagJson(b.accessibleFromOpcUa) << ", \"accessible_from_web_server\": "
+            << flagJson(b.accessibleFromWebServer) << "}";
+    }
+    out << (prog.blockList.empty() ? "],\n" : "\n  ],\n");
+}
+
 void jsonProgram(std::ostream& out, const ProgramData& prog) {
+    jsonBlockList(out, prog);
     out << "  \"tags\": [";
     for (size_t i = 0; i < prog.tags.size(); ++i) {
         const Tag& t = prog.tags[i];
@@ -328,7 +457,8 @@ void jsonProgram(std::ostream& out, const ProgramData& prog) {
         out << (i ? ",\n" : "\n") << "    {\"plc\": " << qn(b.plc) << ", \"name\": " << q(b.name) << ", \"number\": ";
         if (b.hasNumber) out << b.number;
         else out << "null";
-        out << ", \"address\": " << qn(b.address) << ", \"comment\": " << qn(b.comment) << ", \"kind\": "
+        out << ", \"address\": " << qn(b.address) << ", \"title\": " << qn(b.title) << ", \"comment\": "
+            << qn(b.comment) << ", \"kind\": "
             << qn(b.kind) << ", \"instance_of\": "
             << qn(b.instanceOf) << ", \"optimized_access\": " << (b.hasAccess ? tf(b.symbolicAccessOnly) : "null")
             << ", \"member_count\": " << b.memberCount << ", \"notes\": [";
@@ -365,6 +495,25 @@ void csvMembers(std::ostream& out, const DataBlock& b, const std::vector<BlockMe
 void writeTagsCsv(std::ostream& out, const ProgramData& prog) {
     out << "plc,table,name,data_type,address,comment\r\n";
     for (const auto& t : prog.tags) csvRow(out, {t.plc, t.table, t.name, t.dataType, t.address, t.comment});
+}
+
+void writeBlockListCsv(std::ostream& out, const ProgramData& prog) {
+    out << "plc,type,number,name,kind,instance_of,language,protection,copy_protection,copy_protection_serial,"
+           "compile_needed,folder,system,title,comment,"
+           "author,family,user_id,version,optimized_access,created,modified,code_modified,interface_modified,"
+           "compiled,downloaded,load_memory,work_memory,networks,write_protected_in_device,only_in_load_memory,"
+           "accessible_from_opc_ua,accessible_from_web_server\r\n";
+    for (const auto& b : prog.blockList)
+        csvRow(out, {b.plc, b.type, b.hasNumber ? std::to_string(b.number) : "", b.name, b.kind, b.instanceOf,
+                     b.language, b.protection, b.copyProtection, b.copyProtectionSerial, b.compileNeeded, b.folder,
+                     b.system ? "yes" : "no", b.title,
+                     b.comment, b.author, b.family, b.userId, b.version,
+                     b.hasAccess ? (b.symbolicAccessOnly ? "yes" : "no") : "", b.created, b.modified, b.codeModified,
+                     b.interfaceModified, b.compiled, b.downloaded,
+                     b.hasLoadMemory ? std::to_string(b.loadMemory) : "",
+                     b.hasWorkMemory ? std::to_string(b.workMemory) : "",
+                     b.hasNetworks ? std::to_string(b.networks) : "", flagCsv(b.writeProtectedInDevice),
+                     flagCsv(b.onlyInLoadMemory), flagCsv(b.accessibleFromOpcUa), flagCsv(b.accessibleFromWebServer)});
 }
 
 void writeBlocksCsv(std::ostream& out, const ProgramData& prog) {
@@ -734,6 +883,12 @@ void writeValue(std::ostream& out, const Value& v) {
     }
 }
 
+bool secretAttribute(const std::string& name) {
+    for (const char* part : {"assword", "Salt", "ProtectionIV", "VerificationTag"})
+        if (name.find(part) != std::string::npos) return true;
+    return false;
+}
+
 void writeValues(std::ostream& out, const NamedValues& vals) {
     out << "{";
     bool first = true;
@@ -741,10 +896,12 @@ void writeValues(std::ostream& out, const NamedValues& vals) {
         if (!first) out << ", ";
         first = false;
         out << q(kv.first) << ": ";
-        // Whatever a project keeps in a password attribute stays out of the
-        // output: a text is not shown, and bytes only ever by their size.
-        const bool password = kv.first.find("assword") != std::string::npos;
-        if (password && kv.second.type == Value::Type::String && !kv.second.s.empty()) out << "{\"redacted\": true}";
+        // Whatever a project keeps in a password attribute, or next to one for
+        // checking a password (salt, initialisation vector, verification tag
+        // of a protected block), stays out of the output: a text is not shown,
+        // and bytes only ever by their size.
+        if (secretAttribute(kv.first) && kv.second.type == Value::Type::String && !kv.second.s.empty())
+            out << "{\"redacted\": true}";
         else writeValue(out, kv.second);
     }
     out << "}";

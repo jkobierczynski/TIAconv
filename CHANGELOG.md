@@ -1,5 +1,28 @@
 # Changes
 
+## 0.7.1
+
+- Memory sizes of blocks as TIA Portal lists them under Program info >
+  Resources: the load memory of a PLC data type was reported as 0, and a
+  block that has to be compiled again kept the sizes of its last
+  compilation where TIA Portal shows none.
+
+## 0.7.0
+
+- List of blocks per PLC: OB, FB, FC, DB and PLC data types with number,
+  name, kind, language, folder, know-how, write and copy protection, whether
+  the block is compiled, time of the last change and of the last download.
+  The JSON and the new `--block-list-csv` also have title, comment, author,
+  family, version, user-defined ID, the other time stamps, the download
+  history, memory sizes, and for data blocks whether they are write-protected
+  in the device and accessible from OPC UA and the web server.
+- Data blocks: what was called `comment` was the block's title. The JSON now
+  has `title` and `comment`; the text report shows the title.
+- `--objects` no longer prints the salt, initialisation vector and
+  verification tag stored with a protected block.
+- Corrected: a project file is not only ever appended to. TIA Portal can
+  rewrite it, and then `--save` has nothing to go back to.
+
 ## 0.6.0
 
 - PROFINET IO systems: which IO device is assigned to which controller.

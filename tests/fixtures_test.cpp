@@ -70,6 +70,12 @@ const tia::Interface* firstInterface(const tia::Inventory& inv, const std::strin
     return (m && !m->interfaces.empty()) ? &m->interfaces.front() : nullptr;
 }
 
+const tia::BlockInfo* blockInfo(const tia::ProgramData& p, const std::string& plc, const std::string& name) {
+    for (const auto& b : p.blockList)
+        if (b.plc == plc && b.name == name) return &b;
+    return nullptr;
+}
+
 void common(const Loaded& l, const std::string& projectName) {
     CHECK(l.layout == tia::Layout::V14);
     CHECK(l.hashErrors == 0);
@@ -196,6 +202,44 @@ int main() {
         common(l, "s08");
         CHECK(l.inv.devices.size() == 2);
         const tia::ProgramData& p = l.prog;
+
+        // The list of blocks. Screenshot of the project tree: Main [OB1],
+        // Block_1 [FB1], Block_2 [FB2], DB_Standard [DB1], DB_Optimized [DB2],
+        // Block_1_DB [DB3], Block_2_DB [DB4], and one PLC data type. Block_2
+        // is the block TIA Portal generated a statement list source for.
+        {
+            current = "s08: list of blocks";
+            const struct { const char* plc; const char* type; int64_t number; const char* name; const char* kind;
+                           const char* instanceOf; const char* language; const char* folder; } want[] = {
+                {"ZZALPHA", "OB", 1, "Main", "ProgramCycle", "", "LAD", "Program blocks"},
+                {"ZZBRAVO", "OB", 1, "Main", "ProgramCycle", "", "LAD", "Program blocks"},
+                {"ZZBRAVO", "FB", 1, "Block_1", "", "", "FBD", "Program blocks"},
+                {"ZZBRAVO", "FB", 2, "Block_2", "", "", "STL", "Program blocks"},
+                {"ZZBRAVO", "DB", 1, "DB_Standard", "global", "", "DB", "Program blocks"},
+                {"ZZBRAVO", "DB", 2, "DB_Optimized", "global", "", "DB", "Program blocks"},
+                {"ZZBRAVO", "DB", 3, "Block_1_DB", "instance", "Block_1", "DB", "Program blocks"},
+                {"ZZBRAVO", "DB", 4, "Block_2_DB", "instance", "Block_2", "DB", "Program blocks"},
+                {"ZZBRAVO", "UDT", 1, "User_data_type_1", "", "", "UDT", "PLC data types"}};
+            const size_t n = sizeof want / sizeof want[0];
+            CHECK(p.blockList.size() == n);
+            for (size_t k = 0; k < n && k < p.blockList.size(); ++k) {
+                const tia::BlockInfo& b = p.blockList[k];
+                current = std::string("s08: list of blocks, ") + want[k].plc + " " + want[k].name;
+                CHECK(b.plc == want[k].plc && b.type == want[k].type && b.hasNumber && b.number == want[k].number);
+                CHECK(b.name == want[k].name && b.kind == want[k].kind && b.instanceOf == want[k].instanceOf);
+                CHECK(b.language == want[k].language && b.folder == want[k].folder && !b.system);
+                // nothing is protected, nothing was ever downloaded
+                CHECK(b.protection.empty() && b.protectionStored == "NoProtection" && b.copyProtection.empty());
+                CHECK(b.downloaded.empty() && b.downloads.empty());
+                CHECK(b.created.size() == 24 && b.created.compare(0, 11, "2026-10-05T") == 0 && !b.modified.empty());
+            }
+            // the generated source of Block_2: VERSION : 0.1, optimized access
+            if (p.blockList.size() == n) {
+                const tia::BlockInfo& b2 = p.blockList[3];
+                CHECK(b2.version == "0.1" && b2.author.empty() && b2.hasAccess && b2.symbolicAccessOnly);
+                CHECK(p.blockList[4].hasAccess && !p.blockList[4].symbolicAccessOnly);
+            }
+        }
 
         // export: PLCTags.xlsx, all eight rows of "Tag MyTagTable"
         const struct { const char* name; const char* type; const char* address; const char* comment; } tags[] = {
@@ -605,6 +649,211 @@ int main() {
         }
         current = "s10_connections, whole file";
         CHECK(load("s10_connections").saves == 71);
+    }
+    {
+        // s11_blocks_a: the list of blocks, one action per save, all on
+        // ZZBRAVO (see tests/fixtures/README.md). This is the project file as
+        // it was after 80 saves; TIA Portal rewrote it a few saves later.
+        using P = tia::ProgramData;
+        struct Step {
+            size_t save;
+            const char* what;
+            bool (*holds)(const P&);
+        };
+        const Step steps[] = {
+            {73, "start: the blocks of s08_program, nothing protected",
+             [](const P& p) {
+                 const tia::BlockInfo* m = blockInfo(p, "ZZBRAVO", "Main");
+                 return p.blockList.size() == 11 && m && m->type == "OB" && m->number == 1 &&
+                        !blockInfo(p, "ZZBRAVO", "ZZFC");
+             }},
+            {74, "function block ZZFC added, SCL, number given by TIA Portal",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "ZZFC");
+                 return p.blockList.size() == 12 && b && b->type == "FB" && b->hasNumber && b->number == 3 &&
+                        b->language == "SCL" && b->folder == "Program blocks" && b->version == "0.1" &&
+                        b->title.empty() && b->comment.empty() && b->hasNetworks && b->networks == 1;
+             }},
+            {75, "cyclic interrupt OB added: OB30",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "ZZCYCLIC");
+                 return b && b->type == "OB" && b->number == 30 && b->kind == "CyclicInterrupt" &&
+                        b->language == "LAD" && b->languageStored == "LAD_CLASSIC";
+             }},
+            {76, "group added, ZZFC moved into it",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "ZZFC");
+                 const tia::BlockInfo* m = blockInfo(p, "ZZBRAVO", "Main");
+                 return b && b->folder == "Program blocks/Group_1" && !b->system && m && m->folder == "Program blocks";
+             }},
+            {77, "number of ZZFC set by hand: 77",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "ZZFC");
+                 return b && b->number == 77 && b->author.empty();
+             }},
+            {78, "title, comment, author, family, version and user-defined ID of ZZFC",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "ZZFC");
+                 return b && b->title == "ZZTITLE" && b->comment == "ZZCOMMENT" && b->author == "ZZAUTH" &&
+                        b->family == "ZZFAM" && b->version == "1.2" && b->userId == "ZZID";
+             }},
+            {79, "title and comment of DB_Standard",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "DB_Standard");
+                 const tia::DataBlock* d = nullptr;
+                 for (const auto& db : p.blocks)
+                     if (db.name == "DB_Standard") d = &db;
+                 return b && b->title == "ZZDBTITLE" && b->comment == "ZZDBCOMMENT" && d && d->title == "ZZDBTITLE" &&
+                        d->comment == "ZZDBCOMMENT" && b->writeProtectedInDevice.stored &&
+                        !b->writeProtectedInDevice.on && b->compileNeeded == "UpToDate";
+             }},
+            {80, "DB_Standard write-protected in the device: has to be compiled again",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "DB_Standard");
+                 const tia::BlockInfo* o = blockInfo(p, "ZZBRAVO", "DB_Optimized");
+                 return b && b->writeProtectedInDevice.on && b->compileNeeded == "Binary" && o &&
+                        !o->writeProtectedInDevice.on && o->compileNeeded == "UpToDate" && b->protection.empty();
+             }},
+        };
+        for (const Step& st : steps) {
+            Loaded l = load("s11_blocks_a", st.save);
+            CHECK(l.hashErrors == 0);
+            current = "s11_blocks_a after save " + std::to_string(st.save) + ": " + st.what;
+            CHECK(st.holds(l.prog));
+        }
+        current = "s11_blocks_a, whole file";
+        CHECK(load("s11_blocks_a").saves == 80);
+    }
+    {
+        // s11_blocks: the same project a few saves later. TIA Portal had
+        // rewritten the file by then: the first save marker follows the type
+        // model, the second closes the state after four more actions (code
+        // of ZZFC edited, program compiled, Block_1 know-how protected, ZZFC
+        // write-protected), and the saves after that were appended.
+        using P = tia::ProgramData;
+        struct Step {
+            size_t save;
+            const char* what;
+            bool (*holds)(const P&);
+        };
+        const Step steps[] = {
+            // Screenshot of Block_1's Protection page at this point: "The
+            // block is protected", no write protection, copy protection "No
+            // binding". Screenshot of the project tree: Main [OB1], ZZCYCLIC
+            // [OB30], Block_1 [FB1], Block_2 [FB2], DB1 to DB4, and
+            // ZZFC [FB77] in Group_1.
+            {2, "compiled; Block_1 know-how protected, ZZFC write-protected",
+             [](const P& p) {
+                 const tia::BlockInfo* b1 = blockInfo(p, "ZZBRAVO", "Block_1");
+                 const tia::BlockInfo* b2 = blockInfo(p, "ZZBRAVO", "Block_2");
+                 const tia::BlockInfo* fc = blockInfo(p, "ZZBRAVO", "ZZFC");
+                 const tia::BlockInfo* db = blockInfo(p, "ZZBRAVO", "DB_Standard");
+                 if (!b1 || !b2 || !fc || !db || p.blockList.size() != 13) return false;
+                 for (const auto& b : p.blockList)
+                     if (b.plc == "ZZBRAVO" && b.compileNeeded != "UpToDate") return false;
+                 return b1->protection == "know-how" && b1->protectionStored == "KnowHowProtection" &&
+                        !b1->writeProtection.stored && b1->copyProtection.empty() && fc->protection == "write" &&
+                        fc->protectionStored == "NoProtection" && fc->writeProtection.on && fc->number == 77 &&
+                        fc->folder == "Program blocks/Group_1" && b2->protection.empty() &&
+                        b1->compiled.compare(0, 16, "2026-10-06T20:48") == 0 && b1->hasLoadMemory &&
+                        b1->loadMemory > 0 && b1->hasWorkMemory && db->writeProtectedInDevice.on &&
+                        b1->downloaded.empty();
+             }},
+            {3, "Block_2 bound to the serial number of the CPU, entered by hand",
+             [](const P& p) {
+                 const tia::BlockInfo* b2 = blockInfo(p, "ZZBRAVO", "Block_2");
+                 const tia::BlockInfo* b1 = blockInfo(p, "ZZBRAVO", "Block_1");
+                 return b2 && b2->copyProtection == "cpu" && b2->copyProtectionStored == "BindToPLC" &&
+                        b2->copyProtectionSerial == "S C-ZZ99887766" && b2->protection.empty() &&
+                        b2->compileNeeded == "Binary" && b1 && b1->protection == "know-how";
+             }},
+            {4, "know-how protection of Block_1 removed",
+             [](const P& p) {
+                 const tia::BlockInfo* b1 = blockInfo(p, "ZZBRAVO", "Block_1");
+                 const tia::BlockInfo* fc = blockInfo(p, "ZZBRAVO", "ZZFC");
+                 return b1 && b1->protection.empty() && b1->protectionStored == "NoProtection" && fc &&
+                        fc->protection == "write";
+             }},
+            {5, "ZZCYCLIC deleted",
+             [](const P& p) { return p.blockList.size() == 12 && !blockInfo(p, "ZZBRAVO", "ZZCYCLIC"); }},
+            // Screenshot of its Attributes page: optimized access ticked, not
+            // write-protected, not "only in load memory", the two
+            // "accessible" boxes ticked but greyed out.
+            {6, "data block ZZDB added on ZZBRAVO",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "ZZDB");
+                 const tia::BlockInfo* m = blockInfo(p, "ZZCHARLIE", "Main");
+                 return b && b->type == "DB" && b->number == 5 && b->kind == "global" &&
+                        !b->accessibleFromOpcUa.stored && !b->accessibleFromWebServer.stored && b->hasAccess &&
+                        b->symbolicAccessOnly && !b->writeProtectedInDevice.on && !b->onlyInLoadMemory.on &&
+                        // counted in TIA Portal: OB1 of ZZCHARLIE has one network
+                        m && m->hasNetworks && m->networks == 1;
+             }},
+            {7, "data block ZZDB2 added on ZZCHARLIE: both access options at their default, nothing stored",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZCHARLIE", "ZZDB2");
+                 return b && b->type == "DB" && b->number == 1 && !b->accessibleFromOpcUa.stored &&
+                        !b->accessibleFromWebServer.stored;
+             }},
+            {8, "\"Data block accessible from OPC UA\" unticked",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZCHARLIE", "ZZDB2");
+                 return b && b->accessibleFromOpcUa.stored && !b->accessibleFromOpcUa.on &&
+                        !b->accessibleFromWebServer.stored;
+             }},
+            {9, "\"Data block accessible via Web server\" unticked",
+             [](const P& p) {
+                 const tia::BlockInfo* b = blockInfo(p, "ZZCHARLIE", "ZZDB2");
+                 return b && !b->accessibleFromOpcUa.on && b->accessibleFromWebServer.stored &&
+                        !b->accessibleFromWebServer.on;
+             }},
+        };
+        for (const Step& st : steps) {
+            Loaded l = load("s11_blocks", st.save);
+            CHECK(l.hashErrors == 0);
+            current = "s11_blocks after save " + std::to_string(st.save) + ": " + st.what;
+            CHECK(st.holds(l.prog));
+        }
+        // Three screenshots taken in TIA Portal at the end, on ZZBRAVO:
+        // Program info > Resources (load memory and work memory per block,
+        // "?" for the two blocks that have to be compiled again), the Time
+        // stamps page of ZZFC (shown in local time, UTC+2), and OB1 with its
+        // three networks and its title in quotes.
+        {
+            Loaded l = load("s11_blocks");
+            current = "s11_blocks: Program info > Resources";
+            const struct { const char* name; int64_t load; int64_t work; } res[] = {
+                {"Main", 4374, 173},         {"Block_1", 3436, 82},     {"ZZFC", 2906, 82},
+                {"DB_Standard", 5824, 3166}, {"DB_Optimized", 5622, 3268},
+                {"Block_1_DB", 1659, 180},   {"Block_2_DB", 1645, 180}};
+            for (const auto& r : res) {
+                const tia::BlockInfo* b = blockInfo(l.prog, "ZZBRAVO", r.name);
+                current = std::string("s11_blocks: Program info > Resources, ") + r.name;
+                CHECK(b && b->hasLoadMemory && b->loadMemory == r.load && b->hasWorkMemory && b->workMemory == r.work);
+            }
+            current = "s11_blocks: Program info > Resources, the rest";
+            const tia::BlockInfo* udt = blockInfo(l.prog, "ZZBRAVO", "User_data_type_1");
+            CHECK(udt && udt->hasLoadMemory && udt->loadMemory == 912 && !udt->hasWorkMemory);
+            for (const char* name : {"Block_2", "ZZDB"}) {
+                const tia::BlockInfo* b = blockInfo(l.prog, "ZZBRAVO", name);
+                CHECK(b && !b->hasLoadMemory && !b->hasWorkMemory && b->compileNeeded != "UpToDate");
+            }
+            current = "s11_blocks: time stamps of ZZFC";
+            const tia::BlockInfo* fc = blockInfo(l.prog, "ZZBRAVO", "ZZFC");
+            CHECK(fc && fc->created.compare(0, 19, "2026-10-06T20:35:50") == 0);            // 10:35:50 PM
+            CHECK(fc && fc->modified.compare(0, 19, "2026-10-06T20:50:22") == 0);           // 10:50:22 PM
+            CHECK(fc && fc->interfaceModified.compare(0, 19, "2026-10-06T20:39:56") == 0);  // 10:39:56 PM
+            CHECK(fc && fc->codeModified.compare(0, 19, "2026-10-06T20:48:10") == 0);       // 10:48:10 PM
+            current = "s11_blocks: OB1";
+            const tia::BlockInfo* ob = blockInfo(l.prog, "ZZBRAVO", "Main");
+            CHECK(ob && ob->hasNetworks && ob->networks == 3 && ob->title == "\"Main Program Sweep (Cycle)\"");
+        }
+        // the first marker of a rewritten file closes nothing but the type model
+        Loaded first = load("s11_blocks", 1);
+        current = "s11_blocks, save 1 and whole file";
+        CHECK(first.prog.blockList.empty() && first.inv.devices.empty());
+        Loaded whole = load("s11_blocks");
+        CHECK(whole.saves == 9 && whole.inv.devices.size() == 6);
     }
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

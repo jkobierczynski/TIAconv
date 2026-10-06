@@ -65,6 +65,12 @@ public:
         relInterface_ = meta_.relationId("BlockInterfaceBaseData", "CurrentInterface");
         if (!relInterface_) relInterface_ = meta_.relationId("BlockInterfaceBaseData", "Source");
         relComments_ = meta_.relationId("BlockInterfaceBaseData", "InterfaceComments");
+        relFolder_ = meta_.relationId("FolderElementData", "AggregatingFolder");
+        relBinaries_ = meta_.relationId("Parent4LoadableBinaryData", "LoadableBinaries");
+        relSources_ = meta_.relationId("Parent4SourceData", "Sources");
+        relBlockComment_ = meta_.relationId("GeneralBlockSourceData", "BlockComment");
+        relBlockCommentCode_ = meta_.relationId("CodeBlockData", "BlockComment");
+        relBlockCommentData_ = meta_.relationId("DataBlockData", "BlockComment");
         relSubparts_ = meta_.relationId("InterfaceVersionRootData", "UsedParts");
         if (!relSubparts_) {
             relSubparts_ = meta_.relationId("XmlPartData", "ReferencedXmlParts");
@@ -81,7 +87,8 @@ public:
             const TypeDef* t = meta_.findById(b.type);
             if (!t || t->kind != TypeKind::ObjectType) continue;
             int role = roleOf(*t);
-            if (role == 0) continue;
+            const bool listed = isListedBlock(*t);
+            if (role == 0 && !listed) continue;
             Object o;
             try {
                 if (!project_.decode(b, o)) continue;
@@ -89,6 +96,10 @@ public:
                 continue;
             }
             if (role == 3 || role == 4) noteComments(o);
+            if (listed) {
+                if (inProject(o)) out.blockList.push_back(makeInfo(o));
+                else ++out.stats.listedBlocksOutsideProject;
+            }
             if (role == 1) {
                 addCatalogueEntry(o);
             } else if (role == 2) {
@@ -130,6 +141,14 @@ public:
             if (a.number != b.number) return a.number < b.number;
             return a.id < b.id;
         });
+        std::stable_sort(out.blockList.begin(), out.blockList.end(), [](const BlockInfo& a, const BlockInfo& b) {
+            if (a.plc != b.plc) return a.plc < b.plc;
+            const int ra = typeRank(a.type), rb = typeRank(b.type);
+            if (ra != rb) return ra < rb;
+            if (a.hasNumber != b.hasNumber) return a.hasNumber;
+            if (a.number != b.number) return a.number < b.number;
+            return a.id < b.id;
+        });
         if (out.stats.blocksWithoutInterface)
             out.warnings.push_back(std::to_string(out.stats.blocksWithoutInterface) +
                                    " data block(s) listed without members (interface not readable)");
@@ -140,7 +159,15 @@ private:
     const Project& project_;
     const MetaModel& meta_;
     uint32_t relTarget_ = 0, relEnvironment_ = 0, relTagTable_ = 0, relGeneratedFrom_ = 0, relInterface_ = 0,
-             relSubparts_ = 0, relComments_ = 0;
+             relSubparts_ = 0, relComments_ = 0, relFolder_ = 0, relBinaries_ = 0, relSources_ = 0,
+             relBlockComment_ = 0, relBlockCommentCode_ = 0, relBlockCommentData_ = 0;
+    std::map<uint32_t, bool> listed_;
+    struct FolderRec {
+        std::string name, subtype;
+        Key parent{0, 0};
+        bool hasParent = false;
+    };
+    std::map<Key, FolderRec> folders_;
     bool legacyParts_ = false;
     // interface root -> the object holding the comments of its members
     std::map<Key, Key> commentParts_;
@@ -164,6 +191,196 @@ private:
         else if (relComments_ && meta_.derivesFromShort(t.name, "BlockInterfaceBaseData")) r = 4;
         roles_[t.id] = r;
         return r;
+    }
+
+    // Blocks and data types: everything TIA Portal lists under "Program
+    // blocks" and "PLC data types".
+    bool isListedBlock(const TypeDef& t) {
+        auto it = listed_.find(t.id);
+        if (it != listed_.end()) return it->second;
+        bool yes = false;
+        for (const char* base : {"CodeBlockData", "DataBlockData", "UserTypeData", "SystemDatatypeData"})
+            yes = yes || meta_.derivesFromShort(t.name, base);
+        listed_[t.id] = yes;
+        return yes;
+    }
+
+    // The order of TIA Portal's block overview: organization blocks first.
+    static int typeRank(const std::string& type) {
+        static const char* const order[] = {"OB", "FB", "FC", "DB", "UDT", "SFB", "SFC", "SDT"};
+        for (int i = 0; i < 8; ++i)
+            if (type == order[i]) return i;
+        return 8;
+    }
+
+    const FolderRec& folder(const Key& k) {
+        auto it = folders_.find(k);
+        if (it != folders_.end()) return it->second;
+        FolderRec r;
+        Object o;
+        if (decodeKey(k, o)) {
+            r.name = attrStr(o, "ICoreAttributes", "Name");
+            r.subtype = attrStr(o, "ICoreAttributes", "Subtype");
+            r.hasParent = relFolder_ && o.relationTarget(relFolder_, r.parent);
+        }
+        return folders_[k] = r;
+    }
+
+    // Where the block sits in the project tree, with the names of the English
+    // user interface for the folders TIA Portal provides.
+    void folderOf(const Object& o, BlockInfo& b) {
+        Key k;
+        if (!relFolder_ || !o.relationTarget(relFolder_, k)) return;
+        std::vector<std::string> path;
+        for (int depth = 0; depth < 32; ++depth) {
+            const FolderRec& f = folder(k);
+            const std::string& st = f.subtype;
+            static const char kSub[] = ".Subfolder";
+            const size_t n = sizeof kSub - 1;
+            if (st == "ProgramBlocksFolder") path.push_back("Program blocks");
+            else if (st == "SystemBlocksFolder") path.push_back("System blocks");
+            else if (st == "ProgramResourcesFolder") path.push_back("Program resources");
+            else if (st == "ControllerDataTypeFolder") path.push_back("PLC data types");
+            else if (st == "SystemDataTypeFolder") path.push_back("System data types");
+            else if (st == "TechnologicalParamFolder") path.push_back("Technology objects");
+            else if (st.size() > n && st.compare(st.size() - n, n, kSub) == 0) path.push_back(f.name);
+            else if (!st.empty() || !f.name.empty()) path.push_back(f.name.empty() ? st : f.name);
+            if (st == "SystemBlocksFolder" || st == "SystemDataTypeFolder") b.system = true;
+            if (!f.hasParent) break;
+            k = f.parent;
+        }
+        for (auto it = path.rbegin(); it != path.rend(); ++it) b.folder += (b.folder.empty() ? "" : "/") + *it;
+    }
+
+    void dbKind(const Object& o, std::string& kind, std::string& instanceOf) {
+        const char* general = o.attr("IGeneralDataBlockSourceData", "Type") ? "IGeneralDataBlockSourceData"
+                                                                             : "IGeneralDatablockData";
+        const std::string type = attrStr(o, general, "Type");
+        if (type == "SharedDB") kind = "global";
+        else if (type.compare(0, 3, "IDB") == 0) kind = "instance";
+        else kind = type;
+        if (kind == "instance") {
+            instanceOf = attrStr(o, general, "OfName");
+            Key src;
+            if (instanceOf.empty() && o.relationTarget(relGeneratedFrom_, src)) instanceOf = nameOf(src);
+        }
+    }
+
+    static void readFlag(const Object& o, const char* name, Flag& f) {
+        const Value* v = o.expandoValue(name);
+        if (!v || v->type != Value::Type::Bool) return;
+        f.stored = true;
+        f.on = v->b;
+    }
+
+    BlockInfo makeInfo(const Object& o) {
+        const char* core = "ICoreAttributes";
+        const char* gen = o.attr("IGeneralBlockSourceData", "Number") ? "IGeneralBlockSourceData" : "IGeneralBlockData";
+        BlockInfo b;
+        b.id = o.id;
+        b.name = attrStr(o, core, "Name");
+        b.plc = plcOf(o);
+        b.hasNumber = attrInt(o, gen, "Number", b.number) || attrInt(o, "IGeneralUserDatatypeData", "Number", b.number) ||
+                      attrInt(o, "IGeneralSystemDatatypeData", "Number", b.number);
+
+        // "OB.ProgramCycle", "FB", "DB.TO.PID.Compact.Compact_3.0"
+        const std::string subtype = attrStr(o, core, "Subtype");
+        const size_t dot = subtype.find('.');
+        b.type = attrStr(o, "IGeneralBlockSourceData", "BlockType");
+        if (b.type.empty()) b.type = attrStr(o, "IGeneralBlockData", "DosType");
+        if (b.type.empty()) b.type = subtype.substr(0, dot);
+        if (o.def && meta_.derivesFromShort(o.def->name, "DataBlockData")) dbKind(o, b.kind, b.instanceOf);
+        else if (dot != std::string::npos) b.kind = subtype.substr(dot + 1);
+
+        b.languageStored = attrStr(o, gen, "BlockLanguage");
+        b.language = languageName(b.languageStored);
+        b.protectionStored = attrStr(o, core, "Protection");
+        if (b.protectionStored == "KnowHowProtection") b.protection = "know-how";
+        else if (b.protectionStored == "WriteProtection") b.protection = "write";
+        else if (b.protectionStored == "SystemKnowHowProtection") b.protection = "system";
+        else if (b.protectionStored != "NoProtection") b.protection = b.protectionStored;
+        // Write protection of a code block is a setting of its own, next to
+        // the protection mode.
+        readFlag(o, "WriteProtection", b.writeProtection);
+        if (b.writeProtection.stored && b.writeProtection.on && b.protection != "write")
+            b.protection += b.protection.empty() ? "write" : ", write";
+        b.copyProtectionStored = attrStr(o, "IGeneralBindingData", "CopyProtectionMode");
+        if (b.copyProtectionStored.empty()) b.copyProtectionStored = attrStr(o, "IGeneralBlockData", "CopyProtectionMode");
+        b.copyProtectionSerial = attrStr(o, "IGeneralBindingData", "CopyProtectionSerialNumber");
+        if (b.copyProtectionSerial.empty())
+            b.copyProtectionSerial = attrStr(o, "IGeneralBlockData", "CopyProtectionSerialNumber");
+        if (b.copyProtectionStored == "BindToPLC") b.copyProtection = "cpu";
+        else if (b.copyProtectionStored == "BindToSDCard") b.copyProtection = "memory-card";
+        else if (b.copyProtectionStored != "NoBinding") b.copyProtection = b.copyProtectionStored;
+        folderOf(o, b);
+
+        b.title = attrText(o, core, "Comment");
+        for (uint32_t rel : {relBlockComment_, relBlockCommentCode_, relBlockCommentData_}) {
+            Key k;
+            Object text;
+            if (rel && o.relationTarget(rel, k) && decodeKey(k, text)) {
+                b.comment = attrText(text, "ICoreTextRepository", "Text");
+                break;
+            }
+        }
+        b.author = attrStr(o, "IPlcHeaderData", "HeaderAuthor");
+        b.family = attrStr(o, "IPlcHeaderData", "HeaderFamily");
+        b.userId = attrStr(o, "IPlcHeaderData", "HeaderName");
+        b.version = attrStr(o, "IPlcHeaderData", "HeaderVersion");
+        b.hasAccess = attrBool(o, "IGeneralBlockSourceData", "OnlySymbolicAccess", b.symbolicAccessOnly) ||
+                      attrBool(o, "IIecplObjectData", "OnlySymbolicAccess", b.symbolicAccessOnly);
+
+        b.created = attrStr(o, core, "CreationTime");
+        b.modified = attrStr(o, "ITimestampData", "Modified");
+        b.codeModified = attrStr(o, "ITimestampData", "CodeModified");
+        b.interfaceModified = attrStr(o, "ITimestampData", "InterfaceModified");
+
+        // The result of the last compilation is an object of its own; older
+        // projects keep the two times on the block.
+        b.compileNeeded = attrStr(o, "IGeneralBlockSourceData", "CompileArtifacts");
+        if (b.compileNeeded.empty()) b.compileNeeded = attrStr(o, "IGeneralBlockData", "CompileStatus");
+        b.compiled = attrStr(o, "IGeneralBlockData", "CompileTime");
+        b.downloaded = attrStr(o, "IGeneralBlockData", "DownloadTime");
+        Key bin;
+        Object result;
+        // Memory sizes are those of the last compilation. TIA Portal shows
+        // none for a block that has to be compiled again, so neither does
+        // tiaconv; a data type takes load memory only.
+        const bool stale = !b.compileNeeded.empty() && b.compileNeeded != "UpToDate";
+        const bool dataType = b.type == "UDT" || b.type == "SDT";
+        if (relBinaries_ && o.relationTarget(relBinaries_, bin) && decodeKey(bin, result)) {
+            for (const char* set : {"IGeneralBlockResultData", "ILoadableObjectOmspData"}) {
+                if (b.compiled.empty()) b.compiled = attrStr(result, set, "CompileTime");
+                if (b.downloaded.empty()) b.downloaded = attrStr(result, set, "DownloadTime");
+                if (stale) continue;
+                b.hasLoadMemory = b.hasLoadMemory || attrInt(result, set, "LoadMemoryRequired", b.loadMemory);
+                if (!dataType)
+                    b.hasWorkMemory = b.hasWorkMemory || attrInt(result, set, "WorkMemoryRequired", b.workMemory);
+            }
+        }
+        // The size TIA Portal lists under Program info > Resources is kept on
+        // the block itself; it is removed when the block changes.
+        if (const Value* v = o.expandoValue("LoadMemorySize")) {
+            uint64_t u = 0;
+            if (v->asUInt(u) && !stale) {
+                b.hasLoadMemory = true;
+                b.loadMemory = static_cast<int64_t>(u);
+            }
+        }
+        if (const Value* v = o.expandoValue("DownloadHistory"))
+            if (v->type == Value::Type::String) b.downloads = parseDownloadHistory(v->s);
+        if (b.downloaded.empty() && !b.downloads.empty()) b.downloaded = b.downloads.front();
+
+        if (relSources_ && o.def && meta_.derivesFromShort(o.def->name, "CodeBlockData")) {
+            for (const auto& r : o.relations)
+                if (r.relation == relSources_ && (r.targetType || r.targetId)) ++b.networks;
+            b.hasNetworks = b.networks > 0;
+        }
+        readFlag(o, "IsWriteProtectedInAS", b.writeProtectedInDevice);
+        readFlag(o, "Unlinked", b.onlyInLoadMemory);
+        readFlag(o, "DBAccessibleFromOPCUA", b.accessibleFromOpcUa);
+        readFlag(o, "DBAccessibleFromWebserver", b.accessibleFromWebServer);
+        return b;
     }
 
     bool decodeKey(const Key& k, Object& o) const {
@@ -498,24 +715,22 @@ private:
         db.id = o.id;
         db.name = attrStr(o, "ICoreAttributes", "Name");
         db.address = attrStr(o, "ITagAddress", "LogicalAddress");
-        db.comment = attrText(o, "ICoreAttributes", "Comment");
+        db.title = attrText(o, "ICoreAttributes", "Comment");
+        for (uint32_t rel : {relBlockComment_, relBlockCommentData_}) {
+            Key k;
+            Object text;
+            if (rel && o.relationTarget(rel, k) && decodeKey(k, text)) {
+                db.comment = attrText(text, "ICoreTextRepository", "Text");
+                break;
+            }
+        }
         db.plc = plcOf(o);
         db.hasNumber = attrInt(o, "IGeneralBlockSourceData", "Number", db.number) ||
                        attrInt(o, "IGeneralBlockData", "Number", db.number);
         db.hasAccess = attrBool(o, "IGeneralBlockSourceData", "OnlySymbolicAccess", db.symbolicAccessOnly) ||
                        attrBool(o, "IIecplObjectData", "OnlySymbolicAccess", db.symbolicAccessOnly);
 
-        const char* general = o.attr("IGeneralDataBlockSourceData", "Type") ? "IGeneralDataBlockSourceData"
-                                                                             : "IGeneralDatablockData";
-        const std::string type = attrStr(o, general, "Type");
-        if (type == "SharedDB") db.kind = "global";
-        else if (type.compare(0, 3, "IDB") == 0) db.kind = "instance";
-        else db.kind = type;
-        if (db.kind == "instance") {
-            db.instanceOf = attrStr(o, general, "OfName");
-            Key src;
-            if (db.instanceOf.empty() && o.relationTarget(relGeneratedFrom_, src)) db.instanceOf = nameOf(src);
-        }
+        dbKind(o, db.kind, db.instanceOf);
 
         std::string family;
         if (const Value* v = o.expandoValue("TargetFamily"))
@@ -570,6 +785,38 @@ private:
 };
 
 }  // namespace
+
+// "FB3-638682897237619877;FB3-...;FB?-0": the block's address at each
+// download and the time as .NET ticks, newest first; 0 = never.
+std::vector<std::string> parseDownloadHistory(const std::string& stored) {
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (pos < stored.size() && out.size() < 64) {
+        size_t end = stored.find(';', pos);
+        if (end == std::string::npos) end = stored.size();
+        const std::string entry = stored.substr(pos, end - pos);
+        pos = end + 1;
+        const size_t dash = entry.rfind('-');
+        if (dash == std::string::npos || dash + 1 >= entry.size() || entry.size() - dash > 20) continue;
+        if (entry.find_first_not_of("0123456789", dash + 1) != std::string::npos) continue;
+        // The ticks carry no time zone. The newest entry is the block's
+        // DownloadTime to the millisecond, which is UTC.
+        const uint64_t ticks = std::stoull(entry.substr(dash + 1));
+        if (ticks >> 62) continue;  // not a time
+        std::string when = formatTicks(ticks);
+        if (when.empty()) continue;
+        if (when.back() != 'Z') when += 'Z';
+        out.push_back(when);
+    }
+    return out;
+}
+
+std::string languageName(const std::string& stored) {
+    // The two graphical languages of STEP 7; seen next to TIA Portal's name.
+    if (stored == "LAD_CLASSIC") return "LAD";
+    if (stored == "FBD_CLASSIC") return "FBD";
+    return stored;
+}
 
 std::string formatOffset(const BlockMember& m) {
     if (!m.hasOffset) return std::string();

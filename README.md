@@ -9,6 +9,9 @@ it:
   cabling between ports, and the configured S7 and HMI connections,
 - the security settings of each CPU: access level, PUT/GET, web server,
   OPC UA server, NTP, display protection, access control,
+- the blocks of each PLC (OB, FB, FC, DB, PLC data types) with number,
+  language, folder, know-how, write and copy protection, whether they are
+  compiled, and when they were last changed and downloaded,
 - PLC tags with data type, address and comment,
 - data blocks with their members, data types, start values, comments and,
   for blocks with standard access, absolute offsets.
@@ -24,7 +27,7 @@ engineering station.
 - output as text, JSON or CSV
 
 > **Status: early.** Checked against four public projects (V13, V15.1, V16,
-> V19) and eleven V21 test projects made for this repository. In those, every
+> V19) and thirteen V21 test project files made for this repository. In those, every
 > name, address and module was entered by hand and is read back exactly, and
 > tags and function block interfaces match what TIA Portal itself exported.
 > See [What is verified](#what-is-verified) for what is not covered yet.
@@ -91,6 +94,7 @@ Options:
 | `-j`, `--json FILE` | inventory as JSON (`-` for standard output) |
 | `-c`, `--csv FILE` | hardware inventory as CSV, one row per module or interface |
 | `--tags-csv FILE` | PLC tags as CSV, one row per tag |
+| `--block-list-csv FILE` | the list of blocks as CSV, one row per block |
 | `--blocks-csv FILE` | data block members as CSV, one row per member, nested members as `outer.inner` |
 | `--no-bom` | write the CSV files without the UTF-8 byte-order mark (see below) |
 | `--members` | print the members of every data block in the text report (the JSON always has them) |
@@ -131,14 +135,17 @@ read.
 
 ### Earlier saves
 
-A project file is only ever appended to: every save adds the objects that
-changed and leaves the old ones in place. The last line of the report says
-how many saves the file records, and `--save N` shows the project as it was
-after the N-th one, in every output format. A device or connection that was
-deleted later is there again; so is a setting before it was changed.
+A save normally appends to the project file: it adds the objects that changed
+and leaves the old ones in place. The last line of the report says how many
+saves the file records, and `--save N` shows the project as it was after the
+N-th one, in every output format. A device or connection that was deleted
+later is there again; so is a setting before it was changed.
 
-"Save as" keeps the history. Archiving a project (`.zap`) writes a new file
-with a single save.
+How far back this goes differs. "Save as" keeps the history. Archiving a
+project (`.zap`) writes a new file with a single save. And TIA Portal now and
+then rewrites the file by itself, dropping everything old: in a test this
+happened within a few saves in which blocks were compiled and protected. A
+file rewritten that way reports two saves, the first of them empty.
 
 ### Security settings
 
@@ -264,13 +271,86 @@ Excel reads the `offset` column as numbers and shows `262.0` as `262`, which
 drops the bit position. Import that column as text, or use `offset_bits` from
 the JSON.
 
+### Blocks
+
+This is `tiaconv --save 3 tests/fixtures/s11_blocks`, the rows of one PLC:
+
+    Blocks:
+      PLC        Block  Name              Kind                 Language  Protection                 Folder                  Compiled  Modified          Downloaded
+      ZZBRAVO    OB1    Main              ProgramCycle         LAD       -                          Program blocks          yes       2026-10-06 20:48  -
+      ZZBRAVO    OB30   ZZCYCLIC          CyclicInterrupt      LAD       -                          Program blocks          yes       2026-10-06 20:36  -
+      ZZBRAVO    FB1    Block_1           -                    FBD       know-how                   Program blocks          yes       2026-10-06 20:49  -
+      ZZBRAVO    FB2    Block_2           -                    STL       bound to CPU               Program blocks          no        2026-10-06 20:52  -
+      ZZBRAVO    FB77   ZZFC              -                    SCL       write                      Program blocks/Group_1  yes       2026-10-06 20:50  -
+      ZZBRAVO    DB1    DB_Standard       global               -         write-protected in device  Program blocks          yes       2026-10-06 20:47  -
+      ZZBRAVO    DB2    DB_Optimized      global               -         -                          Program blocks          yes       2026-10-05 18:21  -
+      ZZBRAVO    DB3    Block_1_DB        instance of Block_1  -         -                          Program blocks          yes       2026-10-05 18:32  -
+      ZZBRAVO    DB4    Block_2_DB        instance of Block_2  -         -                          Program blocks          yes       2026-10-05 19:01  -
+      ZZBRAVO    UDT1   User_data_type_1  -                    -         -                          PLC data types          yes       2026-10-05 17:57  -
+      Times are UTC.
+
+- **What is listed.** Organization blocks, function blocks, functions, data
+  blocks and PLC data types, for every PLC, including the blocks TIA Portal
+  keeps under "System blocks" because the program uses them (`MB_SERVER`,
+  `PID_Compact`, ...): those are loaded into the CPU like any other. System
+  functions and system data types (SFB, SFC, SDT) are counted in a line below
+  the table and listed in the JSON and the block list CSV only.
+- **Kind** is the event an OB handles (`ProgramCycle`, `CyclicInterrupt`,
+  `Startup`, ...) and, for a data block, `global` or the block it is an
+  instance of.
+- **Protection** as the project states it:
+  - `know-how`: the block is know-how protected with a password.
+  - `write`: the block is write-protected with a password.
+  - `system`: a protected block from a Siemens library.
+  - `bound to CPU` / `bound to memory card`: copy protection. The serial
+    number, when it was entered in the project, is in the JSON and CSV.
+  - `write-protected in device`: a data block the program cannot write to.
+
+  tiaconv reads these settings and nothing behind them: no password, and not
+  the code of any block, protected or not. The members of an instance data
+  block are listed even when its function block is protected: the project
+  stores them unprotected.
+- **Compiled** is `no` when the project says the block has to be compiled
+  again. TIA Portal sets that when the block is changed (not for a change of
+  its title or comment alone) and clears it when the block is compiled. A
+  block marked `no` is not what was last compiled, and so not what was last
+  downloaded.
+- **Modified** is the last time TIA Portal changed the block. That is not
+  always an edit by a person: compiling a block can set it too.
+- **Downloaded** is the last time the block was downloaded to a device *from
+  this project file*, `-` if never. The JSON has the history the project
+  keeps (up to 20 downloads per block). A CPU can have been loaded from
+  another copy of the project since, so this says what the file knows, not
+  what is in the CPU. Not compared with TIA Portal yet.
+- **Folder** is the place in the project tree, with the folder names of the
+  English user interface and the user's own group names.
+- In the JSON the list is `blocks`; `--block-list-csv FILE` writes it as CSV
+  (`--blocks-csv` is something else: the members of the data blocks).
+- The JSON and the CSV also have: title, comment, author, family, version
+  and user-defined ID, optimized access, creation time, time of the last
+  compilation, load and work memory in bytes, and the number of networks.
+  The memory sizes are the ones TIA Portal lists under Program info >
+  Resources; like TIA Portal, tiaconv gives none for a block that has to be
+  compiled again.
+- For a data block they also say whether it is **reachable from OPC UA and
+  from the web server**: `accessible_from_opc_ua` and
+  `accessible_from_web_server` are `false` when the box in the block's
+  attributes was unticked, and empty (`null`) when it was never touched,
+  which on a new block means ticked. Whether anything can really get at the
+  block that way also depends on the CPU: its firmware must have the
+  feature and the server must be switched on (see Security settings).
+- Times are UTC.
+
 ### Tags and data blocks
 
 - **Tags** are the PLC tags of the tag tables. System constants (hardware
   identifiers) and user constants are not listed, so a table that TIA Portal
   shows as `Default tag table [49]` can have 4 tags here: the other 45 are
   system constants.
-- **Comments** are shown after `//`. When a comment exists in several
+- A data block is shown with its **title** after `//` (its comment if it has
+  no title); the JSON has both. Up to version 0.6.0 the title was called
+  `comment`.
+- **Comments** of tags and members are shown after `//`. When a comment exists in several
   languages, one is shown: the project's default text if it has one,
   otherwise the first language stored. `--objects` has all of them. Members
   of library blocks carry Siemens' own comments. Comments are not read from
@@ -311,8 +391,8 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 
 | | |
 |---|---|
-| File structure | Every byte of the fifteen project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match. |
-| Object decoding | All 24 022 objects decode without an out-of-range read. |
+| File structure | Every byte of the seventeen project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match. |
+| Object decoding | All 26 873 objects decode without an out-of-range read. |
 | Device name, IP address, mask, router, PROFINET name, subnet | Read back exactly as entered in the V21 test projects, each at the step where it was entered. |
 | Order number, type, firmware | For the V16 sample all three match what its author documented; for the V19 sample the CPU type does. In the V21 test projects all three were confirmed by the person who configured them. |
 | Which attributes are stored | The rule reproduces, for all 2 629 object types listed there, the resolved layout table that the V13 sample carries; and with it every plain attribute segment of all samples is covered exactly, byte for byte, with two exceptions (one audit-trail object in each of two projects). `tools/check_storage_rule.py` repeats both checks. |
@@ -321,7 +401,8 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | Port connections | V21: two cables drawn in the topology view appear, one per save, between the ports they were drawn between. |
 | S7 connections | V21: a connection between two PLCs of the project and one to an unspecified partner appear in the save in which they were made, with the end points, partner address and local and partner IDs of TIA Portal's connection table; a deleted connection disappears. **Not checked:** other connection types configured in the network view, connections over PROFIBUS or MPI. |
 | HMI connections | V15.1 and V19 samples only: one connection each, between the panel and the PLC of the project, with the addresses of those two devices. **Not compared with TIA Portal**, and no test project has one. |
-| Earlier saves (`--save`) | V21: two test projects with 41 saves of one known action each; the report for save N shows exactly the actions up to N. V13 sample: four saves are found and the modification date steps back accordingly, but what was done in each is not known. |
+| Earlier saves (`--save`) | V21: test projects with 55 saves of one known action each; the report for save N shows exactly the actions up to N. One of them was rewritten by TIA Portal along the way and lost its history; the copy from before is kept as a fixture of its own. V13 sample: four saves are found and the modification date steps back accordingly, but what was done in each is not known. |
+| Blocks | V21: a test project with one action per save: a new function block and a cyclic interrupt OB appear with type, number, language and kind; a block moved into a group shows the group; a number set by hand, title, comment, author, family, version and user-defined ID read back as entered, for a code block and a data block; know-how protection set and removed, write protection, copy protection with its serial number, a data block write-protected in the device and the two "accessible from" options each show in the save in which they were set; a change makes the block "not compiled", compiling makes every block "compiled". The block numbers match two screenshots of the project tree, and one block's protection page matches what is reported for it. V19 sample: title, comment, author, family and version of the author's five function blocks are those in the SCL sources published with the project. The time stamps of one block match its "Time stamps" page, the network counts of two OBs match the editor, and the load and work memory of all ten blocks of a PLC match Program info > Resources. **Not checked:** the download times (none of the test projects was ever downloaded; in the public samples they lie within the project's lifetime), fail-safe blocks, languages other than LAD, FBD, STL and SCL. |
 | Tags | V21: the eight tags of the test project's tag table are identical to TIA Portal's own export of that table (name, data type, address, comment), and the number of tags per table matches the project tree. V13 sample: the four system-memory tags have the addresses TIA Portal assigns to them (`%MB1`, `%M1.1` .. `%M1.3`). |
 | Data block members, types, sections, start values, comments | V21: the instance block of a function block is identical to the source TIA Portal generated for it (four members: name, type, section, start value, comment); two global blocks with a PLC data type inside are identical, row by row, to what TIA Portal's block editor shows (name, type, start value, including the defaults of the data type); block numbers and kinds match the project tree. V19 sample: all 150 members of the five instance blocks of the author's own function blocks, nested instances and structures included, are identical to the declarations in the SCL sources published next to the project, 93 comments among them. V16 sample: the local port in the connection block (502) is the port the example's client program connects to; interface 64 and connection type `16#0B` are the usual values for a TCP connection of an S7-1200. V13: parameters and defaults of Siemens library blocks are as documented (`MB_SERVER.IP_PORT := 502`). |
 | Offsets | V21: all twelve offsets of a standard block (Bool, Byte, Int, DInt, Real, Date, String, arrays, a nested PLC data type) are the ones in the Offset column of TIA Portal's block editor. In the ten blocks of the V13 and V15.1 samples that have offsets they are consistent with the sizes of the data types. Offsets in instance blocks with standard access: V13 sample only, **not compared with TIA Portal**. |
@@ -336,15 +417,16 @@ and data blocks with nested types, sections and start values.
 `tests/fixtures_test.cpp` reads the V21 test projects in `tests/fixtures`:
 eight that differ from each other by one known change each, one with a small
 program whose tag table and block source were exported from TIA Portal for
-comparison, one in which a security setting was changed before each of 23 saves, and
-one in which the network was built up in the same way (stations, IO systems,
-cables, connections); those two are read as they were after every save. Corrupted and truncated
+comparison, one in which a security setting was changed before each of 23 saves, one in
+which the network was built up in the same way (stations, IO systems, cables,
+connections) and one in which blocks were added, protected and compiled;
+those are read as they were after every save. Corrupted and truncated
 files are rejected or read partially with a warning; they must never crash the
 tool.
 
 ## How it works
 
-A project keeps all its data in `System/PEData.plf`: an append-only list of
+A project keeps all its data in `System/PEData.plf`: a list of
 objects, plus an XML description of every object type. `tiaconv` reads that
 description first and uses it to decode the objects, so it does not rely on
 fixed offsets per TIA version. Details, and what is still unknown, are in

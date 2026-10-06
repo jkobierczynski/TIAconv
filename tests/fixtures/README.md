@@ -92,6 +92,60 @@ network: one action per save. Any step can be looked at with
 | 70 | right of `ZZROLE` on ZZDELTA changed to "HMI access"; the access level showed "HMI access" |
 | 71 | ... changed to "Full access"; the access level showed "Full access (no protection)" |
 
+`s11_blocks_a` and `s11_blocks` continue from `s10_connections`, for the list
+of blocks. They are **the same project at two moments**: TIA Portal rewrote
+the project file during the test and dropped the history, so the copy taken
+after save 80 is kept next to the final file. All actions are on ZZBRAVO
+unless stated.
+
+`s11_blocks_a` (80 saves):
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 72, 73 | saved without a change; "Save as" `s11_blocks` |
+| 74 | new function block `ZZFC`, language SCL, number assigned by TIA Portal (FB3) |
+| 75 | new organization block "Cyclic interrupt", `ZZCYCLIC`, LAD (OB30) |
+| 76 | new group in "Program blocks" (it kept the name `Group_1`), `ZZFC` moved into it |
+| 77 | `ZZFC`: number set by hand, 77 |
+| 78 | `ZZFC` > Properties > Information: title `ZZTITLE`, comment `ZZCOMMENT`, author `ZZAUTH`, family `ZZFAM`, version `1.2`, user-defined ID `ZZID` |
+| 79 | `DB_Standard`: title `ZZDBTITLE`, comment `ZZDBCOMMENT` |
+| 80 | `DB_Standard` > Attributes: "Data block write-protected in the device" ticked |
+
+Then, each followed by a save that is no longer in any file: a `;` typed as
+the code of `ZZFC`; ZZBRAVO compiled (software, only changes); `Block_1`
+know-how protected; `ZZFC` write-protected.
+
+`s11_blocks` (9 saves; the file as TIA Portal rewrote it, then appended to):
+
+| save | |
+|---|---|
+| 1 | nothing but the type model |
+| 2 | the state after the four actions above. Screenshots taken then: the project tree (Main [OB1], ZZCYCLIC [OB30], Block_1 [FB1] with a lock, Block_2 [FB2], Block_1_DB [DB3], Block_2_DB [DB4], DB_Optimized [DB2], DB_Standard [DB1], Group_1 > ZZFC [FB77]) and the Protection page of `Block_1` ("The block is protected", write protection not defined, copy protection "No binding") |
+| 3 | `Block_2` > Properties > Protection > Copy protection: bound to the serial number of the CPU, entered by hand: `S C-ZZ99887766` |
+| 4 | know-how protection of `Block_1` removed (the password was changed first, in the same save) |
+| 5 | `ZZCYCLIC` deleted |
+| 6 | new global data block `ZZDB` (DB5). Screenshot of its Attributes page: "Only store in load memory" and "Data block write-protected in the device" unticked, "Optimized block access" ticked, the two "accessible" boxes ticked and greyed out (this CPU's firmware has no OPC UA) |
+| 7 | on ZZCHARLIE: new global data block `ZZDB2` (DB1) |
+| 8 | `ZZDB2` > Attributes: "Data block accessible from OPC UA" unticked |
+| 9 | `ZZDB2` > Attributes: "Data block accessible via Web server" unticked |
+
+Three more screenshots were taken at the end, on ZZBRAVO, and the test holds
+what they show:
+
+- Program info > Resources: load memory and work memory of every block
+  (Main 4374 / 173 bytes, Block_1 3436 / 82, ZZFC 2906 / 82, DB_Standard
+  5824 / 3166, DB_Optimized 5622 / 3268, Block_1_DB 1659 / 180, Block_2_DB
+  1645 / 180, User_data_type_1 912), and "?" for `Block_2` and `ZZDB`, which
+  have to be compiled again.
+- `ZZFC` > Properties > Time stamps, in local time (UTC+2): created 10:35:50
+  PM, modified 10:50:22 PM, interface modified 10:39:56 PM, code modified
+  10:48:10 PM, load-relevant 10:50:22 PM.
+- OB1 `Main` in the editor: three networks (two block calls and an empty
+  one), block title `"Main Program Sweep (Cycle)"`, quotes included.
+
+OB1 `Main` of ZZCHARLIE has one network, an empty one, as counted in TIA
+Portal.
+
 An HMI connection is missing: adding an HMI device, a Basic panel included,
 needs a WinCC licence that was not available.
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jurgen Kobierczynski
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The PEData.plf container: a file header followed by an append-only list of
+// The PEData.plf container: a file header followed by a list of
 // object blocks. See docs/FORMAT.md.
 #pragma once
 
@@ -44,7 +44,8 @@ struct SaveMarker {
 struct ContainerOptions {
     bool verifyHashes = false;
     // Read the project as it was after this many saves; 0 = as it is now.
-    // The file is append-only, so every saved state is still in it.
+    // Saves append to the file, so earlier states are usually still in it
+    // (TIA Portal rewrites the file now and then, which drops them).
     size_t throughSave = 0;
 };
 
