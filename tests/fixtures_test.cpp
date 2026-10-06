@@ -409,6 +409,202 @@ int main() {
         const tia::Module* c = module(l.inv, "ZZCHARLIE");
         CHECK(c && c->firmware == "V4.1" && c->orderNumber == "6ES7 511-1AL03-0AB0" && c->interfaces.size() == 1);
         CHECK(module(l.inv, "Virtual CP interface port_1") == nullptr);
+
+        // What decides about access. Only the newest CPU has user management;
+        // on it the access level is not what protects the CPU.
+        current = "s09_security: what decides about access";
+        auto protection = [&](size_t save, const char* plc) {
+            Loaded at = load("s09_security", save);
+            const tia::Module* m = module(at.inv, plc);
+            return m ? tia::accessProtection(m->security) : std::string("?");
+        };
+        CHECK(protection(51, "ZZALPHA") == "access_levels" && protection(51, "ZZBRAVO") == "access_levels");
+        CHECK(protection(28, "ZZBRAVO") == "access_levels");  // before anything was set
+        CHECK(protection(46, "ZZCHARLIE") == "users_and_roles");
+        CHECK(protection(50, "ZZCHARLIE") == "none");
+        CHECK(protection(51, "ZZCHARLIE") == "users_and_roles_and_access_levels");
+        const tia::Module* a = module(l.inv, "ZZALPHA");
+        const tia::Module* b = module(l.inv, "ZZBRAVO");
+        CHECK(a && b && c && !a->security.userManagement && !b->security.userManagement && c->security.userManagement);
+        CHECK(c && c->security.functionRightSet == "PlcDeviceFunctionRights.UmacFunctionRights_S71500V41");
+    }
+    {
+        // s10_connections: network, IO systems, port cabling and connections,
+        // again one change per save (see tests/fixtures/README.md).
+        using I = tia::Inventory;
+        auto subnetMember = [](const I& v, const std::string& module) {
+            for (const auto& s : v.subnets)
+                for (const auto& m : s.members)
+                    if (m.module == module) return true;
+            return false;
+        };
+        auto ioOf = [](const I& v, const std::string& controller) -> const tia::IoSystem* {
+            for (const auto& s : v.ioSystems)
+                if (s.controller == controller) return &s;
+            return nullptr;
+        };
+        auto conn = [](const I& v, const std::string& name) -> const tia::Connection* {
+            for (const auto& c : v.connections)
+                if (c.name == name) return &c;
+            return nullptr;
+        };
+        struct Step {
+            size_t save;
+            const char* what;
+            bool (*holds)(const I&, decltype(subnetMember)&, decltype(ioOf)&, decltype(conn)&);
+        };
+        const Step steps[] = {
+            {53, "start: only ZZALPHA on the subnet, nothing else configured",
+             [](const I& v, auto& onNet, auto&, auto&) {
+                 return v.devices.size() == 3 && onNet(v, "ZZALPHA") && !onNet(v, "ZZBRAVO") && !onNet(v, "ZZCHARLIE") &&
+                        v.ioSystems.empty() && v.portLinks.empty() && v.connections.empty();
+             }},
+            {54, "ZZBRAVO attached to PN/IE_1",
+             [](const I& v, auto& onNet, auto&, auto&) { return onNet(v, "ZZBRAVO") && !onNet(v, "ZZCHARLIE"); }},
+            {55, "ZZCHARLIE: address 192.168.77.13, attached to PN/IE_1",
+             [](const I& v, auto& onNet, auto&, auto&) {
+                 const tia::Interface* i = firstInterface(v, "ZZCHARLIE");
+                 return onNet(v, "ZZCHARLIE") && i && i->ip == "192.168.77.13" && v.devices.size() == 3;
+             }},
+            {56, "ET 200SP station ZZIO1 added, not assigned: listed as a device of the project, on no subnet",
+             [](const I& v, auto& onNet, auto&, auto&) {
+                 const tia::Module* m = module(v, "IO device_1");
+                 return v.devices.size() == 4 && v.devices[3].name == "ZZIO1" && v.devices[3].inProject && m &&
+                        m->orderNumber == "6ES7 155-6AU02-0BN0" && m->firmware == "V6.4" && m->ioController.empty() &&
+                        !onNet(v, "IO device_1") && v.ioSystems.empty();
+             }},
+            {57, "ZZIO1 assigned to ZZBRAVO: an IO system with one device; TIA Portal gave it 192.168.77.1",
+             [](const I& v, auto& onNet, auto& io, auto&) {
+                 const tia::IoSystem* s = io(v, "ZZBRAVO");
+                 const tia::Module* m = module(v, "IO device_1");
+                 return v.ioSystems.size() == 1 && s && s->name == "PROFINET IO-System" && s->hasNumber &&
+                        s->number == 100 && s->subnet == "PN/IE_1" && s->devices.size() == 1 &&
+                        s->devices[0].device == "ZZIO1" && s->devices[0].module == "IO device_1" &&
+                        s->devices[0].ip == "192.168.77.1" && onNet(v, "IO device_1") && m && m->ioController == "ZZBRAVO";
+             }},
+            {58, "second station added and assigned to ZZCHARLIE: a second IO system",
+             [](const I& v, auto&, auto& io, auto&) {
+                 const tia::IoSystem* b = io(v, "ZZBRAVO");
+                 const tia::IoSystem* c = io(v, "ZZCHARLIE");
+                 return v.devices.size() == 5 && v.ioSystems.size() == 2 && b && b->devices.size() == 1 && c &&
+                        c->number == 100 && c->devices.size() == 1 && c->devices[0].module == "IO device_2" &&
+                        c->devices[0].ip == "192.168.77.2";
+             }},
+            {59, "second station reassigned to ZZBRAVO: ZZCHARLIE's IO system stays, empty",
+             [](const I& v, auto&, auto& io, auto&) {
+                 const tia::IoSystem* b = io(v, "ZZBRAVO");
+                 const tia::IoSystem* c = io(v, "ZZCHARLIE");
+                 const tia::Module* m = module(v, "IO device_2");
+                 return b && b->devices.size() == 2 && b->devices[1].module == "IO device_2" && c && c->devices.empty() &&
+                        m && m->ioController == "ZZBRAVO" && v.portLinks.empty();
+             }},
+            {60, "cable ZZBRAVO port 1 - IO device_1 port 1",
+             [](const I& v, auto&, auto&, auto&) {
+                 if (v.portLinks.size() != 1) return false;
+                 const tia::PortLink& l = v.portLinks[0];
+                 return l.a.module == "ZZBRAVO" && l.a.port == "X1 P1" && l.b.device == "ZZIO1" &&
+                        l.b.module == "IO device_1" && l.b.port == "X1 P1R";
+             }},
+            {61, "cable IO device_1 port 2 - IO device_2 port 1",
+             [](const I& v, auto&, auto&, auto&) {
+                 if (v.portLinks.size() != 2) return false;
+                 const tia::PortLink& l = v.portLinks[1];
+                 return l.a.module == "IO device_1" && l.a.port == "X1 P2R" && l.b.module == "IO device_2" &&
+                        l.b.port == "X1 P1R" && v.connections.empty();
+             }},
+            // The Connections table of TIA Portal showed for this one: local
+            // end point ZZBRAVO, local ID 100 (hex), partner ID 100, partner
+            // ZZCHARLIE, and the same from ZZCHARLIE's side.
+            {62, "S7 connection ZZBRAVO - ZZCHARLIE: two halves, reported once",
+             [](const I& v, auto&, auto&, auto& cn) {
+                 const tia::Connection* c = cn(v, "S7_Connection_1");
+                 return v.connections.size() == 1 && c && c->kind == "S7" && c->bothSides &&
+                        c->local.module == "ZZBRAVO" && c->local.interface == "X1" && c->local.ip == "192.168.77.12" &&
+                        c->partner.module == "ZZCHARLIE" && c->partner.ip == "192.168.77.13" && c->localId == 0x100 &&
+                        c->hasPartnerId && c->partnerId == 0x100 && c->oneWay.stored && !c->oneWay.on &&
+                        c->partnerAddress.empty();
+             }},
+            // ... and for this one: local ID 101 (hex), partner "Unspecified".
+            {63, "S7 connection from ZZBRAVO to a partner outside the project, 192.168.77.99",
+             [](const I& v, auto&, auto&, auto& cn) {
+                 const tia::Connection* c = cn(v, "S7_Connection_2");
+                 return v.connections.size() == 2 && c && c->kind == "S7" && !c->bothSides &&
+                        c->local.module == "ZZBRAVO" && c->partner.device.empty() && c->partner.module.empty() &&
+                        c->partnerAddress == "192.168.77.99" && c->localId == 0x101 && c->oneWay.on &&
+                        c->activeEstablishment.on;
+             }},
+            {64, "S7_Connection_1 deleted",
+             [](const I& v, auto&, auto&, auto& cn) {
+                 return v.connections.size() == 1 && !cn(v, "S7_Connection_1") && cn(v, "S7_Connection_2") &&
+                        v.ioSystems.size() == 2 && v.portLinks.size() == 2;
+             }},
+            // An S7-1200 with firmware V4.7. TIA Portal showed "Enable access
+            // control" selected, "Use access control via access levels" not
+            // ticked, and the access level greyed out at "No access
+            // (complete protection)".
+            {65, "S7-1200 with firmware V4.7 added: user management, access level 4 shown as No access",
+             [](const I& v, auto& onNet, auto&, auto&) {
+                 const tia::Module* m = module(v, "PLC_1");
+                 return v.devices.size() == 6 && m && m->kind == "controller" && m->firmware == "V4.7" &&
+                        m->orderNumber == "6ES7 214-1BG40-0XB0" && !onNet(v, "PLC_1") && m->security.userManagement &&
+                        m->security.functionRightSet == "PlcDeviceFunctionRights.S71200V4_7_1" &&
+                        !m->security.accessControl.stored && tia::accessProtection(m->security) == "users_and_roles" &&
+                        m->security.accessLevel == 4 &&
+                        m->security.accessLevelName == "No access (complete protection)";
+             }},
+            {66, "renamed to ZZDELTA; \"Use access control via access levels\" ticked",
+             [](const I& v, auto&, auto&, auto&) {
+                 const tia::Module* m = module(v, "ZZDELTA");
+                 return !module(v, "PLC_1") && m && m->security.accessControlViaAccessLevels.on &&
+                        tia::accessProtection(m->security) == "users_and_roles_and_access_levels" &&
+                        m->security.accessLevel == 4;
+             }},
+            // The level cannot be chosen on this CPU: it follows from the
+            // rights of the Anonymous user. Entering passwords changes
+            // nothing that tiaconv reads.
+            {67, "a password entered on the access control page: nothing else changes",
+             [](const I& v, auto&, auto&, auto&) {
+                 const tia::Module* m = module(v, "ZZDELTA");
+                 return m && m->security.accessLevel == 4 && !m->security.accessControl.stored &&
+                        tia::accessProtection(m->security) == "users_and_roles_and_access_levels" &&
+                        v.connections.size() == 1 && v.ioSystems.size() == 2;
+             }},
+            // Users and roles: a role with the right "Read access" on
+            // ZZDELTA, then the role given to the Anonymous user. Only then
+            // did the greyed-out access level in TIA Portal move to "Read
+            // access", and the stored level with it.
+            {68, "role with the right Read access on ZZDELTA created: nothing changes yet",
+             [](const I& v, auto&, auto&, auto&) {
+                 const tia::Module* m = module(v, "ZZDELTA");
+                 return m && m->security.accessLevel == 4;
+             }},
+            {69, "role assigned to the Anonymous user: access without login is Read access",
+             [](const I& v, auto&, auto&, auto&) {
+                 const tia::Module* m = module(v, "ZZDELTA");
+                 return m && m->security.accessLevel == 2 && m->security.accessLevelName == "Read access";
+             }},
+            {70, "right of the role changed to HMI access",
+             [](const I& v, auto&, auto&, auto&) {
+                 const tia::Module* m = module(v, "ZZDELTA");
+                 return m && m->security.accessLevel == 3 && m->security.accessLevelName == "HMI access";
+             }},
+            {71, "right of the role changed to Full access",
+             [](const I& v, auto&, auto&, auto&) {
+                 const tia::Module* m = module(v, "ZZDELTA");
+                 const tia::Module* c = module(v, "ZZCHARLIE");
+                 return m && m->security.accessLevel == 1 && m->security.accessLevelName == "Full access (no protection)" &&
+                        tia::accessProtection(m->security) == "users_and_roles_and_access_levels" && c &&
+                        c->security.accessLevel == 4;
+             }},
+        };
+        for (const Step& st : steps) {
+            Loaded l = load("s10_connections", st.save);
+            CHECK(l.hashErrors == 0 && l.inv.stats.objectsWithProblems == 0);
+            current = "s10_connections after save " + std::to_string(st.save) + ": " + st.what;
+            CHECK(st.holds(l.inv, subnetMember, ioOf, conn));
+        }
+        current = "s10_connections, whole file";
+        CHECK(load("s10_connections").saves == 71);
     }
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

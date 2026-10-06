@@ -65,6 +65,36 @@ history of the earlier projects; the steps are:
 | 50 | | access control disabled |
 | 51 | | access control enabled, "Use access control via access levels" ticked |
 
-All passwords in it are throwaway test passwords.
+`s10_connections` continues from `s09_security` in the same way, for the
+network: one action per save. Any step can be looked at with
+`tiaconv --save N tests/fixtures/s10_connections`.
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 52 | saved without a change |
+| 53 | "Save as" `s10_connections` |
+| 54 | ZZBRAVO attached to subnet `PN/IE_1` |
+| 55 | ZZCHARLIE: address 192.168.77.13, attached to `PN/IE_1` |
+| 56 | ET 200SP station added (IM 155-6 PN ST, 6ES7 155-6AU02-0BN0, firmware V6.4), named `ZZIO1`, not assigned to a controller |
+| 57 | `ZZIO1` assigned to ZZBRAVO. TIA Portal created "PROFINET IO-System (100)" and gave the station the address 192.168.77.1 |
+| 58 | second station of the same type added and assigned to ZZCHARLIE (address 192.168.77.2). It was named `ZZI02`, with a zero |
+| 59 | second station reassigned to ZZBRAVO |
+| 60 | topology view: ZZBRAVO port 1 connected to port 1 of the first station |
+| 61 | topology view: port 2 of the first station connected to port 1 of the second |
+| 62 | S7 connection `S7_Connection_1` between ZZBRAVO and ZZCHARLIE. TIA Portal's connection table lists it from both sides, local ID 100 and partner ID 100 (hex) |
+| 63 | S7 connection `S7_Connection_2` from ZZBRAVO to an unspecified partner at 192.168.77.99, local ID 101 (hex) |
+| 64 | `S7_Connection_1` deleted |
+| 65 | fourth PLC added: CPU 1214C AC/DC/Rly, 6ES7 214-1BG40-0XB0, firmware V4.7, not attached to the subnet. Its access control page showed "Enable access control" selected, "Use access control via access levels" not ticked, and the access level table greyed out with "No access (complete protection)" selected |
+| 66 | PLC renamed to `ZZDELTA`; "Use access control via access levels" ticked. The access level stayed greyed out: on this CPU it follows from the rights of the Anonymous user and cannot be chosen |
+| 67 | a password entered in the access level table |
+| 68 | Security settings > Users and roles: role `ZZROLE` created with the runtime right "Read access" on ZZDELTA. The access level shown on ZZDELTA did not move |
+| 69 | `ZZROLE` assigned to the Anonymous user. The greyed-out access level of ZZDELTA now showed "Read access" |
+| 70 | right of `ZZROLE` on ZZDELTA changed to "HMI access"; the access level showed "HMI access" |
+| 71 | ... changed to "Full access"; the access level showed "Full access (no protection)" |
+
+An HMI connection is missing: adding an HMI device, a Basic panel included,
+needs a WinCC licence that was not available.
+
+All passwords in these projects are throwaway test passwords.
 
 `tests/fixtures_test.cpp` checks these facts.

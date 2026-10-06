@@ -925,7 +925,11 @@ void testAccessLevels() {
     // the same number means something else there, and what has not been
     // checked gets no name at all
     CHECK(tia::accessLevelName("S71500.CPU", "V1.8", 3) == "HMI access");
-    CHECK(tia::accessLevelName("S71200.CPU", "V4.1", 3).empty());
+    CHECK(tia::accessLevelName("S71200.CPU", "V4.7", 1) == "Full access (no protection)");
+    CHECK(tia::accessLevelName("S71200.CPU", "V4.7", 2) == "Read access");
+    CHECK(tia::accessLevelName("S71200.CPU", "V4.7", 3) == "HMI access");
+    CHECK(tia::accessLevelName("S71200.CPU", "V4.7", 4) == "No access (complete protection)");
+    CHECK(tia::accessLevelName("S71200.CPU", "V2.2", 4).empty());
     CHECK(tia::accessLevelName("S71200.CPU", "", 2).empty());
     CHECK(tia::accessLevelName("S7300.CPU", "V3.3", 2).empty());
     CHECK(tia::accessLevelName("S71500.CPU", "V1.8", 9).empty());
@@ -933,6 +937,26 @@ void testAccessLevels() {
     CHECK(none.empty());
     none.putGet.stored = true;
     CHECK(!none.empty());
+
+    // what decides about access: the level on a CPU without user management,
+    // users and roles on one that has it, nothing once access control is off
+    tia::Security old;
+    old.hasAccessLevel = true;
+    CHECK(tia::accessProtection(old) == "access_levels");
+    CHECK(tia::accessProtection(tia::Security()) == "access_levels");
+    tia::Security current;
+    current.userManagement = true;
+    CHECK(!current.empty());
+    CHECK(tia::accessProtection(current) == "users_and_roles");
+    current.accessControl = {true, true};
+    CHECK(tia::accessProtection(current) == "users_and_roles");
+    current.accessControlViaAccessLevels = {true, true};
+    CHECK(tia::accessProtection(current) == "users_and_roles_and_access_levels");
+    current.accessControlViaAccessLevels = {true, false};
+    CHECK(tia::accessProtection(current) == "users_and_roles");
+    current.accessControl = {true, false};
+    current.accessControlViaAccessLevels = {true, true};
+    CHECK(tia::accessProtection(current) == "none");
 }
 
 }  // namespace

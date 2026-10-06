@@ -20,6 +20,7 @@ struct ReportContext {
     size_t hashErrors = 0;
     bool allDevices = false;  // text and CSV: include devices outside the project tree
     bool members = false;     // text: print the members of every data block
+    size_t shownSave = 0;     // the project is shown as it was after this save; 0: as it is now
 };
 
 void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog, const ReportContext& ctx);

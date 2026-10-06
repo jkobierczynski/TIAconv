@@ -101,6 +101,13 @@ std::string pad(const std::string& s, size_t w) {
 
 namespace {
 
+// Connection IDs the way TIA Portal shows them.
+std::string hexId(int64_t v) {
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "%llX", static_cast<unsigned long long>(v));
+    return buf;
+}
+
 std::string joined(const std::vector<std::string>& v) {
     std::string out;
     for (const auto& s : v) out += (out.empty() ? "" : ", ") + s;
@@ -116,14 +123,29 @@ void textSecurity(std::ostream& out, const Module& m) {
     std::vector<std::string> unset;
     out << in << "Security settings:\n";
     in = "          ";
+    const std::string protection = accessProtection(s);
+    // CPUs with user management first say what decides, because the access
+    // level below is only part of it there, or nothing at all.
+    if (protection == "none") {
+        out << in << "Access control: disabled, the CPU has no access protection\n";
+    } else if (protection != "access_levels") {
+        out << in << "Access control: enabled" << (s.accessControl.stored ? "" : " (TIA Portal default)")
+            << ", by users and roles"
+            << (protection == "users_and_roles_and_access_levels" ? " and by access levels with passwords" : "") << "\n";
+    }
     if (s.hasAccessLevel) {
-        out << in << "Access level: ";
+        // With user management the level is not chosen: TIA Portal derives
+        // it from the rights of the Anonymous user and stores it.
+        out << in << (protection == "access_levels" || protection == "none" ? "Access level: " : "Access without login: ");
         if (s.accessLevelName.empty()) out << "level " << s.accessLevel;
         else out << s.accessLevelName;
+        if (protection == "none") out << "  (stored, not in force)";
         out << "\n";
-    } else {
+    } else if (protection == "access_levels") {
         unset.push_back("access level");
     }
+    if (protection != "access_levels" && protection != "none")
+        out << in << "Users and roles: not read, the project stores their names and passwords in protected form\n";
     auto line = [&](const Setting& v, const char* label, const char* on, const char* off, const char* unsetName) {
         if (v.stored) out << in << label << ": " << (v.on ? on : off) << "\n";
         else unset.push_back(unsetName);
@@ -148,12 +170,6 @@ void textSecurity(std::ostream& out, const Module& m) {
     }
     line(s.displayProtection, "Display protection", "on", "off", "display protection");
     // Settings of current CPUs: said only when stored, an older CPU has none of them.
-    if (s.accessControl.stored)
-        out << in << "Access control: " << (s.accessControl.on ? "enabled" : "disabled")
-            << (s.accessControl.on && s.accessControlViaAccessLevels.stored && s.accessControlViaAccessLevels.on
-                    ? ", via access levels"
-                    : "")
-            << "\n";
     if (s.hasCommunicationMode) {
         out << in << "PG/PC and HMI communication: ";
         if (s.communicationMode == 0) out << "legacy communication permitted";
@@ -169,7 +185,8 @@ void textSecurity(std::ostream& out, const Module& m) {
 std::string settingJson(const Setting& v) { return v.stored ? tf(v.on) : "null"; }
 
 void jsonSecurity(std::ostream& out, const Security& s) {
-    out << "{\"access_level\": ";
+    out << "{\"access_protection\": " << q(accessProtection(s)) << ", \"user_management\": " << tf(s.userManagement)
+        << ", \"function_right_set\": " << qn(s.functionRightSet) << ", \"access_level\": ";
     if (s.hasAccessLevel) out << s.accessLevel;
     else out << "null";
     out << ", \"access_level_name\": " << qn(s.accessLevelName) << ", \"put_get\": " << settingJson(s.putGet)
@@ -406,6 +423,8 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
                 if (!i.subnet.empty()) out << "  subnet " << i.subnet;
                 out << "\n";
             }
+            if (!m.ioController.empty())
+                out << "        IO device of " << m.ioController << (m.ioSystem.empty() ? "" : " (" + m.ioSystem + ")") << "\n";
             if (m.kind == "controller") textSecurity(out, m);
         }
     }
@@ -418,10 +437,79 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
                 out << "      " << pad(dash(m.ip), 17) << m.device << " / " << m.module << " / " << m.node << "\n";
         }
     }
+    if (!inv.ioSystems.empty()) {
+        out << "\nIO systems:\n";
+        for (const auto& sys : inv.ioSystems) {
+            out << "  " << dash(sys.name);
+            if (sys.hasNumber) out << " (" << sys.number << ")";
+            out << "  controller " << dash(sys.controller);
+            if (!sys.subnet.empty()) out << "  subnet " << sys.subnet;
+            out << "\n";
+            if (sys.devices.empty()) out << "      no devices assigned\n";
+            size_t wDev = 0, wMod = 0;
+            for (const auto& d : sys.devices) {
+                wDev = std::max(wDev, width(d.device));
+                wMod = std::max(wMod, width(d.module));
+            }
+            for (const auto& d : sys.devices)
+                out << "      " << pad(dash(d.device), wDev + 2) << pad(dash(d.module), wMod + 2) << dash(d.ip) << "\n";
+        }
+    }
+    if (!inv.portLinks.empty()) {
+        out << "\nPort connections:\n";
+        auto end = [](const PortEnd& e) {
+            std::string s = e.device;
+            if (!e.module.empty()) s += (s.empty() ? "" : " / ") + e.module;
+            if (!e.port.empty()) s += (s.empty() ? "" : " / ") + e.port;
+            return s.empty() ? std::string("-") : s;
+        };
+        size_t wA = 0;
+        for (const auto& l : inv.portLinks) wA = std::max(wA, width(end(l.a)));
+        for (const auto& l : inv.portLinks) out << "  " << pad(end(l.a), wA + 2) << "<->  " << end(l.b) << "\n";
+    }
+    if (!inv.connections.empty()) {
+        out << "\nConnections:\n";
+        auto end = [](const ConnectionEnd& e, const std::string& address) {
+            std::string s = e.device;
+            if (!e.module.empty() && e.module != e.device) s += (s.empty() ? "" : " / ") + e.module;
+            if (!e.interface.empty()) s += " / " + e.interface;
+            const std::string& ip = e.ip.empty() ? address : e.ip;
+            if (!ip.empty()) s += (s.empty() ? "" : " ") + ("(" + ip + ")");
+            return s.empty() ? std::string("-") : s;
+        };
+        auto partner = [&](const Connection& cn) {
+            // nothing of the partner is in the project: only what was typed in
+            if (cn.partner.device.empty() && cn.partner.module.empty())
+                return cn.partnerAddress.empty() ? std::string("unspecified partner")
+                                                 : "partner outside the project, " + cn.partnerAddress;
+            return end(cn.partner, cn.partnerAddress);
+        };
+        size_t wName = 4, wKind = 4, wFrom = 4, wTo = 2;
+        for (const auto& cn : inv.connections) {
+            wName = std::max(wName, width(cn.name));
+            wKind = std::max(wKind, width(cn.kind));
+            wFrom = std::max(wFrom, width(end(cn.local, std::string())));
+            wTo = std::max(wTo, width(partner(cn)));
+        }
+        out << "  " << pad("Name", wName + 2) << pad("Type", wKind + 2) << pad("From", wFrom + 2) << pad("To", wTo + 2)
+            << "Notes\n";
+        for (const auto& cn : inv.connections) {
+            std::vector<std::string> notes;
+            // TIA Portal shows these IDs for S7 connections, in hexadecimal.
+            if (cn.kind == "S7" && cn.hasLocalId) notes.push_back("local ID " + hexId(cn.localId) + " (hex)");
+            if (cn.kind == "S7" && cn.hasPartnerId) notes.push_back("partner ID " + hexId(cn.partnerId) + " (hex)");
+            if (cn.overTcpIp.stored && cn.overTcpIp.on) notes.push_back("S7 over TCP/IP");
+            if (cn.oneWay.stored) notes.push_back(cn.oneWay.on ? "one-way" : "two-way");
+            if (cn.bothSides) notes.push_back("configured on both sides");
+            out << "  " << pad(dash(cn.name), wName + 2) << pad(dash(cn.kind), wKind + 2)
+                << pad(end(cn.local, std::string()), wFrom + 2) << pad(partner(cn), wTo + 2) << joined(notes) << "\n";
+        }
+    }
     textProgram(out, prog, ctx);
     out << "\n" << inv.stats.liveObjects << " objects in " << inv.stats.blocks << " blocks";
     if (inv.stats.deletedObjects) out << ", " << inv.stats.deletedObjects << " deleted";
     if (inv.stats.saves) out << ", " << inv.stats.saves << " save" << (inv.stats.saves == 1 ? "" : "s") << " recorded";
+    if (ctx.shownSave) out << "; shown as it was after save " << ctx.shownSave;
     if (ctx.hashesVerified) out << ", block hashes " << (ctx.hashErrors ? "FAILED" : "ok");
     out << ".\n";
     if (hidden)
@@ -438,7 +526,10 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
         << ", \"blocks\": " << inv.stats.blocks << ", \"live_objects\": " << inv.stats.liveObjects
         << ", \"deleted_objects\": " << inv.stats.deletedObjects << ", \"hashes_verified\": "
         << tf(ctx.hashesVerified) << ", \"hash_errors\": " << ctx.hashErrors << ", \"save_count\": "
-        << inv.stats.saves << ", \"saves\": [";
+        << inv.stats.saves << ", \"shown_save\": ";
+    if (ctx.shownSave) out << ctx.shownSave;
+    else out << "null";
+    out << ", \"saves\": [";
     for (size_t i = 0; i < inv.saves.size(); ++i) out << (i ? ", " : "") << q(inv.saves[i]);
     out << "]},\n";
     if (inv.project.found) {
@@ -464,6 +555,8 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
             else out << "null";
             out << ", \"item_type\": " << m.itemType << ", \"container\": " << qn(m.container)
                 << ", \"author\": " << qn(m.author) << ", \"modified\": " << qn(m.modified);
+            if (!m.ioController.empty())
+                out << ", \"io_controller\": " << q(m.ioController) << ", \"io_system\": " << qn(m.ioSystem);
             if (m.kind == "controller") {
                 out << ", \"security\": ";
                 jsonSecurity(out, m.security);
@@ -503,6 +596,60 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
         out << "]}";
     }
     out << (inv.subnets.empty() ? "],\n" : "\n  ],\n");
+    out << "  \"io_systems\": [";
+    for (size_t si = 0; si < inv.ioSystems.size(); ++si) {
+        const IoSystem& sys = inv.ioSystems[si];
+        out << (si ? ",\n" : "\n") << "    {\"name\": " << qn(sys.name) << ", \"type\": " << qn(sys.kind)
+            << ", \"number\": ";
+        if (sys.hasNumber) out << sys.number;
+        else out << "null";
+        out << ", \"controller_device\": " << qn(sys.controllerDevice) << ", \"controller\": " << qn(sys.controller)
+            << ", \"subnet\": " << qn(sys.subnet) << ", \"devices\": [";
+        for (size_t di = 0; di < sys.devices.size(); ++di) {
+            const IoDevice& d = sys.devices[di];
+            out << (di ? ", " : "") << "{\"device\": " << qn(d.device) << ", \"module\": " << qn(d.module)
+                << ", \"interface\": " << qn(d.interface) << ", \"ip\": " << qn(d.ip) << "}";
+        }
+        out << "]}";
+    }
+    out << (inv.ioSystems.empty() ? "],\n" : "\n  ],\n");
+    out << "  \"port_links\": [";
+    for (size_t li = 0; li < inv.portLinks.size(); ++li) {
+        const PortLink& l = inv.portLinks[li];
+        auto end = [&](const PortEnd& e) {
+            out << "{\"device\": " << qn(e.device) << ", \"module\": " << qn(e.module) << ", \"port\": " << qn(e.port)
+                << "}";
+        };
+        out << (li ? ",\n" : "\n") << "    {\"a\": ";
+        end(l.a);
+        out << ", \"b\": ";
+        end(l.b);
+        out << "}";
+    }
+    out << (inv.portLinks.empty() ? "],\n" : "\n  ],\n");
+    out << "  \"connections\": [";
+    for (size_t ci = 0; ci < inv.connections.size(); ++ci) {
+        const Connection& cn = inv.connections[ci];
+        auto end = [&](const ConnectionEnd& e) {
+            out << "{\"device\": " << qn(e.device) << ", \"module\": " << qn(e.module) << ", \"interface\": "
+                << qn(e.interface) << ", \"ip\": " << qn(e.ip) << "}";
+        };
+        out << (ci ? ",\n" : "\n") << "    {\"name\": " << qn(cn.name) << ", \"type\": " << qn(cn.kind)
+            << ", \"local\": ";
+        end(cn.local);
+        out << ", \"partner\": ";
+        end(cn.partner);
+        out << ", \"partner_address\": " << qn(cn.partnerAddress) << ", \"local_id\": ";
+        if (cn.hasLocalId) out << cn.localId << ", \"local_id_hex\": " << q(hexId(cn.localId));
+        else out << "null, \"local_id_hex\": null";
+        out << ", \"s7_over_tcp_ip\": " << settingJson(cn.overTcpIp) << ", \"one_way\": " << settingJson(cn.oneWay)
+            << ", \"active_establishment\": " << settingJson(cn.activeEstablishment)
+            << ", \"configured_on_both_sides\": " << tf(cn.bothSides) << ", \"partner_id\": ";
+        if (cn.hasPartnerId) out << cn.partnerId << ", \"partner_id_hex\": " << q(hexId(cn.partnerId));
+        else out << "null, \"partner_id_hex\": null";
+        out << "}";
+    }
+    out << (inv.connections.empty() ? "],\n" : "\n  ],\n");
     jsonProgram(out, prog);
     out << "  \"stats\": {\"decoded_hardware_objects\": " << inv.stats.decodedObjects
         << ", \"objects_with_problems\": " << inv.stats.objectsWithProblems << ", \"unattached_items\": "
@@ -519,7 +666,7 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
            "interface,interface_item,ip,mask,router,ip_assigned_elsewhere,ip_set_by_user,bus_address,profinet_name,"
            "profinet_name_auto,subnet,access_level,access_level_name,put_get,web_server,web_server_https_only,"
            "web_server_interfaces,opc_ua_server,ntp_servers,display_protection,access_control,"
-           "legacy_pg_hmi_communication,config_data_protection\r\n";
+           "legacy_pg_hmi_communication,config_data_protection,io_controller,io_system,access_protection\r\n";
     auto row = [&](const Device& d, const Module& m, const Interface* i) {
         const bool ctl = m.kind == "controller";
         const Security& s = m.security;
@@ -540,7 +687,8 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
                                     ctl ? joined(s.ntpServers) : "", ctl ? settingCsv(s.displayProtection) : "",
                                     ctl ? settingCsv(s.accessControl) : "",
                                     ctl && s.hasCommunicationMode && s.communicationMode == 0 ? "yes" : "",
-                                    ctl ? settingCsv(s.configDataProtection) : ""};
+                                    ctl ? settingCsv(s.configDataProtection) : "", m.ioController, m.ioSystem,
+                                    ctl ? accessProtection(s) : ""};
         bool first = true;
         for (const auto& col : cols) {
             if (!first) out << ',';

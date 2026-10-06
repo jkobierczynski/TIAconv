@@ -66,6 +66,12 @@ struct Security {
     std::vector<std::string> webServerInterfaces;  // interfaces with web server access switched on
     Setting opcUaServer;
     Setting displayProtection;             // password on the CPU display
+    // The CPU has user management: access is decided by users and roles,
+    // which the project stores in protected form and tiaconv does not read.
+    bool userManagement = false;
+    // TIA Portal's name for the set of user rights this CPU knows. Older
+    // CPUs have one too (OPC UA users) without having user management.
+    std::string functionRightSet;
     Setting accessControl;                 // user-based access control (current CPUs)
     Setting accessControlViaAccessLevels;  // ... with the older access levels and passwords
     Setting configDataProtection;          // protection of confidential PLC configuration data
@@ -80,6 +86,13 @@ struct Security {
 
     bool empty() const;
 };
+
+// What decides who may access the CPU, as far as the project says:
+//   "access_levels"    the access level and its passwords (CPUs without user management)
+//   "users_and_roles"  users and roles, which are not read
+//   "users_and_roles_and_access_levels"  both
+//   "none"             access control is disabled
+std::string accessProtection(const Security& s);
 
 // Name of an access level for a CPU type ("S71500.CPU") and firmware ("V1.8");
 // empty for combinations that have not been checked against TIA Portal.
@@ -101,6 +114,8 @@ struct Module {
     std::string modified;
     std::vector<Interface> interfaces;
     Security security;       // controllers only
+    std::string ioController;  // IO devices: the controller they are assigned to
+    std::string ioSystem;      // ... and its IO system
 };
 
 struct Device {
@@ -122,6 +137,58 @@ struct Subnet {
     std::vector<SubnetMember> members;
 };
 
+// One end of a configured connection, as the device that owns it sees it.
+struct ConnectionEnd {
+    std::string device, module, interface, ip;
+};
+
+// A connection configured in the project (not one opened by the program at
+// run time with TCON and the like).
+struct Connection {
+    uint64_t id = 0;
+    std::string name;
+    std::string kind;            // "HMI", or the stored type name
+    ConnectionEnd local;         // the side the connection is configured on
+    ConnectionEnd partner;       // empty parts where the partner is not in the project
+    // Both partners are in the project and each holds its half; the two halves
+    // are reported as one connection, seen from the side that opens it.
+    bool bothSides = false;
+    bool hasPartnerId = false;
+    int64_t partnerId = 0;       // connection ID on the partner, when bothSides
+    std::string partnerAddress;  // address typed in for a partner outside the project
+    bool hasLocalId = false;
+    int64_t localId = 0;         // connection ID on the owning device
+    Setting overTcpIp;           // S7 protocol carried over TCP/IP
+    Setting oneWay;              // only the owning side sends requests
+    Setting activeEstablishment; // the owning side opens the connection
+};
+
+// One device of an IO system.
+struct IoDevice {
+    std::string device, module, interface, ip;
+};
+
+// A PROFINET IO system (or other master system): one controller and the
+// devices assigned to it.
+struct IoSystem {
+    uint64_t id = 0;
+    std::string name;            // e.g. "PROFINET IO-System"
+    std::string kind;            // stored type name, e.g. "IOSystem_PROFINET"
+    bool hasNumber = false;
+    int64_t number = 0;          // 100 for the first PROFINET IO system of a controller
+    std::string controllerDevice, controller;
+    std::string subnet;
+    std::vector<IoDevice> devices;
+};
+
+// A cable between two ports, as drawn in the topology view.
+struct PortEnd {
+    std::string device, module, port;
+};
+struct PortLink {
+    PortEnd a, b;
+};
+
 struct ProjectInfo {
     bool found = false;
     std::string name, created, modified, author, lastModifiedBy;
@@ -141,6 +208,9 @@ struct Inventory {
     ProjectInfo project;
     std::vector<Device> devices;
     std::vector<Subnet> subnets;
+    std::vector<IoSystem> ioSystems;
+    std::vector<PortLink> portLinks;
+    std::vector<Connection> connections;
     std::vector<std::string> saves;  // commit timestamps (older layout only)
     InventoryStats stats;
     std::vector<std::string> warnings;

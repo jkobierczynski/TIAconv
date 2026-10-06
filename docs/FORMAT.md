@@ -173,9 +173,9 @@ space in the segment.
   result. The rule gives the same answer for every attribute of all 2 629
   object types listed there.
 - With the rule, the fixed part of a segment plus the strings and blobs it
-  points to cover the segment exactly, with no gap and no overlap, in 36 066
-  of 36 068 segments that hold no nested structure (the four public samples,
-  `s07_second`, `s08_program` and `s09_security`). The
+  points to cover the segment exactly, with no gap and no overlap, in 39 062
+  of 39 064 segments that hold no nested structure (the four public samples,
+  `s07_second`, `s08_program`, `s09_security` and `s10_connections`). The
   two others are one `HmiAuditTrailLogData` object each in the V15.1 and V19
   samples; why they differ is **unknown**.
 
@@ -333,9 +333,15 @@ Relations used:
 - `BaseDeviceItemData.Container` – what the item is plugged into (rack, CPU),
 - `NodeData.DeviceItem` – the interface a node belongs to,
 - `NodeData.Subnet` – the subnet a node is attached to,
-- `BaseDeviceData.ParentProject` – the project, for devices in the project
-  tree. Device objects under anything else are copies kept for library types
-  and versions.
+- `CoreObject.Environment` – what the object belongs to. A device of the
+  project has the project (`ProjectData`) here; the copies kept for library
+  types and versions have something else.
+- `BaseDeviceData.ParentProject` – the project, for PLC stations. A
+  distributed IO station does **not** have it: it has
+  `FolderElementData.AggregatingFolder` instead, pointing at the folder TIA
+  Portal shows as "Ungrouped devices" (`AdditionalDevicesFolder`). Testing
+  `ParentProject` alone therefore misses every IO station; `tiaconv` did
+  that up to version 0.5.0.
 
 Node expando attributes. The V21 test projects change one setting per step,
 which **verifies** the address, mask, router and PROFINET name rows; the rest
@@ -360,6 +366,85 @@ is **inferred**.
 `DeviceItemType` is a bit field (**inferred** from the samples): `0x1` rack,
 `0x2` module, `0x4` submodule, `0x8` set on CPUs, `0x4000` port, `0x80000`
 bus adapter.
+
+## IO systems, ports and connections
+
+All of this is **verified** with `tests/fixtures/s10_connections`, one action
+per save, unless marked otherwise.
+
+### IO systems
+
+An IO system is a `MastersystemData` object: name "PROFINET IO-System",
+`IDeviceItemData.ConfigObjectTypeName` = `IOSystem_PROFINET`, expando
+`PositionNumber` = the number TIA Portal shows (100).
+
+| relation | target |
+|---|---|
+| `MastersystemData.Master` | the controller's item named `IOController_PROFINET`; its `Parent` chain leads to the interface and the CPU |
+| `MastersystemData.HeadModules` | one `IODeviceModuleData` per assigned IO device; its `Parent` is the interface item of the device, then the head module, then the station |
+| `MastersystemData.Subnet` | the subnet |
+
+- Assigning a station to a controller creates the system (if the controller
+  has none yet) and the head module entry, and attaches the station to the
+  subnet. TIA Portal picked the address 192.168.77.1 for the first device,
+  the router address of another node: it does not check that.
+- Reassigning a station moves its entry to the other system's
+  `HeadModules`. The system it left **stays, without devices**.
+- An unassigned station has no entry anywhere and no subnet.
+
+PROFIBUS master systems are presumably the same object type with another
+`ConfigObjectTypeName`; **not checked**.
+
+### Port connections
+
+A cable in the topology view is the relation `DeviceItemBaseData.PortToPorts`
+on both ports, each naming the other. A port names its interface with
+`DeviceItemBaseData.Interface`. The label is the port's
+`IDeviceItemData.InvariantTypeName` (`X1 P1`; `X1 P1R`, `X1 P2R` on an
+ET 200SP bus adapter).
+
+### Connections
+
+Each end of a configured connection is an object that derives from
+`ConnectionPointData`:
+
+| | object type | `ConfigObjectTypeName` |
+|---|---|---|
+| S7 connection | `BlockConnectionPointData` | `S7ConnectionPoint` |
+| HMI connection | `HmiConnectionPointData` | `HmiConnectionPoint` |
+
+| relation | target |
+|---|---|
+| `Parent`, `Target` | the CPU the end belongs to (the HMI application on a panel) |
+| `ConnectionPointData.Conn2Nodes` | the local node (`NodeData`) |
+| `ConnectionPointData.Conn2Conn` | the other end's object, when the partner has one (S7 connection between two PLCs) |
+| `ConnectionPointData.Conn2RemoteNodes` | the partner's node, when the partner is in the project but has no object of its own (HMI connection) |
+| `ConnectionPointData.Conn2RemoteTargets` | the partner's CPU, same case |
+
+| expando attribute | meaning |
+|---|---|
+| `ConnId` | local ID as a number; TIA Portal shows it in hexadecimal (256 is `100`) |
+| `ConnS7TcpIp` | S7 over TCP/IP |
+| `ConnOneWay` | "one-way" |
+| `ConnEstablishment` | this end sets the connection up |
+| `ConnRemoteAddress` | the address typed for an unspecified partner |
+| `ConnRemoteEndPointName` | name of the partner; a row of 25 characters `1` on a connection to an unspecified partner, written by TIA Portal itself |
+
+- An S7 connection between two PLCs of the project is **two objects**, one
+  per PLC, pointing at each other with `Conn2Conn`; both have the same name
+  and `ConnId`, and `ConnEstablishment` is true on one of them. Deleting the
+  connection deletes both.
+- A connection to an unspecified partner is one object with
+  `ConnRemoteAddress` and none of the three partner relations.
+- An HMI connection is one object on the panel's side with the PLC in
+  `Conn2RemoteTargets` and `Conn2RemoteNodes`. **Seen in the V15.1 and V19 samples only**, where it matches the
+  two devices and addresses of each project; no test project has one
+  (an HMI device needs a WinCC licence in TIA Portal).
+
+Not looked at: the TSAP attributes (`ConnS7TsapId`, `ConnRemoteTsapId`,
+`ConnRemoteTsap`, ...), `ConnCharacteristics`, connections of other types (TCP, ISO-on-TCP,
+UDP configured in the network view), routed connections, connections over
+PROFIBUS or MPI.
 
 ## Controller security settings
 
@@ -389,7 +474,7 @@ The CPU itself is the `S7ControllerTargetData` object; the items below it
 
 `ProtectionLevel`:
 
-| value | S7-1500 (firmware V1.8, V4.1) | S7-1200 (firmware V2.2) |
+| value | S7-1500 (firmware V1.8, V4.1), S7-1200 (firmware V4.7) | S7-1200 (firmware V2.2) |
 |---|---|---|
 | absent, 1 | Full access (no protection) | No protection |
 | 2 | Read access | Write protection |
@@ -398,14 +483,73 @@ The CPU itself is the `S7ControllerTargetData` object; the items below it
 
 Everything in these two tables is **verified** with `s09_security`: each row
 was changed in TIA Portal V21 in a save of its own (see
-`tests/fixtures/README.md`). Two things TIA Portal does by itself showed up
-there: choosing "No access" switches PUT/GET off in the same save, and
+`tests/fixtures/README.md`). The S7-1200 with firmware V4.7 is from
+`s10_connections`. Two things TIA Portal does by itself showed up in
+`s09_security`: choosing "No access" switches PUT/GET off in the same save, and
 activating the web server on the module ticks the interface box.
 
 Also seen, not interpreted: `OmsCertificateId`, `LastLoadedOmsCertificateId`,
 `ServerCertificateId`, `AccountLockedFor`, `NoOfFailedLoginAttempts`,
 `TimeBetweenFailedLoginAttempts`, `EnableLockUserAccountAtRunTime`, the web
 server user containers and `PkiContainerCache` on the CPU.
+
+### CPUs with user management
+
+A CPU with user management has one `DeviceFunctionRightSet` object
+(namespace `Siemens.Automation.Umac.Model.AccessControl.Administration`)
+whose relation `DeviceFunctionRightSetParent` names the CPU, and one
+`SystemDeviceFunctionRightProxy` per right the CPU knows
+(`PlcDeviceFunctionRights.ProtectionLevelFullAccess`, `...ReadAccess`,
+`...HMIAccess`, `...WebReadTags`, ...). The set's
+`DeviceFunctionRightSetId` names the firmware generation:
+
+| CPU | `DeviceFunctionRightSetId` |
+|---|---|
+| S7-1500 firmware V3.1 (V19 sample) | `PlcDeviceFunctionRights.UmacFunctionRights_S71500V31` |
+| S7-1500 firmware V4.1 | `PlcDeviceFunctionRights.UmacFunctionRights_S71500V41` |
+| S7-1200 firmware V4.7 | `PlcDeviceFunctionRights.S71200V4_7_1` |
+
+The S7-1500 with firmware V1.8 and the S7-1200 with firmware V2.2 have
+neither. An S7-1500 with firmware V2.6 (V15.1 sample) has a small set,
+`PlcDeviceFunctionRights.S71500V2_6`, with rights for OPC UA users only. So
+the sign that users and roles decide about access is not the set but a right
+named `...ProtectionLevelFullAccess` whose `DeviceFunctionRightParent` is the
+CPU; `tiaconv` uses that.
+
+On these CPUs (**verified** in TIA Portal V21 on firmware V4.1 and V4.7):
+
+- `AccessControlAtRuntime` absent means access control is **enabled**; that
+  is what a new CPU shows. The V19 sample stores 0, disabled.
+- The access level cannot be chosen. TIA Portal shows it greyed out and
+  says that the level without a password "is configured via the function
+  rights of the Anonymous user". With `EnableLegacyAccessControlViaAccessLevel`
+  the password column of the table becomes editable, the level does not.
+- A new CPU stores `ProtectionLevel` 4 and TIA Portal shows "No access
+  (complete protection)".
+- **`ProtectionLevel` follows the rights of the Anonymous user** (verified on
+  the S7-1200 with firmware V4.7, one save each): a role with the right
+  "Read access" on the CPU changes nothing; assigning that role to the
+  Anonymous user sets the level to 2 and TIA Portal shows "Read access";
+  changing the role's right to "HMI access" gives 3, to "Full access" 1.
+
+How this is stored, as far as it is visible without reading anything
+protected:
+
+| object | relations |
+|---|---|
+| `CustomRole` | `RoleToDevice` → the CPU; `AssignedDeviceFunctionRight` → the right; `RoleToAssociation` → the association below |
+| `SystemDeviceFunctionRightProxy` (the right) | `DeviceFunctionRightAssignedToRole` → the role |
+| `CustomProjectUser` | `UserRoles` → the association |
+| `RoleToUserAssociation` | `Parent` → the user; `AssociationToRole` → the role; `RoleAndUserAssociationToDevice` → the CPU |
+
+The names of roles and users, and everything else about them, are attributes
+in protected form (`NameEncrypted`, `PasswordEncrypted`,
+`AssignedEngineeringFunctionRightsEncrypted`, ...).
+
+The user management of the project hangs below one `UmacRootData` object:
+the password policy, the system roles (`SystemRoleProxy`, with `ExternalId`
+`PLCAdministrator`, `PLCFAdministrator`, `PLCOperator`), the roles and the
+users. `tiaconv` reads none of it and does not work on that protection.
 
 ### Passwords
 
@@ -572,7 +716,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 8 295 | 6 402 | `tests/fixtures` (ten projects, in this repository) |
+| V21 | v14 | 10 560 | 7 803 | `tests/fixtures` (eleven projects, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -616,9 +760,17 @@ all three configured items (both CPUs and the signal module) are as decoded.
 - Offsets in instance blocks with standard access (section offset plus member
   offset) have only been seen in the V13 sample.
 - The `h` attribute of a start value.
-- Access level numbers of an S7-1200 from firmware V4 and of other CPU
-  families; other values of `OmsCommunicationMode` and `TimeSyncRole`.
+- Access level numbers of an S7-1200 with firmware V4.0 to V4.6 (assumed to
+  be those of V4.7) and of other CPU families; whether the level follows the
+  Anonymous user on an S7-1500 as it does on the S7-1200; other values of `OmsCommunicationMode` and `TimeSyncRole`.
 - User constants.
+- PROFIBUS master systems, I-devices, shared devices, MRP domains, IO systems
+  with more than one controller interface.
+- Connection types other than S7 and HMI; TSAPs; an HMI connection in a
+  project made for the purpose.
+- Whether the older layout marks saves the same way (the V13 sample has four
+  markers and its modification date steps back with `--save`, but nobody
+  recorded what was done in each).
 - Comments in V13 projects.
 - Which language TIA Portal treats as the one without a language id.
 - Technology objects and other blocks that derive from `DataBlockData`: they

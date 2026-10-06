@@ -14,7 +14,7 @@ namespace {
 
 using Key = std::pair<uint32_t, uint64_t>;
 
-enum class Role { None, Project, Device, Item, Node, Subnet };
+enum class Role { None, Project, Device, Item, Node, Subnet, Connection, IoSystem, RightSet, Right };
 
 const char kBaseDevice[] = "Siemens.Automation.DomainModel.BaseDeviceData";
 const char kBaseDeviceItem[] = "Siemens.Automation.DomainModel.BaseDeviceItemData";
@@ -122,6 +122,9 @@ struct ItemRec {
     Key container{0, 0};  // BaseDeviceItemData.Container: where it is plugged in
     bool hasContainer = false;
     bool controller = false;
+    Key interfaceItem{0, 0};  // ports: the interface they belong to
+    bool hasInterfaceItem = false;
+    std::vector<Key> portPeers;  // ports: the ports they are cabled to
 };
 
 }  // namespace
@@ -130,31 +133,42 @@ bool Security::empty() const {
     return !hasAccessLevel && !putGet.stored && !webServer.stored && !webServerHttpsOnly.stored &&
            webServerInterfaces.empty() && !opcUaServer.stored && !displayProtection.stored && !accessControl.stored &&
            !accessControlViaAccessLevels.stored && !configDataProtection.stored && !hasCommunicationMode &&
-           !hasTimeSyncRole;
+           !hasTimeSyncRole && !userManagement;
 }
 
-// Checked against TIA Portal V21 for an S7-1500 with firmware V1.8 and V4.1
-// and an S7-1200 with firmware V2.2 (tests/fixtures/s09_security). The S7-1200
-// got the four S7-1500 levels with firmware V4; that numbering has not been
-// checked, so it gets no name here.
+// What decides who may access the CPU, as far as the project says.
+//   access_levels    the access level and its passwords (CPUs without user management)
+//   users_and_roles  users and roles, which tiaconv does not read
+//   users_and_roles_and_access_levels  both
+//   none             access control is disabled
+std::string accessProtection(const Security& s) {
+    if (s.accessControl.stored && !s.accessControl.on) return "none";
+    if (!s.userManagement && !s.accessControl.stored) return "access_levels";
+    return s.accessControlViaAccessLevels.stored && s.accessControlViaAccessLevels.on
+               ? "users_and_roles_and_access_levels"
+               : "users_and_roles";
+}
+
+// Checked against TIA Portal V21 for an S7-1500 with firmware V1.8 and V4.1,
+// an S7-1200 with firmware V2.2 (tests/fixtures/s09_security) and an S7-1200
+// with firmware V4.7 (s10_connections). The S7-1200 got the four S7-1500
+// levels with firmware V4; anything else gets no name.
 std::string accessLevelName(const std::string& type, const std::string& firmware, int64_t level) {
     auto startsWith = [&](const char* p) { return type.compare(0, std::char_traits<char>::length(p), p) == 0; };
-    if (startsWith("S71500.")) {
+    const size_t digit = firmware.find_first_of("0123456789");
+    const int major = digit == std::string::npos ? 0 : std::atoi(firmware.c_str() + digit);
+    if (startsWith("S71500.") || (startsWith("S71200.") && major >= 4)) {
         switch (level) {
             case 1: return "Full access (no protection)";
             case 2: return "Read access";
             case 3: return "HMI access";
             case 4: return "No access (complete protection)";
         }
-    } else if (startsWith("S71200.")) {
-        const size_t digit = firmware.find_first_of("0123456789");
-        const int major = digit == std::string::npos ? 0 : std::atoi(firmware.c_str() + digit);
-        if (major >= 1 && major <= 3) {
-            switch (level) {
-                case 1: return "No protection";
-                case 2: return "Write protection";
-                case 3: return "Write/read protection";
-            }
+    } else if (startsWith("S71200.") && major >= 1) {
+        switch (level) {
+            case 1: return "No protection";
+            case 2: return "Write protection";
+            case 3: return "Write/read protection";
         }
     }
     return std::string();
@@ -190,6 +204,10 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
                 else if (meta.derivesFrom(t->name, kNode)) r = Role::Node;
                 else if (meta.derivesFrom(t->name, kSubnet)) r = Role::Subnet;
                 else if (meta.derivesFrom(t->name, kProject)) r = Role::Project;
+                else if (meta.derivesFromShort(t->name, "ConnectionPointData")) r = Role::Connection;
+                else if (meta.derivesFromShort(t->name, "MastersystemData")) r = Role::IoSystem;
+                else if (meta.derivesFromShort(t->name, "DeviceFunctionRightSet")) r = Role::RightSet;
+                else if (meta.derivesFromShort(t->name, "DeviceFunctionRight")) r = Role::Right;
             }
         }
         roles[type] = r;
@@ -199,8 +217,39 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
     std::map<Key, Device> devices;
     std::map<Key, ItemRec> items;
     std::map<Key, Subnet> subnets;
+    // A connection end before its nodes are resolved to devices.
+    struct ConnRec {
+        Connection conn;
+        Key self{0, 0};
+        Key peer{0, 0};  // the other half, when the partner is in the project too
+        bool hasPeer = false;
+        std::vector<Key> localNodes, remoteNodes, remoteTargets;
+    };
+    struct IoRec {
+        IoSystem sys;
+        Key master{0, 0}, subnet{0, 0};
+        bool hasMaster = false, hasSubnet = false;
+        std::vector<Key> heads;
+    };
+    std::vector<IoRec> ioRecs;
+    const uint32_t relIoMaster = meta.relationId("MastersystemData", "Master");
+    const uint32_t relIoHeads = meta.relationId("MastersystemData", "HeadModules");
+    const uint32_t relIoSubnet = meta.relationId("MastersystemData", "Subnet");
+    const uint32_t relPortPeers = meta.relationId("DeviceItemBaseData", "PortToPorts");
+    const uint32_t relPortInterface = meta.relationId("DeviceItemBaseData", "Interface");
+    const uint32_t relConnPeer = meta.relationId("ConnectionPointData", "Conn2Conn");
+    const uint32_t relRightSetOwner = meta.relationId("DeviceFunctionRightSet", "DeviceFunctionRightSetParent");
+    const uint32_t relRightOwner = meta.relationId("DeviceFunctionRight", "DeviceFunctionRightParent");
+    const uint32_t relEnvironment = meta.relationId("CoreObject", "Environment");
+    const uint32_t relFolder = meta.relationId("FolderElementData", "AggregatingFolder");
+    std::vector<ConnRec> conns;
+    const uint32_t relConnNodes = meta.relationId("ConnectionPointData", "Conn2Nodes");
+    const uint32_t relConnRemoteNodes = meta.relationId("ConnectionPointData", "Conn2RemoteNodes");
+    const uint32_t relConnRemoteTargets = meta.relationId("ConnectionPointData", "Conn2RemoteTargets");
+
     struct NodeRec {
         Interface iface;
+        Key self{0, 0};
         Key item{0, 0};
         bool hasItem = false;
         Key subnet{0, 0};
@@ -208,6 +257,12 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
     };
     std::vector<NodeRec> nodes;
     std::vector<std::pair<Key, ProjectInfo>> projects;
+    // The set of user rights TIA Portal keeps for a CPU, by its name
+    // ("...UmacFunctionRights_S71500V41"). Older CPUs have a small set too
+    // (OPC UA users). What marks a CPU with user management is that the
+    // access levels are among its rights.
+    std::vector<std::pair<Key, std::string>> rightSets;
+    std::vector<Key> accessByRights;
 
     for (const auto& kv : c.latest()) {
         const Block& b = c.blocks()[kv.second];
@@ -245,12 +300,20 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             d.id = b.id;
             d.name = o.attrString(core, "Name");
             d.type = o.attrString(core, "Subtype");
+            // A device is part of the project when its environment is the
+            // project. Stations with a controller hang directly under it;
+            // distributed IO sits in a folder ("Ungrouped devices") instead.
             Key parent;
-            if (o.relationTarget(relDeviceParent, parent)) {
-                if (const TypeDef* pt = meta.findById(parent.first)) {
-                    d.parentType = pt->shortName();
-                    d.inProject = meta.derivesFrom(pt->name, kProject);
-                }
+            const bool direct = o.relationTarget(relDeviceParent, parent);
+            if (direct || o.relationTarget(relFolder, parent))
+                if (const TypeDef* pt = meta.findById(parent.first)) d.parentType = pt->shortName();
+            Key env;
+            if (relEnvironment && o.relationTarget(relEnvironment, env)) {
+                const TypeDef* et = meta.findById(env.first);
+                d.inProject = et && meta.derivesFrom(et->name, kProject);
+            } else if (direct) {
+                const TypeDef* pt = meta.findById(parent.first);
+                d.inProject = pt && meta.derivesFrom(pt->name, kProject);
             }
             devices[key] = std::move(d);
         } else if (role == Role::Item) {
@@ -268,6 +331,11 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             m.itemType = intAttr(o, "IDeviceItemData", "DeviceItemType");
             r.controller = meta.derivesFrom(o.def->name, kControllerTarget);
             r.security = readSecurity(o);
+            r.hasInterfaceItem = relPortInterface && o.relationTarget(relPortInterface, r.interfaceItem);
+            if (relPortPeers)
+                for (const auto& rel : o.relations)
+                    if (rel.relation == relPortPeers && (rel.targetType || rel.targetId))
+                        r.portPeers.emplace_back(rel.targetType, rel.targetId);
             r.hasParent = o.relationTarget(relParent, r.parent);
             r.hasContainer = o.relationTarget(relContainer, r.container);
             items[key] = std::move(r);
@@ -276,8 +344,58 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             s.name = o.attrString(core, "Name");
             s.netType = intAttr(o, "ISubnetData", "NetType");
             subnets[key] = std::move(s);
+        } else if (role == Role::RightSet) {
+            Key owner;
+            if (relRightSetOwner && o.relationTarget(relRightSetOwner, owner))
+                rightSets.emplace_back(owner, o.attrString("IDeviceFunctionRightSetAttributes", "DeviceFunctionRightSetId"));
+        } else if (role == Role::Right) {
+            static const char kLevelRight[] = ".ProtectionLevelFullAccess";
+            const std::string name = o.attrString(core, "Name");
+            const size_t len = sizeof kLevelRight - 1;
+            Key owner;
+            if (name.size() >= len && name.compare(name.size() - len, len, kLevelRight) == 0 && relRightOwner &&
+                o.relationTarget(relRightOwner, owner))
+                accessByRights.push_back(owner);
+        } else if (role == Role::IoSystem) {
+            IoRec r;
+            r.sys.id = b.id;
+            r.sys.name = o.attrString(core, "Name");
+            r.sys.kind = o.attrString("IConfigBaseData", "ConfigObjectTypeName");
+            r.sys.hasNumber = readNumber(o, "PositionNumber", r.sys.number);
+            r.hasMaster = relIoMaster && o.relationTarget(relIoMaster, r.master);
+            r.hasSubnet = relIoSubnet && o.relationTarget(relIoSubnet, r.subnet);
+            if (relIoHeads)
+                for (const auto& rel : o.relations)
+                    if (rel.relation == relIoHeads && (rel.targetType || rel.targetId))
+                        r.heads.emplace_back(rel.targetType, rel.targetId);
+            ioRecs.push_back(std::move(r));
+        } else if (role == Role::Connection) {
+            ConnRec r;
+            r.self = key;
+            r.hasPeer = relConnPeer && o.relationTarget(relConnPeer, r.peer);
+            Connection& cn = r.conn;
+            cn.id = b.id;
+            cn.name = o.attrString(core, "Name");
+            cn.kind = o.attrString("IConfigBaseData", "ConfigObjectTypeName");
+            if (meta.derivesFromShort(o.def->name, "HmiConnectionPointData")) cn.kind = "HMI";
+            else if (cn.kind == "S7ConnectionPoint") cn.kind = "S7";
+            cn.hasLocalId = readNumber(o, "ConnId", cn.localId);
+            readSetting(o, "ConnS7TcpIp", cn.overTcpIp);
+            readSetting(o, "ConnOneWay", cn.oneWay);
+            readSetting(o, "ConnEstablishment", cn.activeEstablishment);
+            if (const Value* v = o.expandoValue("ConnRemoteAddress"))
+                if (v->type == Value::Type::String) cn.partnerAddress = v->s;
+            for (const auto& rel : o.relations) {
+                const Key target{rel.targetType, rel.targetId};
+                if (!rel.relation || (!target.first && !target.second)) continue;
+                if (rel.relation == relConnNodes) r.localNodes.push_back(target);
+                else if (rel.relation == relConnRemoteNodes) r.remoteNodes.push_back(target);
+                else if (rel.relation == relConnRemoteTargets) r.remoteTargets.push_back(target);
+            }
+            conns.push_back(std::move(r));
         } else if (role == Role::Node) {
             NodeRec n;
+            n.self = key;
             Interface& i = n.iface;
             i.name = o.attrString(core, "Name");
             i.nodeId = o.attrString("INodeData", "NodeID");
@@ -387,6 +505,185 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
         items[target].module.interfaces.push_back(n.iface);
     }
 
+    // Connections name their ends by node; say which device and module that is.
+    std::map<Key, ConnectionEnd> nodeEnds;
+    auto endOfModule = [&](Key mod) {
+        ConnectionEnd e;
+        auto it = items.find(mod);
+        if (it == items.end()) return e;
+        e.module = it->second.module.name;
+        Key dev;
+        if (owningDevice(mod, dev)) e.device = devices[dev].name;
+        return e;
+    };
+    for (const auto& n : nodes) {
+        if (!n.hasItem || !items.count(n.item)) continue;
+        Key mod = n.item;
+        if (items[n.item].module.orderNumber.empty()) owningModule(n.item, mod);
+        ConnectionEnd e = endOfModule(mod);
+        e.interface = n.iface.name;
+        e.ip = n.iface.ip;
+        nodeEnds[n.self] = std::move(e);
+    }
+    for (auto& r : conns) {
+        Connection& cn = r.conn;
+        for (const Key& k : r.localNodes) {
+            auto e = nodeEnds.find(k);
+            if (e != nodeEnds.end()) {
+                cn.local = e->second;
+                break;
+            }
+        }
+        for (const Key& k : r.remoteNodes) {
+            auto e = nodeEnds.find(k);
+            if (e != nodeEnds.end()) {
+                cn.partner = e->second;
+                break;
+            }
+        }
+        // The partner controller is named even when no interface of it is.
+        if (cn.partner.module.empty())
+            for (const Key& k : r.remoteTargets) {
+                ConnectionEnd e = endOfModule(k);
+                if (!e.module.empty()) {
+                    cn.partner = e;
+                    break;
+                }
+            }
+    }
+    // A connection between two devices of the project is stored as two
+    // halves that point at each other. Report it once, from the side that
+    // opens the connection (the lower object id when that does not decide).
+    std::map<Key, size_t> connIndex;
+    for (size_t i = 0; i < conns.size(); ++i) connIndex[conns[i].self] = i;
+    std::vector<bool> dropped(conns.size(), false);
+    for (size_t i = 0; i < conns.size(); ++i) {
+        ConnRec& r = conns[i];
+        if (!r.hasPeer || dropped[i]) continue;
+        auto p = connIndex.find(r.peer);
+        if (p == connIndex.end() || p->second == i) continue;
+        ConnRec& other = conns[p->second];
+        if (!other.hasPeer || other.peer != r.self || dropped[p->second]) continue;
+        const bool mineOpens = r.conn.activeEstablishment.stored && r.conn.activeEstablishment.on;
+        const bool theirsOpens = other.conn.activeEstablishment.stored && other.conn.activeEstablishment.on;
+        const bool keepMine = mineOpens != theirsOpens ? mineOpens : r.self < other.self;
+        ConnRec& keep = keepMine ? r : other;
+        ConnRec& drop = keepMine ? other : r;
+        keep.conn.partner = drop.conn.local;
+        keep.conn.bothSides = true;
+        keep.conn.hasPartnerId = drop.conn.hasLocalId;
+        keep.conn.partnerId = drop.conn.localId;
+        dropped[keepMine ? p->second : i] = true;
+    }
+    for (size_t i = 0; i < conns.size(); ++i) {
+        Connection& cn = conns[i].conn;
+        if (dropped[i]) continue;
+        // Ends kept for library copies have no place in the project.
+        if (cn.local.device.empty() && cn.partner.device.empty() && cn.partnerAddress.empty()) continue;
+        inv.connections.push_back(std::move(cn));
+    }
+    std::stable_sort(inv.connections.begin(), inv.connections.end(), [](const Connection& a, const Connection& b) {
+        if (a.local.device != b.local.device) return a.local.device < b.local.device;
+        return a.id < b.id;
+    });
+
+    // The controller an item belongs to: the item itself or one above it.
+    auto controllerOf = [&](Key k, Key& out) {
+        for (int depth = 0; depth < 64; ++depth) {
+            auto it = items.find(k);
+            if (it == items.end()) return false;
+            if (it->second.controller) {
+                out = k;
+                return true;
+            }
+            if (!it->second.hasParent) return false;
+            k = it->second.parent;
+        }
+        return false;
+    };
+    // Interfaces by the item they sit on.
+    std::map<Key, const Interface*> itemInterface;
+    for (const auto& n : nodes)
+        if (n.hasItem) itemInterface.emplace(n.item, &n.iface);
+
+    // IO systems: the controller behind the "master" item, and the device
+    // behind each head module.
+    for (auto& r : ioRecs) {
+        IoSystem& sys = r.sys;
+        Key ctrl;
+        if (r.hasMaster && controllerOf(r.master, ctrl)) {
+            sys.controller = items[ctrl].module.name;
+            Key dev;
+            if (owningDevice(ctrl, dev)) sys.controllerDevice = devices[dev].name;
+        }
+        if (r.hasSubnet) {
+            auto s = subnets.find(r.subnet);
+            if (s != subnets.end()) sys.subnet = s->second.name;
+        }
+        for (const Key& head : r.heads) {
+            auto h = items.find(head);
+            if (h == items.end()) continue;
+            IoDevice d;
+            Key mod;
+            if (owningModule(head, mod)) {
+                d.module = items[mod].module.name;
+                items[mod].module.ioController = sys.controller;
+                items[mod].module.ioSystem = sys.name;
+                Key dev;
+                if (owningDevice(mod, dev)) d.device = devices[dev].name;
+            }
+            // the head module hangs on the interface it is reached through
+            if (h->second.hasParent) {
+                auto i = itemInterface.find(h->second.parent);
+                if (i != itemInterface.end()) {
+                    d.interface = i->second->name;
+                    d.ip = i->second->ip;
+                }
+            }
+            sys.devices.push_back(std::move(d));
+        }
+        // Library copies of a controller keep a copy of its IO system.
+        Key dev;
+        if (!r.hasMaster || !owningDevice(r.master, dev) || !devices[dev].inProject) continue;
+        inv.ioSystems.push_back(std::move(sys));
+    }
+    std::stable_sort(inv.ioSystems.begin(), inv.ioSystems.end(),
+                     [](const IoSystem& a, const IoSystem& b) { return a.id < b.id; });
+
+    // Port to port cabling. Each port names the other; keep one of the two.
+    auto portEnd = [&](Key port) {
+        PortEnd e;
+        auto it = items.find(port);
+        if (it == items.end()) return e;
+        const Module& pm = it->second.module;
+        e.port = pm.typeName.empty() ? pm.name : pm.typeName;
+        // A port can carry the order number of a plug-in adapter; the module
+        // it belongs to is found through its interface.
+        Key from = it->second.hasInterfaceItem ? it->second.interfaceItem
+                                               : (it->second.hasParent ? it->second.parent : port);
+        Key mod;
+        if (owningModule(from, mod)) {
+            e.module = items[mod].module.name;
+            Key dev;
+            if (owningDevice(mod, dev)) e.device = devices[dev].name;
+        }
+        return e;
+    };
+    for (const auto& kv : items)
+        for (const Key& peer : kv.second.portPeers) {
+            auto other = items.find(peer);
+            if (other == items.end()) continue;
+            const auto& back = other->second.portPeers;
+            const bool mutual = std::find(back.begin(), back.end(), kv.first) != back.end();
+            if (mutual && !(kv.first < peer)) continue;
+            Key dev;
+            if (!owningDevice(kv.first, dev) || !devices[dev].inProject) continue;
+            PortLink link;
+            link.a = portEnd(kv.first);
+            link.b = portEnd(peer);
+            inv.portLinks.push_back(std::move(link));
+        }
+
     // Settings sit on the controller and on the items below it; bring them
     // together on the controller.
     for (auto& kv : items) {
@@ -429,6 +726,14 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             const Module& im = kv.second.module;
             s.webServerInterfaces.push_back(im.typeName.empty() ? im.name : im.typeName);
         }
+    }
+    for (const auto& rs : rightSets) {
+        auto it = items.find(rs.first);
+        if (it != items.end() && it->second.controller) it->second.module.security.functionRightSet = rs.second;
+    }
+    for (const Key& k : accessByRights) {
+        auto it = items.find(k);
+        if (it != items.end() && it->second.controller) it->second.module.security.userManagement = true;
     }
     for (auto& kv : items) {
         Module& m = kv.second.module;

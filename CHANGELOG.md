@@ -1,0 +1,53 @@
+# Changes
+
+## 0.6.0
+
+- PROFINET IO systems: which IO device is assigned to which controller.
+- Port connections (the cabling of the topology view).
+- Configured S7 and HMI connections, including connections to a partner
+  outside the project.
+- `--save N` shows the project as it was after its N-th save.
+- Fixed: distributed IO stations (ET 200SP and the like, under "Ungrouped
+  devices") were only listed with `--all-devices`. They are devices of the
+  project and are now listed by default, in all outputs.
+- CPUs with user management (S7-1500 with firmware V3.1 and V4.1, S7-1200
+  with firmware V4.7 in the samples) are recognised. For them the report
+  says that users and roles decide about access and that those are not
+  read, and prints the stored access level as "Access without login": it is
+  the level TIA Portal derives from the rights of the Anonymous user.
+  "Access control: disabled" now says that the CPU has no access protection.
+- The access levels of an S7-1200 with firmware V4 or later are named.
+- Hardware CSV: new columns `io_controller`, `io_system` and
+  `access_protection` at the end. JSON: new top-level `io_systems`,
+  `port_links`, `connections`; `source.shown_save`; per controller
+  `access_protection`, `user_management`, `function_right_set`.
+
+## 0.5.0
+
+- Security settings of each CPU: access level, PUT/GET, web server, OPC UA
+  server, NTP, display protection, access control, legacy communication,
+  protection of configuration data.
+- The number of saves a file records.
+- Interfaces that exist only inside TIA Portal ("Virtual ...") are hidden
+  unless `--all-items` is given.
+
+## 0.4.2
+
+- CSV files start with a UTF-8 byte-order mark; `--no-bom` leaves it out.
+
+## 0.4.1
+
+- Fixed: default values of a PLC data type were not shown for members of
+  that type in a data block.
+
+## 0.4.0
+
+- Comments of tags, data blocks and data block members.
+
+## 0.3.0
+
+- PLC tags and data blocks: members, data types, start values, offsets.
+
+## 0.2.0
+
+- Hardware and network inventory; text, JSON and CSV output.

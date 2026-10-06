@@ -52,6 +52,7 @@ const char kUsage[] =
     "      --all-devices   also list device objects outside the project tree\n"
     "      --all-items     list every device item, including ports and internal items\n"
     "      --verify        check the SHA-256 hash of every block (V14+ projects)\n"
+    "      --save N        show the project as it was after its N-th save\n"
     "  -q, --quiet         do not print the text report\n"
     "  -h, --help          show this help\n"
     "  -V, --version       show the version\n"
@@ -62,6 +63,7 @@ const char kUsage[] =
 struct Args {
     std::string input, json, csv, objects, meta, tagsCsv, blocksCsv;
     bool allDevices = false, allItems = false, verify = false, quiet = false, members = false, noBom = false;
+    size_t save = 0;  // 0: the current state
 };
 
 // Writes to a file, or to standard output for "-".
@@ -114,6 +116,13 @@ int run(const std::vector<std::string>& argv) {
         else if (s == "--all-devices") a.allDevices = true;
         else if (s == "--all-items") a.allItems = true;
         else if (s == "--verify") a.verify = true;
+        else if (s == "--save") {
+            std::string v;
+            value(v);
+            if (v.empty() || v.size() > 9 || v.find_first_not_of("0123456789") != std::string::npos || std::stoul(v) == 0)
+                throw std::invalid_argument("--save needs the number of a save, 1 or higher");
+            a.save = std::stoul(v);
+        }
         else if (s == "-q" || s == "--quiet") a.quiet = true;
         else if (s.size() > 1 && s[0] == '-') throw std::invalid_argument("unknown option " + s);
         else if (a.input.empty()) a.input = s;
@@ -127,7 +136,13 @@ int run(const std::vector<std::string>& argv) {
     tia::LoadedSource src = tia::loadProjectData(a.input);
     tia::ContainerOptions copt;
     copt.verifyHashes = a.verify;
+    copt.throughSave = a.save;
     tia::Project project(tia::Container::parse(std::move(src.data), copt));
+    if (a.save && a.save > project.container().saveCount())
+        throw std::invalid_argument(project.container().saveCount()
+                                        ? "--save " + std::to_string(a.save) + ": the file records " +
+                                              std::to_string(project.container().saveCount()) + " saves"
+                                        : std::string("--save: this file records no saves"));
     if (project.meta().empty())
         throw tia::ParseError("no type model found in the file; it may be encrypted or of an unknown version");
 
@@ -148,6 +163,7 @@ int run(const std::vector<std::string>& argv) {
     ctx.hashErrors = project.container().hashErrors();
     ctx.allDevices = a.allDevices;
     ctx.members = a.members;
+    ctx.shownSave = a.save;
 
     // Keep standard output clean when a machine-readable format goes there.
     const bool stdoutTaken = a.json == "-" || a.csv == "-" || a.objects == "-" || a.meta == "-" ||
