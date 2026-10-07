@@ -1,5 +1,18 @@
 # Changes
 
+## 0.8.0
+
+- Constants: the hardware identifiers of each PLC with the module, interface
+  or port each one stands for, and user constants with data type, value,
+  comment and tag table. The JSON (`constants`) and the new
+  `--constants-csv` also have the other system constants (OB numbers,
+  process image partitions).
+- The type model reader now knows the relations that are declared as the
+  other direction of a relation of another type (185 of them in a V21
+  project), so `--objects` shows their names.
+- Build: with Visual C++, `-DTIACONV_STATIC=ON` now applies the static
+  runtime to every target. The test programs failed to link before.
+
 ## 0.7.1
 
 - Memory sizes of blocks as TIA Portal lists them under Program info >

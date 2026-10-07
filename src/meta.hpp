@@ -59,6 +59,7 @@ struct RelationDef {
     std::string name;
     std::string cardinality;
     std::string behaviour;
+    bool inverse = false;  // declared as the other direction of a relation of another type
 };
 
 struct TypeDef {

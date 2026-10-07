@@ -148,7 +148,18 @@ const char kMeta[] =
     "<Relation name=\"Parent\" id=\"0x00002001\" cardinality=\"1\" behaviourType=\"x.parent\"><Target ref=\"T.Base\"/></Relation>"
     "</ObjectType>"
     "<ObjectType name=\"Thing\" id=\"0x00001001\"><Base ref=\"T.Base\" primary=\"true\"/>"
-    "<Implements ref=\"IB\"><Attribute name=\"Name\"/></Implements><Implements ref=\"IA\"/></ObjectType>"
+    "<Implements ref=\"IB\"><Attribute name=\"Name\"/></Implements><Implements ref=\"IA\"/>"
+    // a relation that declares its other direction in place, and one that only names it
+    "<Relation name=\"Labels\" id=\"0x00002002\" cardinality=\"*\" behaviourType=\"x.weak\"><Target ref=\"T.Label\"/>"
+    "<Inverse name=\"LabelOf\" id=\"0x00002003\" cardinality=\"1\"/></Relation>"
+    "<Relation name=\"Spare\" id=\"0x00002004\" cardinality=\"1\" behaviourType=\"x.weak\"><Target ref=\"T.Label\"/>"
+    "<Inverse ref=\"Parent\"/></Relation>"
+    "<Relation name=\"Twin\" id=\"0x00002005\" cardinality=\"1\" behaviourType=\"x.weak\"><Target ref=\"T.Label\"/>"
+    "<Inverse name=\"Own\" id=\"0x00002007\" cardinality=\"1\"/></Relation>"
+    "</ObjectType>"
+    "<ObjectType name=\"Label\" id=\"0x00001002\"><Base ref=\"T.Base\" primary=\"true\"/>"
+    "<Relation name=\"Own\" id=\"0x00002006\" cardinality=\"1\" behaviourType=\"x.weak\"><Target ref=\"T.Thing\"/></Relation>"
+    "</ObjectType>"
     "</Namespace></Package></MetaInfo>";
 
 void testMeta() {
@@ -159,6 +170,14 @@ void testMeta() {
     CHECK(m.derivesFrom("T.Thing", "T.Base") && !m.derivesFrom("T.Base", "T.Thing"));
     CHECK(m.relationId("Base", "Parent") == 0x2001);
     CHECK(m.relation(0x2001) && m.relation(0x2001)->behaviour == "parent");
+    // The other direction of Thing.Labels is a relation of Label with an id
+    // of its own. An <Inverse ref=...> declares nothing new, and a relation
+    // the type declares itself wins over an inverse of the same name.
+    CHECK(m.relationId("Thing", "Labels") == 0x2002 && m.relationId("Label", "LabelOf") == 0x2003);
+    CHECK(m.relation(0x2003) && m.relation(0x2003)->inverse && m.relation(0x2003)->owner == "T.Label");
+    CHECK(m.relation(0x2002) && !m.relation(0x2002)->inverse);
+    CHECK(m.relationId("Label", "Parent") == 0 && m.relationId("Thing", "LabelOf") == 0);
+    CHECK(m.relationId("Label", "Own") == 0x2006 && m.relation(0x2007) && m.relation(0x2007)->inverse);
     CHECK(m.storage("T.Colour").size == 1 && m.storage("T.Colour").kind == tia::ValueKind::Enum);
     CHECK(m.storage("T.Thing").size == 0);
     const auto& lay = m.layout(*thing);
@@ -529,6 +548,21 @@ const char kProgramMeta[] =
     "<Implements ref=\"IInterfacePartData\"/></ObjectType>"
     "<ObjectType name=\"DataTypeItemData\" id=\"0x100a\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
     "<Implements ref=\"IDataTypeContent\"/></ObjectType>"
+    // constants, and the device items a hardware identifier stands for
+    "<AttributeSet name=\"IDefaultStrategyData\" id=\"0x300a\" persistent=\"true\">"
+    "<Attribute name=\"DefaultValue\" id=\"0\" type=\"xs:string\"/></AttributeSet>"
+    "<AttributeSet name=\"IStructureRoot\" id=\"0x300b\" persistent=\"true\">"
+    "<Attribute name=\"IsSystemDefined\" id=\"0\" type=\"xs:boolean\"/></AttributeSet>"
+    "<ObjectType name=\"ConstantTagData\" id=\"0x100d\"><Base ref=\"M.TagTableContentData\" primary=\"true\"/>"
+    "<Implements ref=\"IDefaultStrategyData\"/><Implements ref=\"IStructureItem\"/></ObjectType>"
+    "<ObjectType name=\"SimaticConstantTagData\" id=\"0x100e\"><Base ref=\"M.ConstantTagData\" primary=\"true\"/>"
+    "<Implements ref=\"IStructureRoot\"/></ObjectType>"
+    "<ObjectType name=\"BaseDeviceData\" id=\"0x100f\"><Base ref=\"M.CoreObject\" primary=\"true\"/></ObjectType>"
+    "<ObjectType name=\"BaseDeviceItemData\" id=\"0x1010\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Relation name=\"Parent\" id=\"0x2107\" cardinality=\"1\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "<Relation name=\"ConstantTags\" id=\"0x2108\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.ConstantTagData\"/>"
+    "<Inverse name=\"DeviceItem\" id=\"0x2109\" cardinality=\"1\"/></Relation>"
+    "</ObjectType>"
     "</Namespace></Package></MetaInfo>";
 
 struct Field {
@@ -776,6 +810,32 @@ Bytes programProject() {
     add(object(Root, 111, {name(""), segment({fb(blobPlain(fb1))}), Bytes()}, {}, {{UsedParts, Part, 112}, {UsedParts, 0, 0}}));
     add(object(Part, 112, {name(""), segment({fb(blobPlain(outputs))})}, {}, {}));
 
+    // Constants. A station with a CPU and an interface below it; two hardware
+    // identifiers, a process image partition, two user constants and a copy
+    // that belongs to a library object.
+    {
+        enum : uint32_t { Constant = 0x100e, Device = 0x100f, Item = 0x1010 };
+        enum : uint32_t { ItemParent = 0x2107, ConstantItem = 0x2109 };
+        // sets in slot order: ICoreAttributes, IDefaultStrategyData, IStructureItem, IStructureRoot
+        auto constant = [&](uint64_t id, const std::string& n, const std::string& type, const std::string& value,
+                            bool system, const std::vector<Rel>& rels, const Bytes& core = Bytes()) {
+            add(object(Constant, id,
+                       {core.empty() ? name(n) : core, segment({fs(value)}), segment({fs(type)}), segment({fo(system)})},
+                       rels, {}));
+        };
+        add(object(Device, 200, {name("Station_1")}, {inProject}, {}));
+        add(object(Item, 201, {name("PLC_1")}, {inProject, {ItemParent, Device, 200}}, {}));
+        add(object(Item, 202, {name("PROFINET interface_1")}, {inProject, {ItemParent, Item, 201}}, {}));
+        const Rel inTable{TagTable, Table, 3};
+        constant(210, "Local~PROFINET_interface_1", "Hw_Interface", "64", true,
+                 {inProject, onPlc, inTable, {ConstantItem, Item, 202}});
+        constant(211, "Local", "Hw_SubModule", "9", true, {inProject, onPlc, inTable, {ConstantItem, Item, 201}});
+        constant(212, "PIP 1", "Pip", "1", true, {inProject, onPlc, inTable});
+        constant(213, "LIMIT", "Int", "100", false, {inProject, onPlc, inTable}, commented("LIMIT", {{0x0409, "upper limit"}}));
+        constant(214, "GREETING", "String", "'Hi'", false, {inProject, onPlc, inTable});
+        constant(215, "Copy", "Int", "1", false, {{Environment, Plc, 2}, onPlc, inTable});
+    }
+
     // a block whose interface object is missing
     add(object(Db, 32, {name("Bare"), segment({fi(9), fo(true)}), segment({fs("SharedDB"), fs("")})},
                {inProject, onPlc, {Interface, Root, 999}}, {}));
@@ -855,6 +915,22 @@ void testProgram() {
     const tia::DataBlock& bare = d.blocks[2];
     CHECK(bare.name == "Bare" && bare.members.empty() && !bare.notes.empty());
     CHECK(d.stats.blocksWithoutInterface == 1 && d.warnings.size() == 1);
+
+    // Constants: hardware identifiers first, by number, with the item and the
+    // station they stand for; then user constants in the order entered; the
+    // rest after that.
+    CHECK(d.constants.size() == 5 && d.stats.constantsOutsideProject == 1);
+    if (d.constants.size() == 5) {
+        const auto& c = d.constants;
+        CHECK(c[0].name == "Local" && c[0].kind == "hardware" && c[0].value == "9" && c[0].system);
+        CHECK(c[0].standsFor == "PLC_1" && c[0].standsForDevice == "Station_1" && c[0].plc == "PLC_1");
+        CHECK(c[1].name == "Local~PROFINET_interface_1" && c[1].dataType == "Hw_Interface" && c[1].value == "64");
+        CHECK(c[1].standsFor == "PROFINET interface_1" && c[1].standsForDevice == "Station_1");
+        CHECK(c[2].name == "LIMIT" && c[2].kind == "user" && !c[2].system && c[2].dataType == "Int");
+        CHECK(c[2].value == "100" && c[2].comment == "upper limit" && c[2].table == "Default tag table");
+        CHECK(c[2].standsFor.empty() && c[3].name == "GREETING" && c[3].value == "'Hi'" && c[3].comment.empty());
+        CHECK(c[4].name == "PIP 1" && c[4].kind == "pip" && c[4].standsFor.empty());
+    }
 
     // The list of blocks: the three data blocks and the two objects with an
     // interface of their own, data blocks after code blocks, by number.

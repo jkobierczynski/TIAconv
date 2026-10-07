@@ -48,6 +48,12 @@ if(NOT hw STREQUAL "646576696365" OR NOT tags STREQUAL "706c632c7461" OR NOT blo
   message(FATAL_ERROR "--no-bom still writes something before the header: ${hw} ${tags} ${blocks}")
 endif()
 
+# constants: on standard output, header first, hardware identifiers of the first PLC next
+execute_process(COMMAND "${TIACONV}" -q --constants-csv - "${PROJECT}" OUTPUT_VARIABLE constants RESULT_VARIABLE rc)
+if(NOT rc EQUAL 0 OR NOT constants MATCHES "^plc,kind,table,name,data_type,value,comment,stands_for,stands_for_device\r?\nZZALPHA,hardware,Default tag table,Local,Hw_SubModule,50,,ZZALPHA,S7-1200 station_1")
+  message(FATAL_ERROR "unexpected constants CSV")
+endif()
+
 # standard output never gets the mark
 execute_process(COMMAND "${TIACONV}" -q --tags-csv - "${PROJECT}" OUTPUT_VARIABLE piped RESULT_VARIABLE rc)
 string(SUBSTRING "${piped}" 0 4 start)

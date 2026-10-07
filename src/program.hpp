@@ -23,6 +23,27 @@ struct Tag {
     std::string comment;
 };
 
+// A constant of a PLC. TIA Portal creates the system constants itself: the
+// hardware identifiers, the numbers of the organization blocks and the
+// process image partitions. User constants are entered in a tag table.
+struct Constant {
+    uint64_t id = 0;
+    std::string plc;
+    std::string table;
+    std::string name;
+    std::string dataType;  // Hw_Interface, OB_PCYCLE, Pip, Int, ...
+    std::string value;     // as written in the project
+    std::string comment;
+    bool system = false;   // created by TIA Portal
+    // "hardware" (a hardware identifier), "ob", "pip", "user", or "system"
+    // for any other constant TIA Portal created
+    std::string kind;
+    // What a system constant stands for: the module, interface or port with
+    // the station it is in, or the block.
+    std::string standsFor;
+    std::string standsForDevice;
+};
+
 struct BlockMember {
     std::string name;
     std::string dataType;
@@ -121,10 +142,12 @@ struct ProgramStats {
     size_t blocksOutsideProject = 0;
     size_t blocksWithoutInterface = 0;
     size_t listedBlocksOutsideProject = 0;
+    size_t constantsOutsideProject = 0;
 };
 
 struct ProgramData {
     std::vector<Tag> tags;
+    std::vector<Constant> constants;
     std::vector<DataBlock> blocks;
     std::vector<BlockInfo> blockList;
     ProgramStats stats;

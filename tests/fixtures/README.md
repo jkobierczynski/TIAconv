@@ -129,6 +129,40 @@ know-how protected; `ZZFC` write-protected.
 | 8 | `ZZDB2` > Attributes: "Data block accessible from OPC UA" unticked |
 | 9 | `ZZDB2` > Attributes: "Data block accessible via Web server" unticked |
 
+`s12_constants` continues from `s11_blocks`, for user constants, all on
+ZZBRAVO:
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 10, 11 | saved without a change; "Save as" `s12_constants` |
+| 12 | Default tag table > User constants: `ZZCONST_INT`, Int, value 42, comment `My int constant` |
+| 13 | same tab: `ZZCONST_REAL`, Real, 3.5 |
+| 14 | `Tag MyTagTable` > User constants: `ZZCONST_TIME`, Time, `T#5s` |
+| 15 | same tab: `ZZCONST_STR`, String, `'Hello'` |
+| 16 | value of `ZZCONST_INT` changed to 43 |
+| 17 | `ZZCONST_REAL` deleted |
+
+`s12_constants/exports/PLCTags.xlsx` is TIA Portal's own export of ZZBRAVO's
+tags after save 17; its sheet "Constants" lists the three user constants
+left, with path (the tag table), data type, value and comment. The test
+compares with it.
+
+Two screenshots of the "System constants" tab of ZZBRAVO's default tag table
+show all 58 system constants with name, data type and value: 34 process
+image constants (None 65535, Automatic update 0, PIP 1 to PIP 31, PIP OB
+Servo 32768), `OB_Main` (OB_PCYCLE, 1) and 23 hardware identifiers, from
+`Local~Device` (Hw_Device, 32) to the second port of the second IO device
+(Hw_Interface, 271). The test holds every row.
+
+A screenshot taken at the end shows the two "User constants" tabs with the
+three constants left (`ZZCONST_INT` Int 43 "My int constant"; `ZZCONST_TIME`
+Time T#5s; `ZZCONST_STR` String 'Hello') and, in the project tree, "Default
+tag table [63]" and "Tag MyTagTable [10]". TIA Portal counts tags and
+constants together: 4 tags, 1 user constant and 58 system constants; 8 tags
+and 2 user constants.
+
+The following belongs to `s11_blocks`.
+
 Three more screenshots were taken at the end, on ZZBRAVO, and the test holds
 what they show:
 

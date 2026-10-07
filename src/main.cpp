@@ -44,6 +44,8 @@ const char kUsage[] =
     "  -j, --json FILE     write the inventory as JSON (\"-\" for standard output)\n"
     "  -c, --csv FILE      write the inventory as CSV, one row per module or interface\n"
     "      --tags-csv FILE    write the PLC tags as CSV\n"
+    "      --constants-csv FILE   write the constants as CSV: hardware identifiers,\n"
+    "                             user constants and the other system constants\n"
     "      --block-list-csv FILE  write the list of blocks as CSV, one row per block\n"
     "      --blocks-csv FILE  write the data block members as CSV\n"
     "      --no-bom        CSV files without the UTF-8 byte-order mark at the start\n"
@@ -62,7 +64,7 @@ const char kUsage[] =
     "installed.\n";
 
 struct Args {
-    std::string input, json, csv, objects, meta, tagsCsv, blocksCsv, blockListCsv;
+    std::string input, json, csv, objects, meta, tagsCsv, blocksCsv, blockListCsv, constantsCsv;
     bool allDevices = false, allItems = false, verify = false, quiet = false, members = false, noBom = false;
     size_t save = 0;  // 0: the current state
 };
@@ -110,6 +112,7 @@ int run(const std::vector<std::string>& argv) {
         else if (s == "-c" || s == "--csv") value(a.csv);
         else if (s == "--objects") value(a.objects);
         else if (s == "--tags-csv") value(a.tagsCsv);
+        else if (s == "--constants-csv") value(a.constantsCsv);
         else if (s == "--blocks-csv") value(a.blocksCsv);
         else if (s == "--block-list-csv") value(a.blockListCsv);
         else if (s == "--members") a.members = true;
@@ -169,11 +172,14 @@ int run(const std::vector<std::string>& argv) {
 
     // Keep standard output clean when a machine-readable format goes there.
     const bool stdoutTaken = a.json == "-" || a.csv == "-" || a.objects == "-" || a.meta == "-" ||
-                             a.tagsCsv == "-" || a.blocksCsv == "-" || a.blockListCsv == "-";
+                             a.tagsCsv == "-" || a.blocksCsv == "-" || a.blockListCsv == "-" ||
+                             a.constantsCsv == "-";
     if (!a.quiet) tia::writeText(stdoutTaken ? std::cerr : std::cout, inv, prog, ctx);
     if (!a.json.empty()) emit(a.json, [&](std::ostream& o) { tia::writeJson(o, inv, prog, ctx); });
     const bool bom = !a.noBom;
     if (!a.tagsCsv.empty()) emitCsv(a.tagsCsv, bom, [&](std::ostream& o) { tia::writeTagsCsv(o, prog); });
+    if (!a.constantsCsv.empty())
+        emitCsv(a.constantsCsv, bom, [&](std::ostream& o) { tia::writeConstantsCsv(o, prog); });
     if (!a.blockListCsv.empty())
         emitCsv(a.blockListCsv, bom, [&](std::ostream& o) { tia::writeBlockListCsv(o, prog); });
     if (!a.blocksCsv.empty()) emitCsv(a.blocksCsv, bom, [&](std::ostream& o) { tia::writeBlocksCsv(o, prog); });

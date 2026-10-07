@@ -6,6 +6,7 @@
 // previous one by one known change (see tests/fixtures/README.md), so every
 // value checked here was typed into TIA Portal by hand.
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -256,6 +257,18 @@ int main() {
         CHECK(inTable == 8);  // screenshot: "Tag MyTagTable [8]"
         // screenshot: "Default tag table [49]" = these 4 tags + 45 system constants
         CHECK(inDefault == 4 && p.tags.size() == 12);
+        {
+            current = "s08: constants";
+            size_t bravo = 0, hardware = 0, user = 0;
+            for (const auto& c : p.constants) {
+                if (c.plc != "ZZBRAVO") continue;
+                ++bravo;
+                CHECK(c.system && c.table == "Default tag table");
+                if (c.kind == "hardware") ++hardware;
+                if (c.kind == "user") ++user;
+            }
+            CHECK(bravo == 45 && hardware == 10 && user == 0);
+        }
         for (const auto& want : tags) {
             const tia::Tag* found = nullptr;
             for (const auto& t : p.tags)
@@ -854,6 +867,170 @@ int main() {
         CHECK(first.prog.blockList.empty() && first.inv.devices.empty());
         Loaded whole = load("s11_blocks");
         CHECK(whole.saves == 9 && whole.inv.devices.size() == 6);
+    }
+    {
+        // s12_constants: user constants, one action per save, on ZZBRAVO
+        // (see tests/fixtures/README.md), and the hardware identifiers.
+        using P = tia::ProgramData;
+        auto constant = [](const P& p, const std::string& name) -> const tia::Constant* {
+            for (const auto& c : p.constants)
+                if (c.kind == "user" && c.name == name) return &c;
+            return nullptr;
+        };
+        auto users = [](const P& p) {
+            size_t n = 0;
+            for (const auto& c : p.constants) n += c.kind == "user";
+            return n;
+        };
+        struct Step {
+            size_t save;
+            const char* what;
+            bool (*holds)(const P&, decltype(constant)&, decltype(users)&);
+        };
+        const Step steps[] = {
+            {11, "start: no user constants", [](const P& p, auto&, auto& n) { return n(p) == 0; }},
+            {12, "ZZCONST_INT, Int, 42, with a comment, in the default tag table",
+             [](const P& p, auto& c, auto& n) {
+                 const tia::Constant* k = c(p, "ZZCONST_INT");
+                 return n(p) == 1 && k && k->plc == "ZZBRAVO" && k->table == "Default tag table" &&
+                        k->dataType == "Int" && k->value == "42" && k->comment == "My int constant" && !k->system &&
+                        k->standsFor.empty();
+             }},
+            {13, "ZZCONST_REAL, Real, 3.5",
+             [](const P& p, auto& c, auto& n) {
+                 const tia::Constant* k = c(p, "ZZCONST_REAL");
+                 return n(p) == 2 && k && k->dataType == "Real" && k->value == "3.5" && k->comment.empty();
+             }},
+            {14, "ZZCONST_TIME, Time, T#5s, in another tag table",
+             [](const P& p, auto& c, auto& n) {
+                 const tia::Constant* k = c(p, "ZZCONST_TIME");
+                 return n(p) == 3 && k && k->table == "Tag MyTagTable" && k->dataType == "Time" && k->value == "T#5s";
+             }},
+            {15, "ZZCONST_STR, String, 'Hello'",
+             [](const P& p, auto& c, auto& n) {
+                 const tia::Constant* k = c(p, "ZZCONST_STR");
+                 return n(p) == 4 && k && k->table == "Tag MyTagTable" && k->dataType == "String" &&
+                        k->value == "'Hello'";
+             }},
+            {16, "value of ZZCONST_INT changed to 43",
+             [](const P& p, auto& c, auto& n) {
+                 const tia::Constant* k = c(p, "ZZCONST_INT");
+                 return n(p) == 4 && k && k->value == "43" && k->comment == "My int constant";
+             }},
+            {17, "ZZCONST_REAL deleted",
+             [](const P& p, auto& c, auto& n) { return n(p) == 3 && !c(p, "ZZCONST_REAL") && c(p, "ZZCONST_STR"); }},
+        };
+        for (const Step& st : steps) {
+            Loaded l = load("s12_constants", st.save);
+            CHECK(l.hashErrors == 0);
+            current = "s12_constants after save " + std::to_string(st.save) + ": " + st.what;
+            CHECK(st.holds(l.prog, constant, users));
+        }
+        Loaded l = load("s12_constants");
+        current = "s12_constants, whole file";
+        CHECK(l.saves == 17);
+        // user constants keep the order in which they were entered; tags are untouched
+        std::vector<std::string> names;
+        for (const auto& c : l.prog.constants)
+            if (c.kind == "user") names.push_back(c.name);
+        CHECK(names.size() == 3 && names[0] == "ZZCONST_INT" && names[1] == "ZZCONST_TIME" && names[2] == "ZZCONST_STR");
+        CHECK(l.prog.tags.size() == 12);
+        // TIA Portal's own export of the tags at the end
+        // (exports/PLCTags.xlsx), sheet "Constants": name, path, data type,
+        // value, comment. Same rows, same order.
+        current = "s12_constants: export of the constants";
+        const struct { const char* name; const char* path; const char* type; const char* value; const char* comment; }
+        exported[] = {{"ZZCONST_INT", "Default tag table", "Int", "43", "My int constant"},
+                      {"ZZCONST_TIME", "Tag MyTagTable", "Time", "T#5s", ""},
+                      {"ZZCONST_STR", "Tag MyTagTable", "String", "'Hello'", ""}};
+        size_t row = 0;
+        for (const auto& c : l.prog.constants) {
+            if (c.kind != "user") continue;
+            CHECK(row < 3);
+            if (row < 3)
+                CHECK(c.name == exported[row].name && c.table == exported[row].path &&
+                      c.dataType == exported[row].type && c.value == exported[row].value &&
+                      c.comment == exported[row].comment);
+            ++row;
+        }
+        CHECK(row == 3);
+        // Screenshot at the end: the project tree shows "Default tag table
+        // [63]" and "Tag MyTagTable [10]". TIA Portal counts tags and
+        // constants: 4 tags + 1 user constant + 58 system constants (23
+        // hardware identifiers, among them those of the two IO devices, the
+        // OB constant and 34 process image partitions), and 8 tags + 2 user
+        // constants.
+        current = "s12_constants: numbers TIA Portal shows next to the tag tables";
+        std::map<std::string, size_t> perTable, kinds;
+        for (const auto& t : l.prog.tags)
+            if (t.plc == "ZZBRAVO") ++perTable[t.table];
+        for (const auto& c : l.prog.constants) {
+            if (c.plc != "ZZBRAVO") continue;
+            ++perTable[c.table];
+            ++kinds[c.kind];
+        }
+        CHECK(perTable["Default tag table"] == 63 && perTable["Tag MyTagTable"] == 10);
+        CHECK(kinds["hardware"] == 23 && kinds["ob"] == 1 && kinds["pip"] == 34 && kinds["user"] == 3);
+        // Screenshot of the "System constants" tab, rows 1 to 34: None
+        // 65535, Automatic update 0, PIP 1 .. PIP 31, PIP OB Servo 32768,
+        // all of data type Pip.
+        current = "s12_constants: process image constants";
+        std::map<std::string, std::string> pip;
+        for (const auto& c : l.prog.constants)
+            if (c.plc == "ZZBRAVO" && c.kind == "pip") {
+                CHECK(c.dataType == "Pip" && c.system);
+                pip[c.name] = c.value;
+            }
+        CHECK(pip.size() == 34 && pip["None"] == "65535" && pip["Automatic update"] == "0" &&
+              pip["PIP OB Servo"] == "32768");
+        for (int i = 1; i <= 31; ++i) CHECK(pip["PIP " + std::to_string(i)] == std::to_string(i));
+        // Second screenshot of that tab, rows 35 to 58: the hardware
+        // identifiers and the OB constant. (TIA Portal cut off the names of
+        // the four IO device ports; their values are in the screenshot.) What
+        // each one stands for is not shown there; it is checked against the
+        // name.
+        current = "s12_constants: hardware identifiers";
+        const struct { const char* name; const char* type; const char* value; const char* device; const char* item; }
+        shown[] = {
+            {"Local~MC", "Hw_SubModule", "51", "S7-1500/ET200MP station_1", "Card reader/writer_1"},
+            {"Local~Common", "Hw_SubModule", "50", "S7-1500/ET200MP station_1", "ZZBRAVO"},
+            {"Local~Device", "Hw_Device", "32", "S7-1500/ET200MP station_1", "ZZBRAVO"},
+            {"Local~Configuration", "Hw_SubModule", "33", "S7-1500/ET200MP station_1", "ZZBRAVO"},
+            {"Local~Display", "Hw_SubModule", "54", "S7-1500/ET200MP station_1", "CPU display_1"},
+            {"Local~Exec", "Hw_SubModule", "52", "S7-1500/ET200MP station_1", "CPU exec unit_1"},
+            {"Local", "Hw_SubModule", "49", "S7-1500/ET200MP station_1", " ZZBRAVO"},
+            {"Local~PROFINET_interface_1", "Hw_Interface", "64", "S7-1500/ET200MP station_1", "PROFINET interface_1"},
+            {"Local~PROFINET_interface_1~Port_1", "Hw_Interface", "65", "S7-1500/ET200MP station_1", "Port_1"},
+            {"Local~PROFINET_interface_1~Port_2", "Hw_Interface", "66", "S7-1500/ET200MP station_1", "Port_2"},
+            {"OB_Main", "OB_PCYCLE", "1", "", "Main"},
+            {"Local~PROFINET_IO-System", "Hw_IoSystem", "257", "S7-1500/ET200MP station_1", "IOController_PROFINET"},
+            {"IO_device_1~Proxy", "Hw_SubModule", "264", "ZZIO1", "IO device_1"},
+            {"IO_device_1~IODevice", "Hw_Device", "262", "ZZIO1", "IO device_1"},
+            {"IO_device_1~Head", "Hw_SubModule", "258", "ZZIO1", "_1"},
+            {"IO_device_1~PROFINET_interface", "Hw_Interface", "259", "ZZIO1", "PROFINET interface"},
+            {"IO_device_1~PROFINET_interface~Port_1", "Hw_Interface", "260", "ZZIO1", "Port_1"},
+            {"IO_device_1~PROFINET_interface~Port_2", "Hw_Interface", "261", "ZZIO1", "Port_2"},
+            {"IO_device_2~Proxy", "Hw_SubModule", "267", "ZZI02", "IO device_2"},
+            {"IO_device_2~IODevice", "Hw_Device", "265", "ZZI02", "IO device_2"},
+            {"IO_device_2~Head", "Hw_SubModule", "268", "ZZI02", "_1"},
+            {"IO_device_2~PROFINET_interface", "Hw_Interface", "269", "ZZI02", "PROFINET interface"},
+            {"IO_device_2~PROFINET_interface~Port_1", "Hw_Interface", "270", "ZZI02", "Port_1"},
+            {"IO_device_2~PROFINET_interface~Port_2", "Hw_Interface", "271", "ZZI02", "Port_2"}};
+        size_t matched = 0;
+        for (const auto& want : shown) {
+            const tia::Constant* found = nullptr;
+            for (const auto& c : l.prog.constants)
+                if (c.plc == "ZZBRAVO" && c.system && c.name == want.name) found = &c;
+            current = std::string("s12_constants: hardware identifiers, ") + want.name;
+            CHECK(found && found->dataType == want.type && found->value == want.value &&
+                  found->standsFor == want.item && found->standsForDevice == want.device);
+            if (found) {
+                ++matched;
+                CHECK(found->kind == (std::string(want.type) == "OB_PCYCLE" ? "ob" : "hardware"));
+            }
+        }
+        // 23 hardware identifiers and the OB constant: nothing else, nothing missing
+        CHECK(matched == 24 && kinds["hardware"] + kinds["ob"] == 24);
     }
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

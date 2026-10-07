@@ -66,6 +66,11 @@ public:
         if (!relInterface_) relInterface_ = meta_.relationId("BlockInterfaceBaseData", "Source");
         relComments_ = meta_.relationId("BlockInterfaceBaseData", "InterfaceComments");
         relFolder_ = meta_.relationId("FolderElementData", "AggregatingFolder");
+        relItemParent_ = meta_.relationId("BaseDeviceItemData", "Parent");
+        // the other directions of DeviceItemData.ConstantTags and CodeBlockData.OBConstant
+        relConstantItem_ = meta_.relationId("ConstantTagData", "DeviceItem");
+        relConstantBlock_ = meta_.relationId("ConstantTagData", "ConstantOf2");
+        if (!relConstantBlock_) relConstantBlock_ = meta_.relationId("ConstantTagData", "ConstantOf");
         relBinaries_ = meta_.relationId("Parent4LoadableBinaryData", "LoadableBinaries");
         relSources_ = meta_.relationId("Parent4SourceData", "Sources");
         relBlockComment_ = meta_.relationId("GeneralBlockSourceData", "BlockComment");
@@ -88,7 +93,8 @@ public:
             if (!t || t->kind != TypeKind::ObjectType) continue;
             int role = roleOf(*t);
             const bool listed = isListedBlock(*t);
-            if (role == 0 && !listed) continue;
+            const bool constant = isConstant(*t);
+            if (role == 0 && !listed && !constant) continue;
             Object o;
             try {
                 if (!project_.decode(b, o)) continue;
@@ -99,6 +105,10 @@ public:
             if (listed) {
                 if (inProject(o)) out.blockList.push_back(makeInfo(o));
                 else ++out.stats.listedBlocksOutsideProject;
+            }
+            if (constant) {
+                if (inProject(o)) out.constants.push_back(makeConstant(o));
+                else ++out.stats.constantsOutsideProject;
             }
             if (role == 1) {
                 addCatalogueEntry(o);
@@ -141,6 +151,17 @@ public:
             if (a.number != b.number) return a.number < b.number;
             return a.id < b.id;
         });
+        std::stable_sort(out.constants.begin(), out.constants.end(), [](const Constant& a, const Constant& b) {
+            if (a.plc != b.plc) return a.plc < b.plc;
+            const int ra = kindRank(a.kind), rb = kindRank(b.kind);
+            if (ra != rb) return ra < rb;
+            // hardware identifiers and the like by number, user constants as entered
+            if (a.kind != "user") {
+                const long long va = number(a.value), vb = number(b.value);
+                if (va != vb) return va < vb;
+            }
+            return a.id < b.id;
+        });
         std::stable_sort(out.blockList.begin(), out.blockList.end(), [](const BlockInfo& a, const BlockInfo& b) {
             if (a.plc != b.plc) return a.plc < b.plc;
             const int ra = typeRank(a.type), rb = typeRank(b.type);
@@ -161,6 +182,9 @@ private:
     uint32_t relTarget_ = 0, relEnvironment_ = 0, relTagTable_ = 0, relGeneratedFrom_ = 0, relInterface_ = 0,
              relSubparts_ = 0, relComments_ = 0, relFolder_ = 0, relBinaries_ = 0, relSources_ = 0,
              relBlockComment_ = 0, relBlockCommentCode_ = 0, relBlockCommentData_ = 0;
+    uint32_t relItemParent_ = 0, relConstantItem_ = 0, relConstantBlock_ = 0;
+    std::map<uint32_t, bool> constantTypes_;
+    std::map<Key, std::string> deviceOf_;
     std::map<uint32_t, bool> listed_;
     struct FolderRec {
         std::string name, subtype;
@@ -191,6 +215,86 @@ private:
         else if (relComments_ && meta_.derivesFromShort(t.name, "BlockInterfaceBaseData")) r = 4;
         roles_[t.id] = r;
         return r;
+    }
+
+    bool isConstant(const TypeDef& t) {
+        auto it = constantTypes_.find(t.id);
+        if (it != constantTypes_.end()) return it->second;
+        const bool yes = meta_.derivesFromShort(t.name, "SimaticConstantTagData");
+        constantTypes_[t.id] = yes;
+        return yes;
+    }
+
+    static int kindRank(const std::string& kind) {
+        static const char* const order[] = {"hardware", "user", "ob", "system", "pip"};
+        for (int i = 0; i < 5; ++i)
+            if (kind == order[i]) return i;
+        return 5;
+    }
+
+    // The value of a constant as a number, for sorting; texts sort last.
+    static long long number(const std::string& v) {
+        if (v.empty() || v.size() > 18 || v.find_first_not_of("0123456789") != std::string::npos) return -1;
+        return std::stoll(v);
+    }
+
+    bool derives(uint32_t type, const char* shortName) const {
+        const TypeDef* t = meta_.findById(type);
+        return t && meta_.derivesFromShort(t->name, shortName);
+    }
+
+    // The station a device item belongs to: up the chain of parents until
+    // something that is a device.
+    std::string deviceOfItem(Key k) {
+        const Key start = k;
+        auto it = deviceOf_.find(start);
+        if (it != deviceOf_.end()) return it->second;
+        std::string name;
+        for (int depth = 0; depth < 32 && relItemParent_; ++depth) {
+            Object o;
+            Key parent;
+            if (!decodeKey(k, o) || !o.relationTarget(relItemParent_, parent)) break;
+            if (derives(parent.first, "BaseDeviceData")) {
+                name = nameOf(parent);
+                break;
+            }
+            k = parent;
+        }
+        return deviceOf_[start] = name;
+    }
+
+    Constant makeConstant(const Object& o) {
+        Constant c;
+        c.id = o.id;
+        c.name = attrStr(o, "ICoreAttributes", "Name");
+        c.comment = attrText(o, "ICoreAttributes", "Comment");
+        c.dataType = attrStr(o, "IStructureItem", "DisplayTypeName");
+        if (c.dataType.empty()) c.dataType = attrStr(o, "IStructureItem", "DataTypeRefName");
+        c.value = attrStr(o, "IDefaultStrategyData", "DefaultValue");
+        c.plc = plcOf(o);
+        Key table;
+        if (o.relationTarget(relTagTable_, table)) c.table = nameOf(table);
+        bool systemDefined = false;
+        c.system = attrBool(o, "IStructureRoot", "IsSystemDefined", systemDefined) && systemDefined;
+        // A system constant names what it stands for: a device item (that
+        // makes it a hardware identifier, whatever its data type: Hw_Interface,
+        // Hw_SubModule, Port, ...), or the block of an OB constant.
+        Key target;
+        bool item = false, block = false;
+        if (o.relationTarget(relConstantItem_, target)) {
+            item = true;
+            c.standsFor = nameOf(target);
+            c.standsForDevice = deviceOfItem(target);
+        } else if (o.relationTarget(relConstantBlock_, target)) {
+            block = true;
+            c.standsFor = nameOf(target);
+        }
+        if (!c.system) c.kind = "user";
+        else if (item || c.dataType.compare(0, 3, "Hw_") == 0) c.kind = "hardware";
+        else if (block || c.dataType.compare(0, 3, "OB_") == 0) c.kind = "ob";
+        else if (c.dataType == "Pip") c.kind = "pip";
+        else c.kind = "system";
+        return c;
     }
 
     // Blocks and data types: everything TIA Portal lists under "Program

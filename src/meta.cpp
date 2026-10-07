@@ -137,6 +137,23 @@ void MetaModel::load(const std::string& xml) {
                             r.behaviour = k->attrOr("behaviourType", "");
                             size_t dot = r.behaviour.rfind('.');
                             if (dot != std::string::npos) r.behaviour = r.behaviour.substr(dot + 1);
+                            // A relation can declare its other direction in
+                            // place: a relation of the target type, with an
+                            // id of its own, that points back.
+                            const XmlNode* target = nullptr;
+                            const XmlNode* inverse = nullptr;
+                            for (const auto& g : k->children) {
+                                if (g->name == "Target") target = g.get();
+                                else if (g->name == "Inverse" && g->attr("name")) inverse = g.get();
+                            }
+                            RelationDef back;
+                            if (target && inverse && parseId(*inverse, back.id)) {
+                                back.owner = qualify(target->attrOr("ref", ""), ns);
+                                back.name = inverse->attrOr("name", "");
+                                back.cardinality = inverse->attrOr("cardinality", "");
+                                back.inverse = true;
+                                relations_.emplace(back.id, std::move(back));
+                            }
                             relations_[r.id] = std::move(r);
                         }
                     }
@@ -174,14 +191,18 @@ const RelationDef* MetaModel::relation(uint32_t id) const {
 
 uint32_t MetaModel::relationId(const std::string& ownerShortName, const std::string& name) const {
     const std::string suffix = "." + ownerShortName;
+    uint32_t back = 0;
     for (const auto& kv : relations_) {
         const RelationDef& r = kv.second;
         if (r.name != name) continue;
         if (r.owner.size() > suffix.size() &&
-            r.owner.compare(r.owner.size() - suffix.size(), suffix.size(), suffix) == 0)
-            return r.id;
+            r.owner.compare(r.owner.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            // a relation declared on the type itself comes first
+            if (!r.inverse) return r.id;
+            if (!back) back = r.id;
+        }
     }
-    return 0;
+    return back;
 }
 
 Storage MetaModel::storage(const std::string& typeName) const {

@@ -327,8 +327,71 @@ void textMembers(std::ostream& out, const std::vector<BlockMember>& members, int
     }
 }
 
+// "station / item" for what a system constant stands for.
+std::string standsFor(const Constant& c) {
+    std::string item;
+    // names of internal items start with a blank or an underscore
+    const size_t from = c.standsFor.find_first_not_of(" ");
+    if (from != std::string::npos) item = c.standsFor.substr(from);
+    if (c.standsForDevice.empty() || c.standsForDevice == item) return item.empty() ? "-" : item;
+    return item.empty() ? c.standsForDevice : c.standsForDevice + " / " + item;
+}
+
+// Hardware identifiers and user constants. The other system constants (OB
+// numbers, process image partitions) are the same in every project of a CPU
+// type and are only counted.
+void textConstants(std::ostream& out, const ProgramData& prog) {
+    std::vector<const Constant*> hw, user;
+    size_t others = 0;
+    for (const auto& c : prog.constants) {
+        if (c.kind == "hardware") hw.push_back(&c);
+        else if (c.kind == "user") user.push_back(&c);
+        else ++others;
+    }
+    if (!hw.empty()) {
+        out << "\nHardware identifiers:\n";
+        size_t wPlc = 3, wId = 2, wName = 4, wType = 4;
+        for (const Constant* c : hw) {
+            wPlc = std::max(wPlc, width(c->plc));
+            wId = std::max(wId, width(c->value));
+            wName = std::max(wName, width(c->name));
+            wType = std::max(wType, width(c->dataType));
+        }
+        out << "  " << pad("PLC", wPlc + 2) << pad("ID", wId + 2) << pad("Name", wName + 2) << pad("Type", wType + 2)
+            << "Stands for\n";
+        for (const Constant* c : hw)
+            out << "  " << pad(dash(c->plc), wPlc + 2) << pad(dash(c->value), wId + 2) << pad(c->name, wName + 2)
+                << pad(dash(c->dataType), wType + 2) << standsFor(*c) << "\n";
+    }
+    if (!user.empty()) {
+        out << "\nUser constants:\n";
+        size_t wPlc = 3, wTable = 5, wName = 4, wType = 4, wValue = 5;
+        bool anyComment = false;
+        for (const Constant* c : user) {
+            wPlc = std::max(wPlc, width(c->plc));
+            wTable = std::max(wTable, width(c->table));
+            wName = std::max(wName, width(c->name));
+            wType = std::max(wType, width(c->dataType));
+            wValue = std::max(wValue, width(oneLine(c->value)));
+            anyComment = anyComment || !c->comment.empty();
+        }
+        out << "  " << pad("PLC", wPlc + 2) << pad("Table", wTable + 2) << pad("Name", wName + 2)
+            << pad("Type", wType + 2) << (anyComment ? pad("Value", wValue + 2) + "Comment" : "Value") << "\n";
+        for (const Constant* c : user) {
+            out << "  " << pad(dash(c->plc), wPlc + 2) << pad(dash(c->table), wTable + 2) << pad(c->name, wName + 2)
+                << pad(dash(c->dataType), wType + 2);
+            if (c->comment.empty()) out << dash(oneLine(c->value)) << "\n";
+            else out << pad(dash(oneLine(c->value)), wValue + 2) << oneLine(c->comment) << "\n";
+        }
+    }
+    if (others && (!hw.empty() || !user.empty()))
+        out << "  " << others << " other system constant" << (others == 1 ? "" : "s")
+            << " not listed (OB numbers, process image partitions); the JSON and the constants CSV have them.\n";
+}
+
 void textProgram(std::ostream& out, const ProgramData& prog, const ReportContext& ctx) {
     textBlockList(out, prog);
+    textConstants(out, prog);
     if (!prog.tags.empty()) {
         out << "\nTags:\n";
         size_t wPlc = 3, wTable = 5, wName = 4, wType = 4;
@@ -441,8 +504,21 @@ void jsonBlockList(std::ostream& out, const ProgramData& prog) {
     out << (prog.blockList.empty() ? "],\n" : "\n  ],\n");
 }
 
+void jsonConstants(std::ostream& out, const ProgramData& prog) {
+    out << "  \"constants\": [";
+    for (size_t i = 0; i < prog.constants.size(); ++i) {
+        const Constant& c = prog.constants[i];
+        out << (i ? ",\n" : "\n") << "    {\"plc\": " << qn(c.plc) << ", \"kind\": " << qn(c.kind) << ", \"system\": "
+            << tf(c.system) << ", \"table\": " << qn(c.table) << ", \"name\": " << q(c.name) << ", \"data_type\": "
+            << qn(c.dataType) << ", \"value\": " << qn(c.value) << ", \"comment\": " << qn(c.comment)
+            << ", \"stands_for\": " << qn(c.standsFor) << ", \"stands_for_device\": " << qn(c.standsForDevice) << "}";
+    }
+    out << (prog.constants.empty() ? "],\n" : "\n  ],\n");
+}
+
 void jsonProgram(std::ostream& out, const ProgramData& prog) {
     jsonBlockList(out, prog);
+    jsonConstants(out, prog);
     out << "  \"tags\": [";
     for (size_t i = 0; i < prog.tags.size(); ++i) {
         const Tag& t = prog.tags[i];
@@ -495,6 +571,12 @@ void csvMembers(std::ostream& out, const DataBlock& b, const std::vector<BlockMe
 void writeTagsCsv(std::ostream& out, const ProgramData& prog) {
     out << "plc,table,name,data_type,address,comment\r\n";
     for (const auto& t : prog.tags) csvRow(out, {t.plc, t.table, t.name, t.dataType, t.address, t.comment});
+}
+
+void writeConstantsCsv(std::ostream& out, const ProgramData& prog) {
+    out << "plc,kind,table,name,data_type,value,comment,stands_for,stands_for_device\r\n";
+    for (const auto& c : prog.constants)
+        csvRow(out, {c.plc, c.kind, c.table, c.name, c.dataType, c.value, c.comment, c.standsFor, c.standsForDevice});
 }
 
 void writeBlockListCsv(std::ostream& out, const ProgramData& prog) {

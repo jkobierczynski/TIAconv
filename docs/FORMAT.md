@@ -183,10 +183,10 @@ space in the segment.
   result. The rule gives the same answer for every attribute of all 2 629
   object types listed there.
 - With the rule, the fixed part of a segment plus the strings and blobs it
-  points to cover the segment exactly, with no gap and no overlap, in 45 166
-  of 45 168 segments that hold no nested structure (the four public samples,
-  `s07_second`, `s08_program`, `s09_security`, `s10_connections` and the two
-  `s11_blocks` files). The
+  points to cover the segment exactly, with no gap and no overlap, in 48 234
+  of 48 236 segments that hold no nested structure (the four public samples,
+  `s07_second`, `s08_program`, `s09_security`, `s10_connections`, the two
+  `s11_blocks` files and `s12_constants`). The
   two others are one `HmiAuditTrailLogData` object each in the V15.1 and V19
   samples; why they differ is **unknown**.
 
@@ -682,11 +682,56 @@ V13 and V15.1 samples).
 | project or library copy | relation `CoreObject.Environment`: a `ProjectData` object for things in the project tree |
 
 `ITagAddress` also has the address in parts (`Part4` area, `Part6` size,
-`Part7` byte, `Part8` bit; **inferred**, not used). System constants such as
-hardware identifiers are `SimaticConstantTagData` objects in the same tag
-table and are not listed; the number TIA Portal shows next to a tag table
-counts them too (`Default tag table [49]` in `s08_program` = 4 tags + 45
-system constants). Where user constants live is **unknown**.
+`Part7` byte, `Part8` bit; **inferred**, not used).
+
+## Constants
+
+System constants and user constants are both `SimaticConstantTagData`
+objects, in a tag table like tags (relations `TagTable`, `Target`,
+`Environment` as above). The number TIA Portal shows next to a tag table
+counts them too: `Default tag table [49]` in `s08_program` is 4 tags and 45
+system constants.
+
+| what | where |
+|---|---|
+| name | `ICoreAttributes.Name`: `Local~PROFINET_interface_1`, `OB_Main`, `PIP 1`, or the name the user gave |
+| data type | `IStructureItem.DisplayTypeName`: `Hw_Interface`, `Hw_SubModule`, `Hw_Device`, `Hw_IoSystem`, `Hw_Hsc`, `Hw_Pwm`, `Port` (V13); `OB_PCYCLE`, `OB_STARTUP`; `Pip`; `Int`, `Real`, `Time`, `String`, ... |
+| value | `IDefaultStrategyData.DefaultValue`, as text: `64`, `T#5s`, `'Hello'` |
+| comment | `ICoreAttributes.Comment` |
+| made by TIA Portal | `IStructureRoot.IsSystemDefined` |
+| what a hardware identifier stands for | relation `DeviceItem` to the module, interface or port |
+| the block of an OB constant | relation `ConstantOf2` (`ConstantOf` in V13) to the `CodeBlockData` |
+
+The last two relations are not declared on the constant. They are the other
+direction of `DeviceItemData.ConstantTags` and `CodeBlockData.OBConstant`,
+declared in place in the type model:
+
+    <Relation name="ConstantTags" id="0x0010202e" ...>
+      <Target ref="...ConstantTagData"/>
+      <Inverse name="DeviceItem" id="0x0010202f" cardinality="1"/>
+    </Relation>
+
+A relation entry of an object can carry such an inverse id; the V21 type
+model declares 185 of them. (`<Inverse ref="..."/>` only names an existing
+relation.)
+
+The hardware identifiers of the IO devices assigned to a PLC are constants of
+that PLC (`IO_device_1~PROFINET_interface~Port_1`), with `DeviceItem` pointing
+into the IO device's station.
+
+**Verified:** user constants with `s12_constants` (TIA Portal V21, one action
+per save: four constants of different types in two tag tables, a changed
+value, a deletion; the result is identical to TIA Portal's export of the
+constants and matches a screenshot of the two tabs). For
+system constants: the count per tag table, in two projects (49 as above; 63 in
+`s12_constants` = 4 tags, 1 user constant, 23 hardware identifiers including
+those of two IO devices, 1 OB constant, 34 process image partitions);
+and in the V16 sample the connection block written by its author has
+`InterfaceId := 64`, which is the value of `Local~PROFINET-Schnittstelle_1`.
+All 58 system constants of one PLC of `s12_constants` have the name, data
+type and value TIA Portal's "System constants" tab shows (two screenshots).
+The tab does not show what an identifier stands for; the `DeviceItem` target
+agrees with the constant's name in all 23 cases.
 
 ## Data blocks
 
@@ -813,7 +858,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 14 589 | 10 654 | `tests/fixtures` (thirteen project files, in this repository) |
+| V21 | v14 | 16 234 | 12 083 | `tests/fixtures` (fourteen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -860,7 +905,8 @@ all three configured items (both CPUs and the signal module) are as decoded.
 - Access level numbers of an S7-1200 with firmware V4.0 to V4.6 (assumed to
   be those of V4.7) and of other CPU families; whether the level follows the
   Anonymous user on an S7-1500 as it does on the S7-1200; other values of `OmsCommunicationMode` and `TimeSyncRole`.
-- User constants.
+- Constants of structured types, if TIA Portal allows them, and system
+  constants of kinds not in the samples.
 - What makes TIA Portal rewrite the project file.
 - Blocks: fail-safe blocks, GRAPH and other languages not in the samples,
   blocks that are instances of library types (relation `IsInstanceOf`),
