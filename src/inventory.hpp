@@ -15,6 +15,7 @@
 namespace tia {
 
 struct Interface {
+    uint64_t id = 0;
     std::string name;       // node name, e.g. "X1 : PN(LAN)"
     std::string item;       // device item the node belongs to, e.g. "PROFINET interface_1"
     std::string nodeId;
@@ -132,6 +133,7 @@ struct SubnetMember {
 };
 
 struct Subnet {
+    uint64_t id = 0;
     std::string name;
     int64_t netType = 0;
     std::vector<SubnetMember> members;
@@ -183,6 +185,7 @@ struct IoSystem {
 
 // A cable between two ports, as drawn in the topology view.
 struct PortEnd {
+    uint64_t id = 0;  // of the port
     std::string device, module, port;
 };
 struct PortLink {
@@ -194,11 +197,26 @@ struct ProjectInfo {
     std::string name, created, modified, author, lastModifiedBy;
 };
 
+// An entry of the project history TIA Portal keeps itself: the project was
+// created, converted to a newer version, and the like. Fields are as stored.
+struct ProjectEvent {
+    std::string date;        // ISO 8601, UTC
+    std::string event;       // "ProjectHistoryUserCreated", "ProjectHistoryConverted", ...
+    std::string version;     // the TIA Portal version that wrote the entry, "V13"
+    std::string oldVersion;  // conversions: the version the project came from
+    std::string logFile;     // conversions: the log TIA Portal wrote
+};
+
+// What the stored name of a project event means; empty for names that have
+// not been seen in a project.
+std::string projectEventText(const ProjectEvent& e);
+
 struct InventoryStats {
     size_t blocks = 0;
     size_t liveObjects = 0;
     size_t deletedObjects = 0;
     size_t saves = 0;  // completed saves recorded in the file
+    size_t objectsAfterLastSave = 0;  // object blocks written after the last of them
     size_t decodedObjects = 0;
     size_t objectsWithProblems = 0;
     size_t unattachedItems = 0;
@@ -212,6 +230,7 @@ struct Inventory {
     std::vector<PortLink> portLinks;
     std::vector<Connection> connections;
     std::vector<std::string> saves;  // commit timestamps (older layout only)
+    std::vector<ProjectEvent> events;  // TIA Portal's own project history
     InventoryStats stats;
     std::vector<std::string> warnings;
 };

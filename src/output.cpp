@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iomanip>
+#include <map>
 
 namespace tia {
 namespace {
@@ -608,6 +609,262 @@ void writeBlocksCsv(std::ostream& out, const ProgramData& prog) {
     }
 }
 
+namespace {
+
+// ---- save history ----
+
+std::string plural(const std::string& kind, size_t n) {
+    return std::to_string(n) + " " + kind + (n == 1 ? "" : "s");
+}
+
+std::string orNotSet(const std::string& s) { return s.empty() ? "(not set)" : s; }
+
+void jsonEvents(std::ostream& out, const std::vector<ProjectEvent>& events) {
+    out << "[";
+    for (size_t i = 0; i < events.size(); ++i) {
+        const ProjectEvent& e = events[i];
+        out << (i ? ", " : "") << "{\"date\": " << qn(e.date) << ", \"event\": " << qn(e.event) << ", \"text\": "
+            << qn(projectEventText(e)) << ", \"version\": " << qn(e.version) << ", \"old_version\": "
+            << qn(e.oldVersion) << ", \"log_file\": " << qn(e.logFile) << "}";
+    }
+    out << "]";
+}
+
+std::string contentsText(const HistorySave& s) {
+    std::string out;
+    for (const auto& kv : s.contents) out += (out.empty() ? "" : ", ") + plural(kv.first, kv.second);
+    return out.empty() ? "an empty project" : out;
+}
+
+std::string writtenTypes(const HistorySave& s, size_t limit) {
+    std::string out;
+    for (size_t i = 0; i < s.objectTypes.size() && i < limit; ++i)
+        out += (out.empty() ? "" : ", ") + std::to_string(s.objectTypes[i].written) + " " + s.objectTypes[i].type;
+    if (s.objectTypes.size() > limit) out += ", ...";
+    return out;
+}
+
+// The changes of one save as lines of text. Parts of something that was
+// added or removed as a whole are counted under it; what changed in one item
+// goes on one line; many items with the same change share a line.
+void textChanges(std::ostream& out, const HistorySave& s, const char* in) {
+    const size_t kMaxLines = 12;  // per kind of change, the rest is counted
+    const auto& ch = s.changes;
+
+    // added / removed
+    for (const char* what : {"added", "removed"}) {
+        const char sign = what[0] == 'a' ? '+' : '-';
+        std::map<std::string, size_t> byKey;
+        for (size_t i = 0; i < ch.size(); ++i)
+            if (ch[i].change == what) byKey[ch[i].key] = i;
+        // the outermost item of this change that a part belongs to
+        auto root = [&](size_t i) {
+            for (int depth = 0; depth < 16 && !ch[i].partOf.empty(); ++depth) {
+                auto p = byKey.find(ch[i].parentKey);
+                if (p == byKey.end()) break;
+                i = p->second;
+            }
+            return i;
+        };
+        std::map<std::string, size_t> lines;  // kind -> lines printed
+        std::map<std::string, size_t> more;   // kind -> items not printed
+        std::vector<std::string> moreOrder;
+        for (size_t i = 0; i < ch.size(); ++i) {
+            const HistoryChange& c = ch[i];
+            if (c.change != what || !c.partOf.empty()) continue;
+            if (lines[c.kind] >= kMaxLines) {
+                if (!more[c.kind]++) moreOrder.push_back(c.kind);
+                continue;
+            }
+            ++lines[c.kind];
+            out << in << sign << " " << c.kind << " " << c.item;
+            if (!c.description.empty()) out << "  (" << c.description << ")";
+            out << "\n";
+            // its parts: modules and interfaces by name, the rest counted
+            std::vector<std::string> order;
+            std::map<std::string, size_t> counts;
+            for (size_t k = 0; k < ch.size(); ++k) {
+                const HistoryChange& part = ch[k];
+                if (k == i || part.change != what || part.partOf.empty() || root(k) != i) continue;
+                if (part.kind == "module" || part.kind == "interface") {
+                    out << in << "    " << part.kind << " " << part.item;
+                    if (!part.description.empty()) out << "  (" << part.description << ")";
+                    out << "\n";
+                } else {
+                    if (!counts.count(part.kind)) order.push_back(part.kind);
+                    ++counts[part.kind];
+                }
+            }
+            if (!order.empty()) {
+                out << in << "    with ";
+                for (size_t k = 0; k < order.size(); ++k) out << (k ? ", " : "") << plural(order[k], counts[order[k]]);
+                out << "\n";
+            }
+        }
+        for (const auto& kind : moreOrder)
+            out << in << sign << " ... and " << plural("more " + kind, more[kind]) << " " << what << "\n";
+    }
+
+    // changed: one text per item
+    std::vector<std::string> keys;
+    std::map<std::string, std::vector<size_t>> perItem;
+    for (size_t i = 0; i < ch.size(); ++i) {
+        if (ch[i].change != "changed") continue;
+        if (!perItem.count(ch[i].key)) keys.push_back(ch[i].key);
+        perItem[ch[i].key].push_back(i);
+    }
+    struct Line {
+        std::string kind, text;
+        std::vector<std::string> items;
+    };
+    std::vector<Line> linesOut;
+    std::map<std::pair<std::string, std::string>, size_t> lineIndex;
+    for (const auto& k : keys) {
+        const auto& idx = perItem[k];
+        std::string text;
+        // "modified" is said only when nothing else explains it; memory
+        // sizes and the compile state only when the block was not compiled
+        // in this save, which explains them.
+        bool other = false, compiled = false;
+        for (size_t i : idx) {
+            if (!ch[i].isMarker) other = true;
+            if (ch[i].attribute == "compiled") compiled = true;
+        }
+        for (size_t i : idx) {
+            const HistoryChange& c = ch[i];
+            std::string part;
+            if (c.isMarker) {
+                if (other) continue;
+                part = "modified, in something that is not reported";
+            } else if (c.isTime) {
+                part = c.attribute;
+            } else if (c.attribute == "needs compiling") {
+                if (c.to.empty() && compiled) continue;
+                part = c.to.empty() ? "no longer needs compiling" : "needs compiling";
+            } else if (c.isResult && (compiled || c.to.empty())) {
+                continue;  // a block that needs compiling has no sizes
+            } else {
+                part = c.attribute + ": " + orNotSet(c.from) + " -> " + orNotSet(c.to);
+            }
+            text += (text.empty() ? "" : "; ") + part;
+        }
+        if (text.empty()) text = "compiled";
+        const HistoryChange& first = ch[idx.front()];
+        auto id = std::make_pair(first.kind, text);
+        auto it = lineIndex.find(id);
+        if (it == lineIndex.end()) {
+            lineIndex[id] = linesOut.size();
+            linesOut.push_back({first.kind, text, {first.item}});
+        } else {
+            linesOut[it->second].items.push_back(first.item);
+        }
+    }
+    for (const auto& l : linesOut) {
+        if (l.items.size() < 4) {
+            for (const auto& item : l.items) out << in << "~ " << l.kind << " " << item << ": " << l.text << "\n";
+        } else {
+            out << in << "~ " << plural(l.kind, l.items.size()) << ": " << l.text << "\n" << in << "    ";
+            for (size_t i = 0; i < l.items.size() && i < 4; ++i) out << (i ? ", " : "") << l.items[i];
+            if (l.items.size() > 4) out << ", and " << l.items.size() - 4 << " more";
+            out << "\n";
+        }
+    }
+}
+
+void textHistory(std::ostream& out, const History& h) {
+    out << "\nSave history:\n";
+    if (!h.events.empty()) {
+        out << "  Recorded by TIA Portal:\n";
+        for (const auto& e : h.events) {
+            const std::string text = projectEventText(e);
+            out << "    " << pad(dash(e.date), 26);
+            if (text.empty()) {
+                out << e.event;
+                if (!e.version.empty()) out << ", version " << e.version;
+                if (!e.oldVersion.empty()) out << ", from " << e.oldVersion;
+            } else {
+                out << text;
+            }
+            out << "\n";
+        }
+    }
+    bool anyProjectTime = false;
+    for (const auto& s : h.saves) {
+        if (s.afterLastSave) out << "  After save " << s.number - 1 << "  ";
+        else out << "  Save " << s.number << "  ";
+        if (!s.problem.empty()) {
+            out << "could not be read: " << s.problem << "\n";
+            continue;
+        }
+        if (!s.time.empty()) out << s.time;
+        else out << "no time";
+        if (s.timeSource == "latest_change") anyProjectTime = true;
+        if (!s.by.empty()) out << "  by " << s.by;
+        out << "  -  " << plural("object", s.objectsWritten) << " written";
+        if (s.objectsDeleted) out << ", " << s.objectsDeleted << " of them as deleted";
+        out << "\n";
+        const char* in = "      ";
+        if (s.firstState) {
+            out << in << "First state of the project in the file: " << contentsText(s) << "\n";
+        } else if (s.beforeProject) {
+            out << in << "No project in the file yet\n";
+        } else if (s.changes.empty()) {
+            out << in << "No change in what is reported";
+            if (s.objectsWritten) out << "; written: " << writtenTypes(s, 6);
+            out << "\n";
+        } else {
+            textChanges(out, s, in);
+        }
+    }
+    out << "  Times are UTC.";
+    if (anyProjectTime)
+        out << " A save in this file layout carries no time of its own: shown is the latest\n"
+               "  change it holds, so the save was made then or shortly after.";
+    out << "\n";
+    for (const auto& n : h.notes) out << "  Note: " << n << "\n";
+}
+
+void jsonHistory(std::ostream& out, const History& h) {
+    out << "  \"history\": {\"saves_in_file\": " << h.savesInFile << ", \"events\": ";
+    jsonEvents(out, h.events);
+    out << ", \"saves\": [";
+    for (size_t si = 0; si < h.saves.size(); ++si) {
+        const HistorySave& s = h.saves[si];
+        out << (si ? ",\n" : "\n") << "    {\"save\": ";
+        if (s.afterLastSave) out << "null";
+        else out << s.number;
+        out << ", \"after_last_save\": " << tf(s.afterLastSave) << ", \"time\": " << qn(s.time)
+            << ", \"time_source\": " << qn(s.timeSource) << ", \"by\": " << qn(s.by) << ", \"before_project\": "
+            << tf(s.beforeProject) << ", \"first_state\": " << tf(s.firstState) << ", \"problem\": " << qn(s.problem)
+            << ", \"objects_written\": " << s.objectsWritten << ", \"objects_deleted\": " << s.objectsDeleted
+            << ", \"object_types\": [";
+        for (size_t i = 0; i < s.objectTypes.size(); ++i)
+            out << (i ? ", " : "") << "{\"type\": " << q(s.objectTypes[i].type) << ", \"written\": "
+                << s.objectTypes[i].written << ", \"deleted\": " << s.objectTypes[i].deleted << "}";
+        out << "], \"contents\": {";
+        for (size_t i = 0; i < s.contents.size(); ++i)
+            out << (i ? ", " : "") << q(s.contents[i].first) << ": " << s.contents[i].second;
+        out << "}, \"changes\": [";
+        for (size_t i = 0; i < s.changes.size(); ++i) {
+            const HistoryChange& c = s.changes[i];
+            out << (i ? ",\n" : "\n") << "      {\"change\": " << q(c.change) << ", \"kind\": " << q(c.kind)
+                << ", \"item\": " << q(c.item);
+            if (c.change == "changed")
+                out << ", \"attribute\": " << q(c.attribute) << ", \"from\": " << qn(c.from) << ", \"to\": "
+                    << qn(c.to);
+            else
+                out << ", \"description\": " << qn(c.description) << ", \"part_of\": " << qn(c.partOf);
+            out << "}";
+        }
+        out << (s.changes.empty() ? "]}" : "\n    ]}");
+    }
+    out << (h.saves.empty() ? "]" : "\n  ]") << ", \"notes\": [";
+    for (size_t i = 0; i < h.notes.size(); ++i) out << (i ? ", " : "") << q(h.notes[i]);
+    out << "]},\n";
+}
+
+}  // namespace
+
 void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog, const ReportContext& ctx) {
     out << "Source:   " << ctx.source << "  (layout " << ctx.layout << ")\n";
     if (inv.project.found) {
@@ -737,9 +994,13 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
         }
     }
     textProgram(out, prog, ctx);
+    if (ctx.history) textHistory(out, *ctx.history);
     out << "\n" << inv.stats.liveObjects << " objects in " << inv.stats.blocks << " blocks";
     if (inv.stats.deletedObjects) out << ", " << inv.stats.deletedObjects << " deleted";
     if (inv.stats.saves) out << ", " << inv.stats.saves << " save" << (inv.stats.saves == 1 ? "" : "s") << " recorded";
+    if (inv.stats.saves && inv.stats.objectsAfterLastSave && !ctx.shownSave)
+        out << " and " << inv.stats.objectsAfterLastSave << " object" << (inv.stats.objectsAfterLastSave == 1 ? "" : "s")
+            << " written after the last";
     if (ctx.shownSave) out << "; shown as it was after save " << ctx.shownSave;
     if (ctx.hashesVerified) out << ", block hashes " << (ctx.hashErrors ? "FAILED" : "ok");
     out << ".\n";
@@ -757,7 +1018,8 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
         << ", \"blocks\": " << inv.stats.blocks << ", \"live_objects\": " << inv.stats.liveObjects
         << ", \"deleted_objects\": " << inv.stats.deletedObjects << ", \"hashes_verified\": "
         << tf(ctx.hashesVerified) << ", \"hash_errors\": " << ctx.hashErrors << ", \"save_count\": "
-        << inv.stats.saves << ", \"shown_save\": ";
+        << inv.stats.saves << ", \"objects_after_last_save\": " << inv.stats.objectsAfterLastSave
+        << ", \"shown_save\": ";
     if (ctx.shownSave) out << ctx.shownSave;
     else out << "null";
     out << ", \"saves\": [";
@@ -766,7 +1028,9 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
     if (inv.project.found) {
         out << "  \"project\": {\"name\": " << q(inv.project.name) << ", \"created\": " << qn(inv.project.created)
             << ", \"modified\": " << qn(inv.project.modified) << ", \"author\": " << qn(inv.project.author)
-            << ", \"last_modified_by\": " << qn(inv.project.lastModifiedBy) << "},\n";
+            << ", \"last_modified_by\": " << qn(inv.project.lastModifiedBy) << ", \"events\": ";
+        jsonEvents(out, inv.events);
+        out << "},\n";
     } else {
         out << "  \"project\": null,\n";
     }
@@ -882,6 +1146,7 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
     }
     out << (inv.connections.empty() ? "],\n" : "\n  ],\n");
     jsonProgram(out, prog);
+    if (ctx.history) jsonHistory(out, *ctx.history);
     out << "  \"stats\": {\"decoded_hardware_objects\": " << inv.stats.decodedObjects
         << ", \"objects_with_problems\": " << inv.stats.objectsWithProblems << ", \"unattached_items\": "
         << inv.stats.unattachedItems << "},\n";
@@ -890,6 +1155,25 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
     for (size_t i = 0; i < prog.warnings.size(); ++i)
         out << ((i || !inv.warnings.empty()) ? ", " : "") << q(prog.warnings[i]);
     out << "]\n}\n";
+}
+
+void writeHistoryCsv(std::ostream& out, const History& h) {
+    csvRow(out, {"save", "time", "by", "objects_written", "objects_deleted", "change", "kind", "item", "part_of",
+                 "attribute", "from", "to", "description"});
+    for (const auto& s : h.saves) {
+        const std::string n = s.afterLastSave ? "after " + std::to_string(s.number - 1) : std::to_string(s.number),
+                          w = std::to_string(s.objectsWritten),
+                          d = std::to_string(s.objectsDeleted);
+        auto row = [&](const std::string& change, const HistoryChange* c, const std::string& description) {
+            csvRow(out, {n, s.time, s.by, w, d, change, c ? c->kind : "", c ? c->item : "", c ? c->partOf : "",
+                         c ? c->attribute : "", c ? c->from : "", c ? c->to : "", description});
+        };
+        if (!s.problem.empty()) row("not_read", nullptr, s.problem);
+        else if (s.firstState) row("first_state", nullptr, contentsText(s));
+        else if (s.beforeProject) row("no_project", nullptr, "");
+        else if (s.changes.empty()) row("none", nullptr, writtenTypes(s, 1000));
+        for (const auto& c : s.changes) row(c.change, &c, c.description);
+    }
 }
 
 void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx) {
@@ -939,6 +1223,8 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
 
 namespace {
 
+bool secretAttribute(const std::string& name);
+
 void writeValue(std::ostream& out, const Value& v) {
     switch (v.type) {
         case Value::Type::Null: out << "null"; break;
@@ -962,6 +1248,24 @@ void writeValue(std::ostream& out, const Value& v) {
             break;
         }
         case Value::Type::Opaque: out << "{\"opaque\": true}"; break;
+        case Value::Type::Record:
+            out << "{";
+            for (size_t i = 0; i < v.elements.size() && i < v.names.size(); ++i) {
+                out << (i ? ", " : "") << q(v.names[i]) << ": ";
+                const Value& f = v.elements[i];
+                if (secretAttribute(v.names[i]) && f.type == Value::Type::String && !f.s.empty()) out << "{\"redacted\": true}";
+                else writeValue(out, f);
+            }
+            out << "}";
+            break;
+        case Value::Type::List:
+            out << "[";
+            for (size_t i = 0; i < v.elements.size(); ++i) {
+                out << (i ? ", " : "");
+                writeValue(out, v.elements[i]);
+            }
+            out << "]";
+            break;
     }
 }
 

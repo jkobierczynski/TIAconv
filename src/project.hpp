@@ -19,7 +19,10 @@
 namespace tia {
 
 struct Value {
-    enum class Type { Null, Bool, Int, UInt, Float, String, Bytes, DateTime, Text, Opaque };
+    // Record: a structure, `names` and `elements` side by side. List: an
+    // array of structures, each element a Record. Opaque: a structure or
+    // array that is there but not read.
+    enum class Type { Null, Bool, Int, UInt, Float, String, Bytes, DateTime, Text, Opaque, Record, List };
     Type type = Type::Null;
     bool b = false;
     int64_t i = 0;
@@ -30,6 +33,11 @@ struct Value {
     // text; 0xFFFF marks the entry without a language. `s` holds the text to
     // show: that entry when it is not empty, otherwise the first that is.
     std::vector<std::pair<uint16_t, std::string>> texts;
+    std::vector<std::string> names;
+    std::vector<Value> elements;
+
+    // A field of a Record by name; nullptr when it is not there.
+    const Value* field(const std::string& name) const;
 
     bool isNull() const { return type == Type::Null; }
     // Numeric view of Bool / Int / UInt values.
@@ -97,7 +105,11 @@ private:
 
     void loadSystemObjects();
     bool loadExpandoTable(Span payload);
-    Value readValue(const Storage& st, const TypeDef* enumType, Span seg, size_t pos) const;
+    // `type` is the definition of the value's type where that matters: an
+    // enumeration, a structure or an array.
+    Value readValue(const Storage& st, const TypeDef* type, Span seg, size_t pos) const;
+    bool readRecord(const TypeDef& type, Span seg, size_t offset, Value& out) const;
+    bool readList(const TypeDef& type, Span seg, size_t offset, Value& out) const;
     static Value readText(Span seg, size_t offset);
     void decodeExpando(uint32_t objectType, Span seg, Object& out) const;
     void decodeRelations(Span block, const Block& b, size_t firstSlot, Object& out) const;

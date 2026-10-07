@@ -159,8 +159,16 @@ void MetaModel::load(const std::string& xml) {
                     }
                 } else if (c->name == "Structure") {
                     t.kind = TypeKind::Structure;
+                    for (const auto& e : c->children) {
+                        if (e->name != "Element") continue;
+                        AttributeDef ed;
+                        ed.name = e->attrOr("name", "");
+                        ed.type = qualify(e->attrOr("type", ""), ns);
+                        t.elements.push_back(std::move(ed));
+                    }
                 } else if (c->name == "Array") {
                     t.kind = TypeKind::Array;
+                    t.elementType = qualify(c->attrOr("type", ""), ns);
                 } else {
                     continue;
                 }

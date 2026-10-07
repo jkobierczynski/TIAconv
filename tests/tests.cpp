@@ -4,16 +4,21 @@
 //
 // Self-contained tests. The container test builds a small synthetic project
 // in memory, so no Siemens project file is needed (or redistributed).
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "bytes.hpp"
 #include "container.hpp"
+#include "history.hpp"
 #include "inventory.hpp"
 #include "meta.hpp"
 #include "miniz.h"
+#include "output.hpp"
 #include "program.hpp"
 #include "project.hpp"
 #include "sha256.hpp"
@@ -1024,6 +1029,261 @@ void testSaves() {
     CHECK(p3.live(0x1002, 3) == nullptr);
 }
 
+// ---- structures and arrays of structures ------------------------------------
+
+const char kStructMeta[] =
+    "<MetaInfo><Package name=\"P\" id=\"0x1\"><Namespace name=\"M\">"
+    "<Structure name=\"Event\" id=\"0x4001\"><Element name=\"Version\" type=\"xs:string\"/>"
+    "<Element name=\"Date\" type=\"xs:dateTime\"/><Element name=\"Id\" type=\"xs:string\"/>"
+    "<Element name=\"Count\" type=\"xs:int\"/><Element name=\"Flag\" type=\"xs:boolean\"/></Structure>"
+    "<Array name=\"Events\" id=\"0x4002\" type=\"Event\"/>"
+    "<AttributeSet name=\"IInfo\" id=\"0x3001\" persistent=\"true\">"
+    "<Attribute name=\"History\" id=\"0\" type=\"Events\"/><Attribute name=\"One\" id=\"1\" type=\"Event\"/>"
+    "<Attribute name=\"After\" id=\"2\" type=\"xs:int\"/></AttributeSet>"
+    "<ObjectType name=\"Info\" id=\"0x1001\"><Implements ref=\"IInfo\"/></ObjectType>"
+    "</Namespace></Package></MetaInfo>";
+
+// A stored structure "Event": its size, one field per element, the strings.
+Bytes eventRecord(const char* version, uint64_t ticks, const char* id, uint32_t count, bool flagOn) {
+    const size_t fixed = 4 + 4 + 8 + 4 + 4 + 1;
+    Bytes head, var;
+    auto text = [&](const char* t) {
+        if (!t) {
+            put32(head, 0);  // not there
+            return;
+        }
+        put32(head, static_cast<uint32_t>(fixed + var.size()));
+        const std::string v(t);
+        append(var, varint(v.size() + 1));
+        var.insert(var.end(), v.begin(), v.end());
+    };
+    text(version);
+    put64(head, ticks);
+    text(id);
+    put32(head, count);
+    head.push_back(flagOn ? 1 : 0);
+    Bytes r;
+    put32(r, static_cast<uint32_t>(fixed + var.size()));
+    append(r, head);
+    append(r, var);
+    return r;
+}
+
+Bytes eventList(const std::vector<Bytes>& records) {
+    Bytes l;
+    put32(l, 0);
+    put32(l, static_cast<uint32_t>(records.size()));
+    size_t at = 8 + 4 * records.size();
+    for (const auto& r : records) {
+        put32(l, static_cast<uint32_t>(at));
+        at += r.size();
+    }
+    for (const auto& r : records) append(l, r);
+    set32(l, 0, static_cast<uint32_t>(l.size()));
+    return l;
+}
+
+void testStructures() {
+    const uint64_t t1 = 630822816000000000ULL | (1ULL << 62);
+    const Bytes list = eventList({eventRecord("V1", t1, "Created", 3, true), eventRecord(nullptr, t1, "", 0, false)});
+    const Bytes one = eventRecord("V2", t1, nullptr, 0xfffffffeu, false);
+    // segment: length, History -> list, One -> record, After
+    auto build = [&](const Bytes& l, const Bytes& r) {
+        Bytes seg;
+        put32(seg, static_cast<uint32_t>(16 + l.size() + r.size()));
+        put32(seg, 16);
+        put32(seg, static_cast<uint32_t>(16 + l.size()));
+        put32(seg, 7);
+        append(seg, l);
+        append(seg, r);
+        Bytes f(98, 0);
+        f[0] = 0x40;
+        f[4] = 1;
+        f[97] = 0xff;
+        for (const Bytes& blk : {block(0x70000, 1, 0, 0, systemBody(deflated(kStructMeta))), object(0x1001, 5, {seg}, {}, {})}) {
+            size_t from = f.size();
+            append(f, blk);
+            appendHash(f, from);
+        }
+        return f;
+    };
+    auto decode = [&](const Bytes& file, tia::Object& o) {
+        tia::Project p(tia::Container::parse(file, {}));
+        const tia::Block* b = p.live(0x1001, 5);
+        return b && p.decode(*b, o);
+    };
+    using T = tia::Value::Type;
+    {
+        tia::Object o;
+        CHECK(decode(build(list, one), o));
+        const tia::Value* h = o.attr("IInfo", "History");
+        CHECK(h && h->type == T::List && h->elements.size() == 2);
+        if (h && h->type == T::List && h->elements.size() == 2) {
+            const tia::Value& a = h->elements[0];
+            CHECK(a.type == T::Record && a.names.size() == 5);
+            CHECK(a.field("Version") && a.field("Version")->s == "V1");
+            CHECK(a.field("Date") && a.field("Date")->s == "2000-01-01T00:00:00Z");
+            CHECK(a.field("Id") && a.field("Id")->s == "Created");
+            CHECK(a.field("Count") && a.field("Count")->i == 3);
+            CHECK(a.field("Flag") && a.field("Flag")->b);
+            CHECK(a.field("Nothing") == nullptr);
+            const tia::Value& b = h->elements[1];
+            CHECK(b.field("Version") && b.field("Version")->isNull());       // not there
+            CHECK(b.field("Id") && b.field("Id")->type == T::String && b.field("Id")->s.empty());  // there, empty
+        }
+        const tia::Value* r = o.attr("IInfo", "One");
+        CHECK(r && r->type == T::Record);
+        if (r && r->type == T::Record) {
+            CHECK(r->field("Version")->s == "V2" && r->field("Id")->isNull() && r->field("Count")->i == -2);
+        }
+        const tia::Value* after = o.attr("IInfo", "After");
+        CHECK(after && after->i == 7);
+    }
+    // What does not follow the rule exactly stays an unread structure; the
+    // rest of the object is read as before.
+    auto opaque = [&](Bytes l, Bytes r, bool listBad) {
+        tia::Object o;
+        CHECK(decode(build(l, r), o));
+        const tia::Value* h = o.attr("IInfo", "History");
+        const tia::Value* one1 = o.attr("IInfo", "One");
+        CHECK(h && one1);
+        if (!h || !one1) return;
+        CHECK((h->type == T::Opaque) == listBad);
+        CHECK((one1->type == T::Opaque) == !listBad);
+        const tia::Value* after = o.attr("IInfo", "After");
+        CHECK(after && after->i == 7);
+    };
+    {
+        Bytes r = one;  // a byte that belongs to nothing
+        r.push_back(0);
+        set32(r, 0, static_cast<uint32_t>(r.size()));
+        opaque(list, r, false);
+    }
+    {
+        Bytes r = one;  // a string that points outside the structure
+        set32(r, 4, 0x1000);
+        opaque(list, r, false);
+    }
+    {
+        Bytes r = one;  // size beyond the segment
+        set32(r, 0, 0x7fffffff);
+        opaque(list, r, false);
+    }
+    {
+        Bytes l = list;  // more elements than there is room for
+        set32(l, 4, 0x00ffffff);
+        opaque(l, one, true);
+    }
+    {
+        Bytes l = list;  // an element that starts inside the offsets
+        set32(l, 8, 4);
+        opaque(l, one, true);
+    }
+    {
+        Bytes l = list;  // both offsets name the same structure
+        set32(l, 12, l[8]);
+        opaque(l, one, true);
+    }
+}
+
+// ---- save history -----------------------------------------------------------
+
+void testHistory() {
+    Bytes f(98, 0);
+    f[0] = 0x40;
+    f[4] = 1;
+    f[97] = 0xff;
+    auto add = [&](const Bytes& blk) {
+        size_t from = f.size();
+        append(f, blk);
+        appendHash(f, from);
+    };
+    auto saved = [&](uint64_t n) { add(block(0x7000c, n, 0, 0, systemBody(Bytes(8, 0)))); };
+    enum : uint32_t { Project = 0x1001, Plc, Table, Content, TagT };
+    enum : uint32_t { Target = 0x2101, Environment, TagTable };
+    auto name = [](const std::string& n) { return segment({fs(n), fnone()}); };
+    const Rel inProject{Environment, Project, 1}, onPlc{Target, Plc, 2};
+    auto tag = [&](uint64_t id, const std::string& n, const std::string& address) {
+        return object(TagT, id, {name(n), segment({fs("Bool")}), segment({fs(address)})},
+                      {inProject, onPlc, {TagTable, Table, 3}}, {});
+    };
+
+    add(block(0x70000, 1, 0, 0, systemBody(deflated(kProgramMeta))));
+    saved(1);  // a file starts with a save that holds the type model only
+    add(object(Project, 1, {name("Demo")}, {}, {}));
+    add(object(Plc, 2, {name("PLC_1")}, {inProject}, {}));
+    add(object(Table, 3, {name("Default tag table")}, {inProject, onPlc}, {}));
+    add(tag(20, "Start", "%I0.0"));
+    saved(2);
+    add(tag(20, "Start", "%I0.5"));
+    add(tag(22, "Stop", "%I0.1"));
+    saved(3);
+    add(block(TagT, 20, 4, 0, Bytes{0xff}));  // deleted
+    add(block(TagT, 22, 4, 0, Bytes{0xff}));  // deleted, and made again under the same name
+    add(tag(23, "Stop", "%I0.7"));
+    saved(4);
+    saved(5);  // a save that wrote nothing
+    const size_t closed = f.size();
+    add(tag(23, "Halt", "%I0.7"));  // written after the last save marker
+
+    auto data = std::make_shared<const std::vector<uint8_t>>(f);
+    tia::History h = tia::buildHistory(data);
+    CHECK(h.savesInFile == 5);
+    CHECK(h.saves.size() == 6);
+    if (h.saves.size() == 6) {
+        const auto& s = h.saves;
+        CHECK(s[0].number == 1 && !s[0].firstState && s[0].changes.empty() && s[0].objectsWritten == 0);
+        CHECK(s[1].firstState && s[1].changes.empty() && s[1].objectsWritten == 4);
+        CHECK(s[1].contents.size() == 1 && s[1].contents[0].first == "tag" && s[1].contents[0].second == 1);
+        CHECK(s[2].objectsWritten == 2 && s[2].objectsDeleted == 0 && s[2].changes.size() == 2);
+        if (s[2].changes.size() == 2) {
+            const auto& changed = s[2].changes[0];
+            CHECK(changed.change == "changed" && changed.kind == "tag" && changed.item == "PLC_1 / Default tag table / Start");
+            CHECK(changed.attribute == "address" && changed.from == "%I0.0" && changed.to == "%I0.5");
+            const auto& added = s[2].changes[1];
+            CHECK(added.change == "added" && added.item == "PLC_1 / Default tag table / Stop");
+            CHECK(added.description == "Bool, %I0.1" && added.partOf.empty());
+        }
+        CHECK(s[2].objectTypes.size() == 1 && s[2].objectTypes[0].type == "EAMTZTagData" && s[2].objectTypes[0].written == 2);
+        // one tag removed; the other is the same tag again, not one removed and one added
+        CHECK(s[3].objectsWritten == 3 && s[3].objectsDeleted == 2 && s[3].changes.size() == 3);
+        if (s[3].changes.size() == 3) {
+            const auto& anew = s[3].changes[0];
+            CHECK(anew.change == "changed" && anew.attribute == "created anew" && anew.isTime);
+            CHECK(anew.item == "PLC_1 / Default tag table / Stop" && anew.from == "object 22" && anew.to == "object 23");
+            CHECK(s[3].changes[1].attribute == "address" && s[3].changes[1].from == "%I0.1" && s[3].changes[1].to == "%I0.7");
+            CHECK(s[3].changes[2].change == "removed" && s[3].changes[2].item == "PLC_1 / Default tag table / Start");
+        }
+        CHECK(!s[4].firstState && s[4].changes.empty() && s[4].objectsWritten == 0 && !s[4].afterLastSave);
+        CHECK(s[5].afterLastSave && s[5].number == 6 && s[5].changes.size() == 1);
+        if (s[5].changes.size() == 1) {
+            const auto& c = s[5].changes[0];
+            CHECK(c.change == "changed" && c.attribute == "name" && c.from == "Stop" && c.to == "Halt");
+            CHECK(c.item == "PLC_1 / Default tag table / Halt");
+        }
+    }
+    // up to a save: nothing of what came later
+    tia::History h3 = tia::buildHistory(data, 3);
+    CHECK(h3.savesInFile == 5 && h3.saves.size() == 3 && h3.saves.back().changes.size() == 2);
+    // a file that ends with its last save marker has no state after it
+    auto closedData = std::make_shared<const std::vector<uint8_t>>(f.begin(), f.begin() + static_cast<std::ptrdiff_t>(closed));
+    tia::History hc = tia::buildHistory(closedData);
+    CHECK(hc.saves.size() == 5 && !hc.saves.back().afterLastSave);
+
+    // the three ways of writing it stay in step
+    std::ostringstream csv;
+    tia::writeHistoryCsv(csv, h);
+    const std::string c = csv.str();
+    CHECK(c.find("save,time,by,objects_written,objects_deleted,change,kind,item,part_of,attribute,from,to,"
+                 "description\r\n") == 0);
+    CHECK(c.find("\r\n1,,,0,0,no_project,") != std::string::npos);
+    CHECK(c.find("\r\n2,,,4,0,first_state,,,,,,,1 tag\r\n") != std::string::npos);
+    CHECK(c.find(",changed,tag,PLC_1 / Default tag table / Start,,address,%I0.0,%I0.5,\r\n") != std::string::npos);
+    CHECK(c.find(",removed,tag,PLC_1 / Default tag table / Start,,,,,\"Bool, %I0.5\"\r\n") != std::string::npos);
+    CHECK(c.find("\r\n5,,,0,0,none,") != std::string::npos);
+    CHECK(c.find("\r\nafter 5,") != std::string::npos);
+}
+
 void testAccessLevels() {
     CHECK(tia::accessLevelName("S71500.CPU", "V1.8", 1) == "Full access (no protection)");
     CHECK(tia::accessLevelName("S71500.CPU", "V4.1", 4) == "No access (complete protection)");
@@ -1081,6 +1341,8 @@ int main() {
     testProgram();
     testSaves();
     testAccessLevels();
+    testStructures();
+    testHistory();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -6,6 +6,7 @@
 #include <ostream>
 #include <string>
 
+#include "history.hpp"
 #include "inventory.hpp"
 #include "program.hpp"
 #include "project.hpp"
@@ -21,6 +22,7 @@ struct ReportContext {
     bool allDevices = false;  // text and CSV: include devices outside the project tree
     bool members = false;     // text: print the members of every data block
     size_t shownSave = 0;     // the project is shown as it was after this save; 0: as it is now
+    const History* history = nullptr;  // text and JSON: add the save history
 };
 
 void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog, const ReportContext& ctx);
@@ -36,6 +38,9 @@ void writeConstantsCsv(std::ostream& out, const ProgramData& prog);
 void writeBlockListCsv(std::ostream& out, const ProgramData& prog);
 // One row per data block member, nested members as dotted paths.
 void writeBlocksCsv(std::ostream& out, const ProgramData& prog);
+
+// One row per change, and one for a save without any.
+void writeHistoryCsv(std::ostream& out, const History& history);
 
 // One JSON object per line for every decodable object: attributes, expando
 // attributes and relations with resolved names.

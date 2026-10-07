@@ -7,10 +7,13 @@
 // value checked here was typed into TIA Portal by hand.
 #include <cstdio>
 #include <map>
+#include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "container.hpp"
+#include "history.hpp"
 #include "inventory.hpp"
 #include "program.hpp"
 #include "project.hpp"
@@ -84,6 +87,338 @@ void common(const Loaded& l, const std::string& projectName) {
     CHECK(l.inv.stats.objectsWithProblems == 0);
     CHECK(l.inv.stats.unattachedItems == 0);
     CHECK(l.inv.project.found && l.inv.project.name == projectName);
+}
+
+// ---- save history ----
+//
+// What the history has to show for a save, written as
+//   +|kind|item|description      added
+//   -|kind|item|description      removed
+//   ~|kind|item|attribute|from|to
+// Left out, because they follow from something else: the parts of an item
+// that was added or removed as a whole, and what compiling a block changes.
+struct Step {
+    size_t save;
+    const char* change;
+};
+
+// tests/fixtures/README.md says what was done in TIA Portal before each of
+// these saves; every line here was compared with it. Saves 17 to 27 built
+// the program of s08_program and have no step of their own there.
+const Step kStepsBlocksA[] = {
+    {3, "+|device|S7-1200 station_1|S71200.Device"},
+    {4, "~|project|s01_cpu|name|s00_empty|s01_cpu"},
+    {5, "~|module|S7-1200 station_1 / ZZALPHA|name|PLC_1|ZZALPHA"},
+    {6, "~|project|s02_name|name|s01_cpu|s02_name"},
+    {7, "+|subnet|PN/IE_1|"},
+    {7, "~|interface|S7-1200 station_1 / ZZALPHA / X1 : PN(LAN)|IP address|192.168.0.1|192.168.77.11"},
+    {7, "~|interface|S7-1200 station_1 / ZZALPHA / X1 : PN(LAN)|subnet||PN/IE_1"},
+    {8, "~|project|s03_ip|name|s02_name|s03_ip"},
+    {9, "~|interface|S7-1200 station_1 / ZZALPHA / X1 : PN(LAN)|router||192.168.77.1"},
+    {10, "~|project|s04_router|name|s03_ip|s04_router"},
+    {11, "~|interface|S7-1200 station_1 / ZZALPHA / X1 : PN(LAN)|PROFINET name||zzalpha-pn"},
+    {11, "~|interface|S7-1200 station_1 / ZZALPHA / X1 : PN(LAN)|PROFINET name generated automatically|yes|no"},
+    {12, "~|project|s05_pnname|name|s04_router|s05_pnname"},
+    {13, "+|module|S7-1200 station_1 / DI 8x24VDC_1|SM 1221 DI8 x 24VDC, 6ES7 221-1BF30-0XB0, V1.0"},
+    {13, "+|hardware identifier|ZZALPHA / Default tag table / Local~DI_8x24VDC_1|Hw_SubModule = 267"},
+    {14, "~|project|s06_module|name|s05_pnname|s06_module"},
+    {15, "+|device|S7-1500/ET200MP station_1|S71500.Device"},
+    {16, "~|project|s07_second|name|s06_module|s07_second"},
+    {28, "~|project|s09_security|name|s08|s09_security"},
+    {29, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|PUT/GET access||yes"},
+    {30, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|access level||Read access"},
+    {31, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|access level|Read access|HMI access"},
+    {32, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|access level|HMI access|No access (complete protection)"},
+    {32, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|PUT/GET access|yes|no"},
+    {33, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|access level|No access (complete protection)|Full access (no protection)"},
+    {34, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|access level|Full access (no protection)|HMI access"},
+    {34, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|PUT/GET access|no|yes"},
+    {35, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|web server access on||X1"},
+    {36, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|web server access on|X1|"},
+    {37, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|web server||yes"},
+    {37, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|web server access on||X1"},
+    {38, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|web server access on|X1|"},
+    {39, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|web server access on||X1"},
+    {40, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|web server HTTPS only||yes"},
+    {41, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|time synchronisation||NTP"},
+    {41, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|NTP servers||192.168.77.50"},
+    {42, "~|module|S7-1500/ET200MP station_1 / ZZBRAVO|display protection||yes"},
+    {43, "~|module|S7-1200 station_1 / ZZALPHA|access level||Write protection"},
+    {44, "~|module|S7-1200 station_1 / ZZALPHA|web server||yes"},
+    {45, "~|module|S7-1200 station_1 / ZZALPHA|access level|Write protection|Write/read protection"},
+    {46, "+|device|S7-1500/ET200MP station_2|S71500.Device"},
+    {47, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|OPC UA server||yes"},
+    {48, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|PG/PC and HMI communication||legacy communication permitted"},
+    {49, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|protection of confidential configuration data|yes|no"},
+    {50, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access protection|users_and_roles|none"},
+    {50, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access control||no"},
+    {51, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access protection|none|users_and_roles_and_access_levels"},
+    {51, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access control|no|yes"},
+    {51, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access control via access levels||yes"},
+    {53, "~|project|s10_connections|name|s09_security|s10_connections"},
+    {54, "~|interface|S7-1500/ET200MP station_1 / ZZBRAVO / X1|subnet||PN/IE_1"},
+    {55, "~|interface|S7-1500/ET200MP station_2 / ZZCHARLIE / X1|IP address|192.168.0.1|192.168.77.13"},
+    {55, "~|interface|S7-1500/ET200MP station_2 / ZZCHARLIE / X1|subnet||PN/IE_1"},
+    {56, "+|device|ZZIO1|ET200SP.Device"},
+    {57, "~|module|ZZIO1 / IO device_1|IO controller||ZZBRAVO"},
+    {57, "~|module|ZZIO1 / IO device_1|IO system||PROFINET IO-System"},
+    {57, "~|interface|ZZIO1 / IO device_1 / IE1|IP address|192.168.0.1|192.168.77.1"},
+    {57, "~|interface|ZZIO1 / IO device_1 / IE1|subnet||PN/IE_1"},
+    {57, "+|IO system|S7-1500/ET200MP station_1 / PROFINET IO-System|IOSystem_PROFINET"},
+    {57, "+|hardware identifier|ZZBRAVO / Default tag table / Local~PROFINET_IO-System|Hw_IoSystem = 257"},
+    {57, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_1~Head|Hw_SubModule = 258"},
+    {57, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_1~PROFINET_interface|Hw_Interface = 259"},
+    {57, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_1~PROFINET_interface~Port_1|Hw_Interface = 260"},
+    {57, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_1~PROFINET_interface~Port_2|Hw_Interface = 261"},
+    {57, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_1~IODevice|Hw_Device = 262"},
+    {57, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_1~Proxy|Hw_SubModule = 264"},
+    {58, "+|device|ZZI02|ET200SP.Device"},
+    {58, "+|IO system|S7-1500/ET200MP station_2 / PROFINET IO-System|IOSystem_PROFINET"},
+    {58, "+|hardware identifier|ZZCHARLIE / Default tag table / Local~PROFINET_IO-System|Hw_IoSystem = 257"},
+    {58, "+|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~IODevice|Hw_Device = 265"},
+    {58, "+|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~Proxy|Hw_SubModule = 267"},
+    {58, "+|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~Head|Hw_SubModule = 268"},
+    {58, "+|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~PROFINET_interface|Hw_Interface = 269"},
+    {58, "+|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~PROFINET_interface~Port_1|Hw_Interface = 270"},
+    {58, "+|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~PROFINET_interface~Port_2|Hw_Interface = 271"},
+    {59, "~|module|ZZI02 / IO device_2|IO controller|ZZCHARLIE|ZZBRAVO"},
+    {59, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_2~IODevice|Hw_Device = 265"},
+    {59, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_2~Proxy|Hw_SubModule = 267"},
+    {59, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_2~Head|Hw_SubModule = 268"},
+    {59, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_2~PROFINET_interface|Hw_Interface = 269"},
+    {59, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_2~PROFINET_interface~Port_1|Hw_Interface = 270"},
+    {59, "+|hardware identifier|ZZBRAVO / Default tag table / IO_device_2~PROFINET_interface~Port_2|Hw_Interface = 271"},
+    {59, "-|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~IODevice|Hw_Device = 265"},
+    {59, "-|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~Proxy|Hw_SubModule = 267"},
+    {59, "-|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~Head|Hw_SubModule = 268"},
+    {59, "-|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~PROFINET_interface|Hw_Interface = 269"},
+    {59, "-|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~PROFINET_interface~Port_1|Hw_Interface = 270"},
+    {59, "-|hardware identifier|ZZCHARLIE / Default tag table / IO_device_2~PROFINET_interface~Port_2|Hw_Interface = 271"},
+    {60, "+|port connection|S7-1500/ET200MP station_1 / ZZBRAVO / X1 P1 <-> ZZIO1 / IO device_1 / X1 P1R|"},
+    {61, "+|port connection|ZZIO1 / IO device_1 / X1 P2R <-> ZZI02 / IO device_2 / X1 P1R|"},
+    {62, "+|connection|S7-1500/ET200MP station_1 / S7_Connection_1|S7 to S7-1500/ET200MP station_2 / ZZCHARLIE / X1"},
+    {63, "+|connection|S7-1500/ET200MP station_1 / S7_Connection_2|S7 to 192.168.77.99"},
+    {64, "-|connection|S7-1500/ET200MP station_1 / S7_Connection_1|S7 to S7-1500/ET200MP station_2 / ZZCHARLIE / X1"},
+    {65, "+|device|S7-1200 station_2|S71200.Device"},
+    {66, "~|module|S7-1200 station_2 / ZZDELTA|name|PLC_1|ZZDELTA"},
+    {66, "~|module|S7-1200 station_2 / ZZDELTA|access protection|users_and_roles|users_and_roles_and_access_levels"},
+    {66, "~|module|S7-1200 station_2 / ZZDELTA|access control via access levels||yes"},
+    {66, "~|hardware identifier|ZZDELTA / Default tag table / Local|stands for|S7-1200 station_2 / CPU proxy|S7-1200 station_2 /  ZZDELTA"},
+    {69, "~|module|S7-1200 station_2 / ZZDELTA|access level|No access (complete protection)|Read access"},
+    {70, "~|module|S7-1200 station_2 / ZZDELTA|access level|Read access|HMI access"},
+    {71, "~|module|S7-1200 station_2 / ZZDELTA|access level|HMI access|Full access (no protection)"},
+    {73, "~|project|s11_blocks|name|s10_connections|s11_blocks"},
+    {74, "+|block|ZZBRAVO / ZZFC [FB3]|SCL"},
+    {75, "+|block|ZZBRAVO / ZZCYCLIC [OB30]|CyclicInterrupt, LAD"},
+    {75, "+|system constant|ZZBRAVO / Default tag table / OB_ZZCYCLIC|OB_Cyclic = 30"},
+    {76, "~|block|ZZBRAVO / ZZFC [FB3]|folder|Program blocks|Program blocks/Group_1"},
+    {77, "~|block|ZZBRAVO / ZZFC [FB77]|number|3|77"},
+    {78, "~|block|ZZBRAVO / ZZFC [FB77]|title||ZZTITLE"},
+    {78, "~|block|ZZBRAVO / ZZFC [FB77]|comment||ZZCOMMENT"},
+    {78, "~|block|ZZBRAVO / ZZFC [FB77]|author||ZZAUTH"},
+    {78, "~|block|ZZBRAVO / ZZFC [FB77]|family||ZZFAM"},
+    {78, "~|block|ZZBRAVO / ZZFC [FB77]|user-defined ID||ZZID"},
+    {78, "~|block|ZZBRAVO / ZZFC [FB77]|version|0.1|1.2"},
+    {79, "~|block|ZZBRAVO / DB_Standard [DB1]|title||ZZDBTITLE"},
+    {79, "~|block|ZZBRAVO / DB_Standard [DB1]|comment||ZZDBCOMMENT"},
+    {80, "~|block|ZZBRAVO / DB_Standard [DB1]|write-protected in the device|no|yes"},
+};
+
+// s12_constants: saves 3 to 9 are those of s11_blocks, 11 to 17 the constants.
+const Step kStepsConstants[] = {
+    {3, "~|block|ZZBRAVO / Block_2 [FB2]|copy protection||cpu"},
+    {4, "~|block|ZZBRAVO / Block_1 [FB1]|protection|know-how|"},
+    {5, "-|block|ZZBRAVO / ZZCYCLIC [OB30]|CyclicInterrupt, LAD"},
+    {5, "-|system constant|ZZBRAVO / Default tag table / OB_ZZCYCLIC|OB_Cyclic = 30"},
+    {6, "+|block|ZZBRAVO / ZZDB [DB5]|global, DB"},
+    {7, "+|block|ZZCHARLIE / ZZDB2 [DB1]|global, DB"},
+    {8, "~|block|ZZCHARLIE / ZZDB2 [DB1]|accessible from OPC UA||no"},
+    {9, "~|block|ZZCHARLIE / ZZDB2 [DB1]|accessible via web server||no"},
+    {11, "~|project|s12_constants|name|s11_blocks|s12_constants"},
+    {12, "+|user constant|ZZBRAVO / Default tag table / ZZCONST_INT|Int = 42"},
+    {13, "+|user constant|ZZBRAVO / Default tag table / ZZCONST_REAL|Real = 3.5"},
+    {14, "+|user constant|ZZBRAVO / Tag MyTagTable / ZZCONST_TIME|Time = T#5s"},
+    {15, "+|user constant|ZZBRAVO / Tag MyTagTable / ZZCONST_STR|String = 'Hello'"},
+    {16, "~|user constant|ZZBRAVO / Default tag table / ZZCONST_INT|value|42|43"},
+    {17, "-|user constant|ZZBRAVO / Default tag table / ZZCONST_REAL|Real = 3.5"},
+};
+
+std::string stepText(const tia::HistoryChange& c) {
+    if (c.change == "changed") return "~|" + c.kind + "|" + c.item + "|" + c.attribute + "|" + c.from + "|" + c.to;
+    return std::string(c.change == "added" ? "+" : "-") + "|" + c.kind + "|" + c.item + "|" + c.description;
+}
+
+bool followsFromSomethingElse(const tia::HistoryChange& c) {
+    if (c.change != "changed") return !c.partOf.empty();
+    return c.isTime || c.isMarker || c.isResult || c.attribute == "needs compiling";
+}
+
+tia::History history(const std::string& name, size_t throughSave = 0) {
+    current = name + " history";
+    tia::LoadedSource src = tia::loadProjectData(std::string(TIACONV_FIXTURES) + "/" + name);
+    return tia::buildHistory(std::make_shared<const std::vector<uint8_t>>(std::move(src.data)), throughSave);
+}
+
+// The saves from `first` on show exactly the listed changes, no more.
+template <size_t N>
+void checkSteps(const tia::History& h, const Step (&steps)[N], size_t first, const std::set<size_t>& undocumented) {
+    for (const auto& s : h.saves) {
+        if (s.number < first || undocumented.count(s.number)) continue;
+        std::multiset<std::string> expected, found;
+        for (const Step& st : steps)
+            if (st.save == s.number) expected.insert(st.change);
+        for (const auto& c : s.changes)
+            if (!followsFromSomethingElse(c)) found.insert(stepText(c));
+        ++checks;
+        if (expected != found) {
+            ++failures;
+            std::printf("FAIL %s: save %zu\n", current.c_str(), s.number);
+            for (const auto& e : expected)
+                if (!found.count(e)) std::printf("    missing: %s\n", e.c_str());
+            for (const auto& f : found)
+                if (!expected.count(f)) std::printf("    not expected: %s\n", f.c_str());
+        }
+    }
+}
+
+// First state plus everything added minus everything removed is what the
+// project holds at the end, kind by kind.
+void checkTotals(const tia::History& h, const Loaded& end) {
+    std::map<std::string, long> n;
+    for (const auto& s : h.saves) {
+        for (const auto& kv : s.contents) n[kv.first] += static_cast<long>(kv.second);
+        for (const auto& c : s.changes) {
+            if (c.change == "added") ++n[c.kind];
+            if (c.change == "removed") --n[c.kind];
+        }
+    }
+    long devices = 0, modules = 0, interfaces = 0, blocks = 0, types = 0, user = 0, hardware = 0;
+    for (const auto& d : end.inv.devices) {
+        if (!d.inProject) continue;
+        ++devices;
+        modules += static_cast<long>(d.modules.size());
+        for (const auto& m : d.modules) interfaces += static_cast<long>(m.interfaces.size());
+    }
+    for (const auto& b : end.prog.blockList) ++(b.type == "UDT" || b.type == "SDT" ? types : blocks);
+    for (const auto& c : end.prog.constants) {
+        if (c.kind == "user") ++user;
+        if (c.kind == "hardware") ++hardware;
+    }
+    CHECK(n["device"] == devices);
+    CHECK(n["module"] == modules);
+    CHECK(n["interface"] == interfaces);
+    CHECK(n["subnet"] == static_cast<long>(end.inv.subnets.size()));
+    CHECK(n["IO system"] == static_cast<long>(end.inv.ioSystems.size()));
+    CHECK(n["port connection"] == static_cast<long>(end.inv.portLinks.size()));
+    CHECK(n["connection"] == static_cast<long>(end.inv.connections.size()));
+    CHECK(n["block"] == blocks);
+    CHECK(n["data type"] == types);
+    CHECK(n["tag"] == static_cast<long>(end.prog.tags.size()));
+    CHECK(n["user constant"] == user);
+    CHECK(n["hardware identifier"] == hardware);
+}
+
+void testHistory() {
+    {
+        const tia::History h = history("s11_blocks_a");
+        CHECK(h.savesInFile == 80 && h.saves.size() == 80);
+        CHECK(h.notes.empty());
+        // TIA Portal's own list: the project was created, nothing since
+        CHECK(h.events.size() == 1);
+        if (h.events.size() == 1) {
+            CHECK(h.events[0].event == "ProjectHistoryUserCreated" && h.events[0].version == "V21");
+            CHECK(h.events[0].date == "2026-10-05T13:00:10.135Z");
+            CHECK(tia::projectEventText(h.events[0]) == "Project created with TIA Portal V21");
+        }
+        if (h.saves.size() == 80) {
+            auto save = [&](size_t n) -> const tia::HistorySave& { return h.saves[n - 1]; };
+            // a new project: a save with the type model only, then the empty project
+            CHECK(save(1).beforeProject && save(1).objectsWritten == 0 && save(1).time.empty());
+            CHECK(save(2).firstState && save(2).contents.empty() && save(2).objectsWritten == 344);
+            CHECK(save(2).time == "2026-10-05T13:00:10.683Z" && save(2).timeSource == "latest_change");
+            CHECK(save(2).by == "PC");
+            // the PLC was renamed: the save did not write the project object,
+            // the time and the user are those of the objects it did write
+            CHECK(save(5).time == "2026-10-05T13:03:42.678Z" && save(5).by == "PC");
+            CHECK(save(5).objectsWritten == 9 && save(5).objectsDeleted == 0);
+            // a router address: the three objects written name no user
+            CHECK(save(9).time == "2026-10-05T13:10:05.707Z" && save(9).by.empty());
+            // the tags of save 17 were entered over six minutes; the project
+            // object in the same save has an earlier time than the last of them
+            CHECK(save(17).time == "2026-10-05T17:57:32.278Z" && save(17).by == "PC");
+            // saved without a change
+            for (size_t n : {27u, 52u, 72u}) {
+                CHECK(save(n).changes.empty() && save(n).objectsWritten == 1 && save(n).time.empty());
+                CHECK(save(n).objectTypes.size() == 1 && save(n).objectTypes[0].type == "CorePersistenceInfo");
+            }
+            // a password entered, a role created: written, and nothing to report
+            CHECK(save(67).changes.empty() && save(67).objectsWritten == 3);
+            CHECK(save(68).changes.empty() && save(68).objectsWritten == 6);
+            bool role = false;
+            for (const auto& t : save(68).objectTypes)
+                if (t.type == "CustomRole" && t.written == 1) role = true;
+            CHECK(role);
+            // a station comes with its parts
+            size_t parts = 0;
+            for (const auto& c : save(3).changes)
+                if (c.change == "added" && c.partOf == "S7-1200 station_1") ++parts;
+            CHECK(parts == 2);  // rack and CPU; the interface is part of the CPU
+            CHECK(save(64).objectsDeleted == 2);  // the two halves of the S7 connection
+            // every save that changed something has a time, and they are in order
+            std::string last;
+            bool ordered = true, complete = true;
+            for (const auto& s : h.saves) {
+                if (s.time.empty()) {
+                    if (!s.changes.empty()) complete = false;
+                    continue;
+                }
+                if (s.time <= last) ordered = false;
+                last = s.time;
+            }
+            CHECK(ordered && complete && save(80).time == "2026-10-06T20:47:12.487Z");
+        }
+        checkSteps(h, kStepsBlocksA, 3, {17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27});
+        checkTotals(h, load("s11_blocks_a"));
+
+        // the history up to a save is the start of the whole history
+        const tia::History part = history("s11_blocks_a", 51);
+        CHECK(part.savesInFile == 80 && part.saves.size() == 51 && part.notes.size() == 1);
+        bool same = part.saves.size() <= h.saves.size();
+        for (size_t i = 0; same && i < part.saves.size(); ++i) {
+            same = part.saves[i].changes.size() == h.saves[i].changes.size() && part.saves[i].time == h.saves[i].time;
+            for (size_t k = 0; same && k < part.saves[i].changes.size(); ++k)
+                same = stepText(part.saves[i].changes[k]) == stepText(h.saves[i].changes[k]);
+        }
+        CHECK(same);
+    }
+    {
+        // TIA Portal wrote this file anew: its first save holds the type
+        // model, the second the whole project as it was then
+        const tia::History h = history("s12_constants");
+        CHECK(h.savesInFile == 17 && h.saves.size() == 17);
+        CHECK(h.notes.size() == 1 && h.notes[0].find("starts at save 2") != std::string::npos);
+        if (h.saves.size() == 17) {
+            CHECK(h.saves[0].beforeProject);
+            CHECK(h.saves[1].firstState && h.saves[1].objectsWritten == 1430);
+            std::map<std::string, size_t> contents(h.saves[1].contents.begin(), h.saves[1].contents.end());
+            CHECK(contents["device"] == 6 && contents["block"] == 12 && contents["tag"] == 12);
+            CHECK(h.saves[9].changes.empty() && h.saves[9].objectsWritten == 1);  // saved without a change
+            // the file on the PC was last written at 20:44:27.140 UTC
+            CHECK(h.saves[16].time == "2026-10-07T20:44:27.109Z" && h.saves[16].by == "PC");
+            CHECK(h.saves[16].objectsWritten == 7 && h.saves[16].objectsDeleted == 1);
+        }
+        checkSteps(h, kStepsConstants, 3, {});
+        checkTotals(h, load("s12_constants"));
+    }
+    for (const char* name : {"s00_empty", "s07_second", "s08_program", "s09_security", "s10_connections", "s11_blocks"}) {
+        const tia::History h = history(name);
+        CHECK(h.saves.size() == h.savesInFile && !h.saves.empty());
+        bool problems = false;
+        for (const auto& s : h.saves)
+            if (!s.problem.empty() || s.afterLastSave) problems = true;
+        CHECK(!problems);
+        checkTotals(h, load(name));
+    }
 }
 
 }  // namespace
@@ -1032,6 +1367,7 @@ int main() {
         // 23 hardware identifiers and the OB constant: nothing else, nothing missing
         CHECK(matched == 24 && kinds["hardware"] + kinds["ob"] == 24);
     }
+    testHistory();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

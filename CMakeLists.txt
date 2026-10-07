@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tiaconv VERSION 0.8.0 LANGUAGES C CXX)
+project(tiaconv VERSION 0.9.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,7 @@ target_compile_definitions(miniz PUBLIC MINIZ_NO_ARCHIVE_WRITING_APIS)
 
 add_library(tiacore STATIC
   src/container.cpp
+  src/history.cpp
   src/inventory.cpp
   src/meta.cpp
   src/output.cpp
@@ -81,4 +82,10 @@ if(BUILD_TESTING)
     -DTIACONV=$<TARGET_FILE:tiaconv>
     -DPROJECT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/s10_connections
     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_save.cmake)
+
+  add_test(NAME cli_history COMMAND ${CMAKE_COMMAND}
+    -DTIACONV=$<TARGET_FILE:tiaconv>
+    -DPROJECT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/s10_connections
+    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/cli_history
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_history.cmake)
 endif()

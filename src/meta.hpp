@@ -78,7 +78,10 @@ struct TypeDef {
     // ObjectType
     std::vector<std::pair<std::string, bool>> bases;  // name, primary
     std::vector<ImplementsDef> implements;
-    // Structure / Array are only needed for their storage size.
+    // Structure: its elements in the order of the type model (name and type)
+    std::vector<AttributeDef> elements;
+    // Array: the type of its elements
+    std::string elementType;
 
     std::string shortName() const;
 };

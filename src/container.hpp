@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,9 +55,12 @@ public:
     // Takes ownership of the file contents. Throws ParseError when the data is
     // not a recognisable PLF file.
     static Container parse(std::vector<uint8_t> data, const ContainerOptions& opt = {});
+    // The same without taking the contents over, so that one file in memory
+    // can be read as it was after each of its saves.
+    static Container parse(std::shared_ptr<const std::vector<uint8_t>> data, const ContainerOptions& opt = {});
 
     Layout layout() const { return layout_; }
-    Span data() const { return Span(data_.data(), data_.size()); }
+    Span data() const { return Span(data_->data(), data_->size()); }
     const std::vector<Block>& blocks() const { return blocks_; }
     const std::vector<SaveMarker>& markers() const { return markers_; }
 
@@ -78,6 +82,13 @@ public:
     // saving a V21 project 23 times, one change per save); in the older one
     // with a commit marker.
     size_t saveCount() const { return saveCount_; }
+    // For each save, the number of blocks in the file when it was complete:
+    // save n wrote blocks()[saveEnds()[n-2]] up to blocks()[saveEnds()[n-1]-1].
+    const std::vector<size_t>& saveEnds() const { return saveEnds_; }
+    // Object blocks that follow the last save marker. Normally none: seen in
+    // files written in one go (a project archive), where one marker follows
+    // the type model and the whole project comes after it.
+    size_t objectsAfterLastSave() const { return objectsAfterLastSave_; }
 
     size_t hashErrors() const { return hashErrors_; }
     bool hashesVerified() const { return hashesVerified_; }
@@ -86,12 +97,14 @@ public:
     const std::string& stopReason() const { return stopReason_; }
 
 private:
-    std::vector<uint8_t> data_;
+    std::shared_ptr<const std::vector<uint8_t>> data_;
     Layout layout_ = Layout::V14;
     std::vector<Block> blocks_;
     std::vector<SaveMarker> markers_;
     std::map<std::pair<uint32_t, uint64_t>, size_t> latest_;
     size_t saveCount_ = 0;
+    std::vector<size_t> saveEnds_;
+    size_t objectsAfterLastSave_ = 0;
     size_t hashErrors_ = 0;
     bool hashesVerified_ = false;
     bool complete_ = true;

@@ -1,5 +1,27 @@
 # Changes
 
+## 0.9.0
+
+- Save history: `--history` adds to the text report and the JSON what was
+  added, removed or changed with each save, with a time and a user name, as
+  far as the file still holds its earlier saves; `--history-csv` writes one
+  row per change. Compared is what tiaconv reports: hardware, addresses,
+  security settings, IO systems, port connections, connections, blocks, data
+  block members, tags and constants. A save that changed something else is
+  listed with the kinds of object it wrote.
+- The list TIA Portal keeps itself (project created, converted from an older
+  version) is read: `project.events` in the JSON, and at the top of the
+  history.
+- Structures and arrays of structures in attribute values are decoded, where
+  the stored data follows the rule exactly; `--objects` shows them as JSON
+  objects and arrays instead of a size.
+- A project file that goes on after its last save marker (a project archive)
+  is reported as such in the last line of the report, and in the JSON as
+  `source.objects_after_last_save`. `--save N` on such a file shows the
+  state at the marker, as before.
+- Documentation: a file starts with a save that holds only the type model;
+  the description of archives and rewritten files was corrected accordingly.
+
 ## 0.8.0
 
 - Constants: the hardware identifiers of each PLC with the module, interface

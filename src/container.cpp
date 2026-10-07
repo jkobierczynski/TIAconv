@@ -27,7 +27,12 @@ const char kClose[] = "\x0a##CLOSE###";
 }  // namespace
 
 Container Container::parse(std::vector<uint8_t> data, const ContainerOptions& opt) {
+    return parse(std::make_shared<const std::vector<uint8_t>>(std::move(data)), opt);
+}
+
+Container Container::parse(std::shared_ptr<const std::vector<uint8_t>> data, const ContainerOptions& opt) {
     Container c;
+    if (!data) throw ParseError("no data");
     c.data_ = std::move(data);
     Span d = c.data();
 
@@ -63,6 +68,7 @@ Container Container::parse(std::vector<uint8_t> data, const ContainerOptions& op
     bool frozen = false;
     auto saveDone = [&]() {
         ++c.saveCount_;
+        c.saveEnds_.push_back(c.blocks_.size());
         if (opt.throughSave && c.saveCount_ >= opt.throughSave) frozen = true;
     };
 
@@ -110,6 +116,8 @@ Container Container::parse(std::vector<uint8_t> data, const ContainerOptions& op
         if (hashed && b.type == kSaveObject) saveDone();
         off += total;
     }
+    for (size_t i = c.saveEnds_.empty() ? 0 : c.saveEnds_.back(); i < c.blocks_.size(); ++i)
+        if (!c.isSystem(c.blocks_[i])) ++c.objectsAfterLastSave_;
     return c;
 }
 

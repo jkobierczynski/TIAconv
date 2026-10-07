@@ -1,14 +1,17 @@
 // tiaconv - TIA Portal project reader
 // Copyright (C) 2026 Jurgen Kobierczynski
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "container.hpp"
+#include "history.hpp"
 #include "inventory.hpp"
 #include "output.hpp"
 #include "program.hpp"
@@ -56,6 +59,9 @@ const char kUsage[] =
     "      --all-items     list every device item, including ports and internal items\n"
     "      --verify        check the SHA-256 hash of every block (V14+ projects)\n"
     "      --save N        show the project as it was after its N-th save\n"
+    "      --history       add the save history: what changed with each save\n"
+    "                      (reads the file once per save; with --save N, up to save N)\n"
+    "      --history-csv FILE  write the save history as CSV, one row per change\n"
     "  -q, --quiet         do not print the text report\n"
     "  -h, --help          show this help\n"
     "  -V, --version       show the version\n"
@@ -64,8 +70,9 @@ const char kUsage[] =
     "installed.\n";
 
 struct Args {
-    std::string input, json, csv, objects, meta, tagsCsv, blocksCsv, blockListCsv, constantsCsv;
+    std::string input, json, csv, objects, meta, tagsCsv, blocksCsv, blockListCsv, constantsCsv, historyCsv;
     bool allDevices = false, allItems = false, verify = false, quiet = false, members = false, noBom = false;
+    bool history = false;
     size_t save = 0;  // 0: the current state
 };
 
@@ -115,6 +122,8 @@ int run(const std::vector<std::string>& argv) {
         else if (s == "--constants-csv") value(a.constantsCsv);
         else if (s == "--blocks-csv") value(a.blocksCsv);
         else if (s == "--block-list-csv") value(a.blockListCsv);
+        else if (s == "--history") a.history = true;
+        else if (s == "--history-csv") value(a.historyCsv);
         else if (s == "--members") a.members = true;
         else if (s == "--no-bom") a.noBom = true;
         else if (s == "--meta") value(a.meta);
@@ -142,7 +151,8 @@ int run(const std::vector<std::string>& argv) {
     tia::ContainerOptions copt;
     copt.verifyHashes = a.verify;
     copt.throughSave = a.save;
-    tia::Project project(tia::Container::parse(std::move(src.data), copt));
+    auto fileData = std::make_shared<const std::vector<uint8_t>>(std::move(src.data));
+    tia::Project project(tia::Container::parse(fileData, copt));
     if (a.save && a.save > project.container().saveCount())
         throw std::invalid_argument(project.container().saveCount()
                                         ? "--save " + std::to_string(a.save) + ": the file records " +
@@ -170,10 +180,24 @@ int run(const std::vector<std::string>& argv) {
     ctx.members = a.members;
     ctx.shownSave = a.save;
 
+    tia::History history;
+    if (a.history || !a.historyCsv.empty()) {
+        // The file is read once per save: say so when that takes a while.
+        const auto started = std::chrono::steady_clock::now();
+        auto told = started;
+        history = tia::buildHistory(fileData, a.save, [&](size_t n, size_t of) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - told < std::chrono::seconds(3)) return;
+            told = now;
+            std::cerr << "tiaconv: reading save " << n << " of " << of << " for the history\n";
+        });
+        if (a.history) ctx.history = &history;
+    }
+
     // Keep standard output clean when a machine-readable format goes there.
     const bool stdoutTaken = a.json == "-" || a.csv == "-" || a.objects == "-" || a.meta == "-" ||
                              a.tagsCsv == "-" || a.blocksCsv == "-" || a.blockListCsv == "-" ||
-                             a.constantsCsv == "-";
+                             a.constantsCsv == "-" || a.historyCsv == "-";
     if (!a.quiet) tia::writeText(stdoutTaken ? std::cerr : std::cout, inv, prog, ctx);
     if (!a.json.empty()) emit(a.json, [&](std::ostream& o) { tia::writeJson(o, inv, prog, ctx); });
     const bool bom = !a.noBom;
@@ -183,6 +207,8 @@ int run(const std::vector<std::string>& argv) {
     if (!a.blockListCsv.empty())
         emitCsv(a.blockListCsv, bom, [&](std::ostream& o) { tia::writeBlockListCsv(o, prog); });
     if (!a.blocksCsv.empty()) emitCsv(a.blocksCsv, bom, [&](std::ostream& o) { tia::writeBlocksCsv(o, prog); });
+    if (!a.historyCsv.empty())
+        emitCsv(a.historyCsv, bom, [&](std::ostream& o) { tia::writeHistoryCsv(o, history); });
     if (!a.csv.empty()) emitCsv(a.csv, bom, [&](std::ostream& o) { tia::writeCsv(o, inv, ctx); });
     if (!a.objects.empty()) emit(a.objects, [&](std::ostream& o) { tia::writeObjects(o, project); });
     if (!a.meta.empty())

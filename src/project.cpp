@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -17,6 +18,13 @@ bool Value::asUInt(uint64_t& out) const {
         case Type::UInt: out = u; return true;
         default: return false;
     }
+}
+
+const Value* Value::field(const std::string& name) const {
+    if (type != Type::Record) return nullptr;
+    for (size_t i = 0; i < names.size() && i < elements.size(); ++i)
+        if (names[i] == name) return &elements[i];
+    return nullptr;
 }
 
 bool Value::truthy() const {
@@ -267,6 +275,99 @@ bool Project::loadExpandoTable(Span p) {
     }
 }
 
+// A stored structure, at `offset` in a segment:
+//   size (u32; u16 in the older layout), counting itself
+//   one fixed-size field per element, in the order of the type model
+//   the strings and blobs those fields point to, offsets from the size field
+// Read only when every element is a plain value and the fields and their
+// strings cover the structure exactly; anything else stays unread.
+bool Project::readRecord(const TypeDef& type, Span seg, size_t offset, Value& out) const {
+    const size_t head = container_.layout() == Layout::V11 ? 2 : 4;
+    if (!seg.has(offset, head)) return false;
+    const size_t size = head == 2 ? seg.u16(offset) : seg.u32(offset);
+    if (size < head || !seg.has(offset, size)) return false;
+    const Span rec = seg.sub(offset, size);
+    Value v;
+    v.type = Value::Type::Record;
+    std::vector<std::pair<size_t, size_t>> spans;
+    size_t pos = head;
+    for (const auto& e : type.elements) {
+        const TypeDef* et = meta_.find(e.type);
+        const Storage st = meta_.storage(e.type);
+        switch (st.kind) {
+            case ValueKind::Bool:
+            case ValueKind::UInt:
+            case ValueKind::Int:
+            case ValueKind::Float:
+            case ValueKind::DateTime:
+            case ValueKind::Guid:
+            case ValueKind::Enum:
+                break;
+            case ValueKind::String:
+            case ValueKind::Blob: {
+                if (pos + 4 > size) return false;
+                const size_t at = rec.u32(pos);
+                if (at == 0) break;
+                if (at >= size) return false;
+                size_t p = at;
+                const uint64_t n = rec.varint(p);
+                if (n < p - at || n > size - at) return false;
+                spans.emplace_back(at, at + static_cast<size_t>(n));
+                break;
+            }
+            default:
+                return false;  // nested structures, texts, references, unknown types
+        }
+        if (st.size == 0 || pos + st.size > size) return false;
+        v.names.push_back(e.name);
+        v.elements.push_back(readValue(st, st.kind == ValueKind::Enum ? et : nullptr, rec, pos));
+        pos += st.size;
+    }
+    std::sort(spans.begin(), spans.end());
+    size_t end = pos;
+    for (const auto& sp : spans) {
+        if (sp.first != end) return false;
+        end = sp.second;
+    }
+    if (end != size) return false;
+    out = std::move(v);
+    return true;
+}
+
+// A stored array of structures: u32 size, u32 count, count x u32 offset from
+// the size field, then the structures.
+bool Project::readList(const TypeDef& type, Span seg, size_t offset, Value& out) const {
+    const TypeDef* element = meta_.find(type.elementType);
+    if (!element || element->kind != TypeKind::Structure) return false;
+    if (!seg.has(offset, 8)) return false;
+    const size_t size = seg.u32(offset);
+    const size_t count = seg.u32(offset + 4);
+    if (size < 8 || !seg.has(offset, size) || count > 100000 || 8 + 4 * count > size) return false;
+    const Span arr = seg.sub(offset, size);
+    Value v;
+    v.type = Value::Type::List;
+    const size_t head = container_.layout() == Layout::V11 ? 2 : 4;
+    std::vector<std::pair<size_t, size_t>> spans;
+    for (size_t i = 0; i < count; ++i) {
+        const size_t at = arr.u32(8 + 4 * i);
+        if (at < 8 + 4 * count || at >= size) return false;
+        Value record;
+        if (!readRecord(*element, arr, at, record)) return false;
+        spans.emplace_back(at, at + (head == 2 ? arr.u16(at) : arr.u32(at)));
+        v.elements.push_back(std::move(record));
+    }
+    // the structures follow the offsets without a gap, to the end
+    std::sort(spans.begin(), spans.end());
+    size_t end = 8 + 4 * count;
+    for (const auto& sp : spans) {
+        if (sp.first != end) return false;
+        end = sp.second;
+    }
+    if (end != size) return false;
+    out = std::move(v);
+    return true;
+}
+
 Value Project::readValue(const Storage& st, const TypeDef* enumType, Span seg, size_t pos) const {
     Value v;
     switch (st.kind) {
@@ -350,6 +451,13 @@ Value Project::readValue(const Storage& st, const TypeDef* enumType, Span seg, s
                 v.s = seg.str(p, static_cast<size_t>(n) - prefix);
             } else {
                 v.type = Value::Type::Opaque;
+                // enumType is the structure or array type here
+                try {
+                    Value read;
+                    if (enumType && enumType->kind == TypeKind::Structure && readRecord(*enumType, seg, off, read)) return read;
+                    if (enumType && enumType->kind == TypeKind::Array && readList(*enumType, seg, off, read)) return read;
+                } catch (const ParseError&) {
+                }
             }
             return v;
         }
@@ -586,7 +694,9 @@ bool Project::decode(const Block& b, Object& out) const {
             size_t pos = 4;
             for (const auto& la : ls.attributes) {
                 if (!la.persisted) continue;
-                const TypeDef* et = la.storage.kind == ValueKind::Enum ? meta_.find(la.def->type) : nullptr;
+                const TypeDef* et = la.storage.kind == ValueKind::Enum || la.storage.kind == ValueKind::Relative
+                                        ? meta_.find(la.def->type)
+                                        : nullptr;
                 if (la.storage.size) vals.emplace_back(la.def->name, readValue(la.storage, et, seg, pos));
                 pos += la.storage.size;
             }

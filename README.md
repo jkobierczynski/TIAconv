@@ -16,7 +16,9 @@ it:
   for, and user constants with data type, value and comment,
 - PLC tags with data type, address and comment,
 - data blocks with their members, data types, start values, comments and,
-  for blocks with standard access, absolute offsets.
+  for blocks with standard access, absolute offsets,
+- the save history, as far as the file still holds it: what was added,
+  removed or changed with each save, when, and by which user.
 
 It is meant for asset inventories and security assessments (NIS2, IEC 62443),
 where you are handed a project folder or archive and need the hardware list
@@ -107,6 +109,8 @@ Options:
 | `--all-items` | list every device item, including ports and internal items |
 | `--verify` | check the SHA-256 hash of every block (V14 and later) |
 | `--save N` | show the project as it was after its N-th save (see below) |
+| `--history` | add the save history to the text report and the JSON: what changed with each save (see below) |
+| `--history-csv FILE` | the save history as CSV, one row per change |
 | `-q`, `--quiet` | no text report |
 
 Exit status: 0 on success, 1 for a usage error, 2 when the project cannot be
@@ -144,11 +148,125 @@ saves the file records, and `--save N` shows the project as it was after the
 N-th one, in every output format. A device or connection that was deleted
 later is there again; so is a setting before it was changed.
 
-How far back this goes differs. "Save as" keeps the history. Archiving a
-project (`.zap`) writes a new file with a single save. And TIA Portal now and
-then rewrites the file by itself, dropping everything old: in a test this
-happened within a few saves in which blocks were compiled and protected. A
-file rewritten that way reports two saves, the first of them empty.
+A file starts with a save that holds nothing but the type model; in a new
+project, save 2 is the empty project and save 3 the first thing done in it.
+
+How far back this goes differs. "Save as" keeps the history. TIA Portal now
+and then writes the whole file anew by itself, dropping everything old: in a
+test this happened within a few saves in which blocks were compiled and
+protected. Such a file has the whole project in its second save. The one
+project archive (`.zap19`) among the samples and one other public sample
+project are different again: one save marker after the type model, and the
+whole project written after it without a marker of its own. The last line of the report then reads
+`1 save recorded and 3107 objects written after the last`, and `--save 1`
+shows an empty project.
+
+### Save history
+
+`--history` reads the project as it was after every save and reports the
+differences from one to the next:
+
+    Save history:
+      Recorded by TIA Portal:
+        2026-10-05T13:00:10.135Z  Project created with TIA Portal V21
+      Save 1  no time  -  0 objects written
+          No project in the file yet
+      Save 2  2026-10-05T13:00:10.683Z  by PC  -  344 objects written
+          First state of the project in the file: an empty project
+      Save 3  2026-10-05T13:02:12.246Z  by PC  -  202 objects written
+          + device S7-1200 station_1  (S71200.Device)
+              module S7-1200 station_1 / Rack_0  (S7-1200 Rack, Rack, V1.0)
+              module S7-1200 station_1 / PLC_1  (CPU 1212C AC/DC/Rly, 6ES7 212-1BD30-0XB0, V2.2)
+              interface S7-1200 station_1 / PLC_1 / X1 : PN(LAN)  (IP 192.168.0.1)
+              with 1 block, 13 hardware identifiers, 1 system constant
+      Save 5  2026-10-05T13:03:42.678Z  by PC  -  9 objects written
+          ~ module S7-1200 station_1 / ZZALPHA: name: PLC_1 -> ZZALPHA
+      Save 7  2026-10-05T13:04:40.541Z  by PC  -  11 objects written
+          + subnet PN/IE_1
+          ~ interface S7-1200 station_1 / ZZALPHA / X1 : PN(LAN): IP address: 192.168.0.1 -> 192.168.77.11; subnet: (not set) -> PN/IE_1
+      ...
+      Save 32  2026-10-05T21:09:17.464Z  by PC  -  3 objects written
+          ~ module S7-1500/ET200MP station_1 / ZZBRAVO: access level: HMI access -> No access (complete protection); PUT/GET access: yes -> no
+      Save 64  2026-10-06T13:06:09.906Z  by PC  -  9 objects written, 2 of them as deleted
+          - connection S7-1500/ET200MP station_1 / S7_Connection_1  (S7 to S7-1500/ET200MP station_2 / ZZCHARLIE / X1)
+      Save 67  2026-10-06T13:16:26.004Z  by PC  -  3 objects written
+          No change in what is reported; written: 1 CorePersistenceInfo, 1 DeviceItemData, 1 ProjectData
+      Save 78  2026-10-06T20:42:21.305Z  by PC  -  7 objects written
+          ~ block ZZBRAVO / ZZFC [FB77]: title: (not set) -> ZZTITLE; comment: (not set) -> ZZCOMMENT; author: (not set) -> ZZAUTH; ...
+
+`+` is added, `-` removed, `~` changed.
+
+- **What is compared** is what tiaconv reports: devices, modules, interfaces
+  and their addresses, the security settings of a CPU, subnets, IO systems,
+  port connections, connections, blocks and their properties, data block
+  members, tags, constants, and the name of the project. A change in
+  anything else does not appear as a change. The line then reads `No change
+  in what is reported` and names the kinds of object the save wrote, so that
+  it is at least visible that something was saved. Save 67 above is a
+  password typed into the access level table: tiaconv reports no passwords,
+  and so nothing about them changing either. The same goes for users and
+  roles.
+- **Program code is not read.** That the code of a block changed shows as
+  `code changed` (TIA Portal's own time stamp of the block moved), likewise
+  `interface changed`, `compiled` and `downloaded`; what changed in the code
+  does not show. A block that was modified in a way none of this covers is
+  listed as `modified, in something that is not reported`.
+- **The first state** of the project in the file is counted, not listed: it
+  is not a change. When the file starts with a project that already has
+  contents, a note says that the history before it is not in the file.
+- **Time.** In the older file layout (V13) every save carries its own time.
+  In the newer one (V14 and later) it does not. The time shown is then the
+  latest "modified" time among the objects the save wrote: the save was made
+  then or later, and before the time of the next one. How much later is not
+  in the file. For the last save of one test project it could be compared
+  with the time the file was written on disk: 31 ms. A save without any
+  change has no time.
+- **By** is the user name TIA Portal stored as "last modified by" with the
+  project, or with the object changed last when the save did not write the
+  project. In the test projects that is the Windows user name; a few small
+  saves name nobody.
+- **`Recorded by TIA Portal`** is the list TIA Portal keeps itself in the
+  project (project created, converted from an older version), as stored.
+- **Objects written** counts the objects the save wrote to the file;
+  `as deleted` are those it removed. It says how much a save touched, also
+  where tiaconv reports no change.
+- When a station is added or removed, its modules and interfaces are listed
+  under it and the rest (blocks, hardware identifiers, tags) is counted.
+  The JSON and the CSV have one entry for each, marked with the item it is
+  part of.
+- When many items change in the same way in one save (twelve blocks
+  downloaded), they share a line, and from the thirteenth added or removed
+  item of a kind on, the text report only counts. The JSON and the CSV have
+  everything.
+- A data block member has no identity of its own in what tiaconv reads: a
+  renamed member shows as one removed and one added. An instance data block
+  that TIA Portal generated anew shows as `created anew`, with the members
+  that changed.
+- A change that only follows from a rename (what a hardware identifier
+  stands for, after its PLC was renamed) is not listed again.
+- What a file holds after its last save marker (see above) is listed as
+  `After save N`.
+
+With `--save N` the history stops at save N. The file is read once per save,
+so a history takes about as long as a normal run times the number of saves:
+two seconds for the 80 saves of the largest test project. A large project
+with many saves has not been timed; expect minutes. Progress goes to standard
+error.
+
+`--history-csv FILE` has one row per change with the columns `save`, `time`,
+`by`, `objects_written`, `objects_deleted`, `change` (`added`,
+`removed`, `changed`; or `first_state`, `none`, `no_project`, `not_read` for
+a save without a row of changes), `kind`, `item`, `part_of`, `attribute`,
+`from`, `to`, `description`. In the JSON the history is under `history`, with
+`events`, `saves` and per save `time`, `time_source` (`save` or
+`latest_change`), `by`, `objects_written`, `object_types`
+and `changes`. TIA Portal's own list is always in the JSON, as
+`project.events`.
+
+A history is evidence of what the file holds, not an audit trail: TIA Portal
+drops it when it writes the file anew, anyone who can write the file can
+change it, and the time and the user name are whatever the engineering
+station said they were.
 
 ### Security settings
 
@@ -456,6 +574,7 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | Port connections | V21: two cables drawn in the topology view appear, one per save, between the ports they were drawn between. |
 | S7 connections | V21: a connection between two PLCs of the project and one to an unspecified partner appear in the save in which they were made, with the end points, partner address and local and partner IDs of TIA Portal's connection table; a deleted connection disappears. **Not checked:** other connection types configured in the network view, connections over PROFIBUS or MPI. |
 | HMI connections | V15.1 and V19 samples only: one connection each, between the panel and the PLC of the project, with the addresses of those two devices. **Not compared with TIA Portal**, and no test project has one. |
+| Save history (`--history`) | V21: in the test projects 68 saves are documented with the one action taken in TIA Portal before each (hardware, addresses, 23 security settings, IO systems, cables, connections, blocks and their properties, constants). For every one of them the history lists exactly that action and what TIA Portal changed along with it, and nothing else; the two saves that only changed a password or a role list no change. Adding up the first state and all additions and removals gives the final contents of each of the eight test projects checked that way. Time: every save that changed something has one, the times are in order, and that of the last save of one test project is 31 ms before the modification time of the file on the PC; no other save could be compared with a clock. V13 sample: the four saves carry their own times and two user names; what was done in each is not known, so the changes listed there are unchecked. TIA Portal's own list reads "created with V21" in the test projects; whether TIA Portal shows the same has not been compared. |
 | Earlier saves (`--save`) | V21: test projects with 61 saves of one known action each; the report for save N shows exactly the actions up to N. One of them was rewritten by TIA Portal along the way and lost its history; the copy from before is kept as a fixture of its own. V13 sample: four saves are found and the modification date steps back accordingly, but what was done in each is not known. |
 | Blocks | V21: a test project with one action per save: a new function block and a cyclic interrupt OB appear with type, number, language and kind; a block moved into a group shows the group; a number set by hand, title, comment, author, family, version and user-defined ID read back as entered, for a code block and a data block; know-how protection set and removed, write protection, copy protection with its serial number, a data block write-protected in the device and the two "accessible from" options each show in the save in which they were set; a change makes the block "not compiled", compiling makes every block "compiled". The block numbers match two screenshots of the project tree, and one block's protection page matches what is reported for it. V19 sample: title, comment, author, family and version of the author's five function blocks are those in the SCL sources published with the project. The time stamps of one block match its "Time stamps" page, the network counts of two OBs match the editor, and the load and work memory of all ten blocks of a PLC match Program info > Resources. **Not checked:** the download times (none of the test projects was ever downloaded; in the public samples they lie within the project's lifetime), fail-safe blocks, languages other than LAD, FBD, STL and SCL. |
 | Tags | V21: the eight tags of the test project's tag table are identical to TIA Portal's own export of that table (name, data type, address, comment), and the number of tags per table matches the project tree. V13 sample: the four system-memory tags have the addresses TIA Portal assigns to them (`%MB1`, `%M1.1` .. `%M1.3`). |
@@ -477,7 +596,8 @@ comparison, one in which a security setting was changed before each of 23 saves,
 which the network was built up in the same way (stations, IO systems, cables,
 connections), one in which blocks were added, protected and compiled, and
 one with user constants;
-those are read as they were after every save. Corrupted and truncated
+those are read as they were after every save, and the save history is
+compared with the list of actions in `tests/fixtures/README.md`. Corrupted and truncated
 files are rejected or read partially with a warning; they must never crash the
 tool.
 

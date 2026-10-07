@@ -98,10 +98,23 @@ by content.
 In the newer layout every save ends with one system object of type `0x7000C`
 (**verified**: a V21 project saved 23 times in a row, one change per save,
 gained exactly one per save, and the blocks before each one hold exactly that
-change). Reading the block list only up to the n-th of them gives the project
-as it was after save n; `ContainerOptions::throughSave` does that. "Save as"
-keeps the history; a project archive (`.zap`) of the V19 sample has a single
-save, so archiving appears to drop it.
+change; later extended to 68 saves, see [Save history](#save-history)).
+Reading the block list only up to the n-th of them gives the project as it
+was after save n; `ContainerOptions::throughSave` does that. The object
+carries counters, among them the number of the save, and **no time stamp**.
+After the last one a file has one or two more system objects.
+
+The first of these objects follows the type model directly: **save 1 of a
+file holds no project**. In a new project the second save is the empty
+project (344 objects in V21).
+
+"Save as" keeps the history. Two samples were **written in one go**: the
+project archive (`.zap19`) of the V19 sample and the V15.1 sample have that
+first save object after the type model and then the whole project, with no
+save object after it. The present state of such a file is therefore not the
+state after its last save; `Container::objectsAfterLastSave()` counts the
+object blocks written there. What writes a file that way, besides
+archiving, is **unknown**.
 
 **TIA Portal sometimes rewrites the whole file**, and then the history is
 gone. Seen once (V21): a file of 2.9 MB with 80 saves was 1.2 MB with two
@@ -229,7 +242,37 @@ have more.
 | `xs:string` | 4 | offset from the segment start to: varint length **counting itself**, then bytes (UTF-8) |
 | `pe:BlobT`, `pe:XmlT`, `pe:MapT` | 4 | offset to length-prefixed bytes |
 | `pe:CoreTextAttributeT` | 4 | offset to a text in several languages, see below |
-| structure, array | 4 | offset (content not decoded by `tiaconv`) |
+| structure, array | 4 | offset to the structure or array, see below |
+
+### Structures and arrays
+
+A type the model declares as `<Structure>` with `<Element>` children is
+stored like a small segment of its own, at the offset the attribute holds:
+
+    size (including this field): u32 in the newer layout, u16 in the older
+    one field per element, in the order of the type model
+    the strings and blobs the fields point to
+
+Fields have the sizes of the table above. A string or blob field is a u32
+offset **from the size field of the structure** to a varint length counting
+itself and the bytes; 0 means the string is not there (an empty string has an
+offset and the length 1).
+
+An `<Array type="...">` of structures:
+
+    u32 size (including this field)
+    u32 count
+    count x u32 offset, from the size field of the array
+    the structures
+
+`tiaconv` reads a value this way only when everything fits exactly: the
+fields and the strings they point to cover the structure without gap or
+overlap, and the structures cover the array. In the samples that holds for
+every structure made of numbers, booleans, enumerations, dates, strings and
+blobs (**verified**: 3 339 structures of 17 kinds in seven project files,
+both layouts). Anything else stays an unread value: structures that contain
+structures or texts, and arrays of plain values, whose layout has not been
+worked out.
 
 ### Text in several languages
 
@@ -586,6 +629,68 @@ resets `Protection` and removes the version attributes.
 text in any attribute with "password", "Salt", "ProtectionIV" or
 "VerificationTag" in its name is replaced by `{"redacted": true}`.
 
+## Save history
+
+`CorePersistenceInfo` (one per project) has the attribute set
+`IPersistenceInfoAttributes` with two arrays of structures:
+
+- `History`, an array of `HistoryEvent`: `CurrentVersion`, `Date` (UTC),
+  `FeedbackId`, `LogFile`, `OldVersion`, `ServiceId`. TIA Portal's own list
+  of what happened to the project. Seen: `ProjectHistoryUserCreated`
+  (`CurrentVersion` "V21", "V19 Update 3", "V16", "V15.1", "V11 SP2 Update
+  2"), and in the V13 sample `ProjectSave` ("V13") followed five seconds
+  later by `ProjectHistoryConverted` (`CurrentVersion` "V13", `OldVersion`
+  "11.0.0.0", `LogFile` "ConversionLog.xml"). Ordinary saves add nothing to
+  it. `FeedbackId` is the key of a message text; the wording `tiaconv`
+  prints for the three is its own.
+- `ProjectSavePoint`, an array of `TiaPersistenceSavePoint`
+  (`AdditionalInfo`, `RelativeDirectoryPath`, `SavePointId`): the other
+  folders of the project (`IM\SearchIndex`, `XRef`, `Vci`, ...) with an id
+  each.
+
+The object is written in every save except the first of a file, also in a
+save without a change (**verified**: all 80 + 17 saves of the two longest
+test files; the four saves made without a change wrote this object and
+nothing else).
+
+**When** a save was made:
+
+- Older layout: the commit record of the save carries the time (see
+  [Blocks](#blocks)). It has no time zone; in the V13 sample three of the
+  four are within a second after the UTC "modified" time of the project
+  object, so they are UTC.
+- Newer layout: nothing in the save object. What a save does hold is
+  `ICoreAttributes.ModifiedTime` of every object it wrote, and the latest of
+  them is a lower bound: `tiaconv` reports that. In 69 of the 76 saves of
+  the longest test file that have a time at all, the latest is the project
+  object (`ProjectData`), seconds to minutes after the other objects, which
+  looks like TIA Portal setting it when it saves. For the last save of one
+  test project the file time on disk is known: 20:44:27.140, the project
+  object has 20:44:27.109 (**one observation**). But it is not a rule: four
+  saves did not write the project object at all (a PLC renamed, a router
+  address, a PROFINET name, a signal module added), and in three the project
+  object is older than other objects of the same save, by 4 seconds to 6
+  minutes (two PLCs added, and a session in which tags were entered).
+- `ICoreAttributes.LastModifiedBy` is the user name. Not every object has
+  one. In the V13 sample the project object changes from one name to
+  another between saves 2 and 3.
+
+**What** a save changed: `tiaconv --history` builds its whole report once
+per save and compares. The test projects document 68 saves with the action
+taken in TIA Portal before each, and for each the difference is that action
+(`tests/fixtures/README.md`, `tests/fixtures_test.cpp`). Things learned from
+that:
+
+- TIA Portal generates an instance data block anew when its function block
+  changes: the old object is deleted and a new one with the same name and
+  number is written (V13 sample).
+- Reassigning an IO device to another controller deletes its hardware
+  identifiers on the old controller and creates new objects with the same
+  values on the new one.
+- Entering a password for an access level writes the CPU item and nothing
+  that `tiaconv` reports; creating a role writes `CustomRole`,
+  `UmacRootData` and a `SystemDeviceFunctionRightProxy`.
+
 ## Blocks
 
 Everything TIA Portal lists under "Program blocks" and "PLC data types" is an
@@ -907,7 +1012,13 @@ all three configured items (both CPUs and the signal module) are as decoded.
   Anonymous user on an S7-1500 as it does on the S7-1200; other values of `OmsCommunicationMode` and `TimeSyncRole`.
 - Constants of structured types, if TIA Portal allows them, and system
   constants of kinds not in the samples.
-- What makes TIA Portal rewrite the project file.
+- What makes TIA Portal rewrite the project file, and what writes a file in
+  one go without a closing save object (seen in an archive and in one sample).
+- When exactly TIA Portal sets the "modified" time of the project object.
+- Other `FeedbackId` values of the project history (upgrades between V14+
+  versions, library updates), and whether TIA Portal's "Project history" tab
+  shows the same entries.
+- Structures that contain structures or texts, and arrays of plain values.
 - Blocks: fail-safe blocks, GRAPH and other languages not in the samples,
   blocks that are instances of library types (relation `IsInstanceOf`),
   the call list kept with the compiled block, download times against a real

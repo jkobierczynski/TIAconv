@@ -14,7 +14,7 @@ namespace {
 
 using Key = std::pair<uint32_t, uint64_t>;
 
-enum class Role { None, Project, Device, Item, Node, Subnet, Connection, IoSystem, RightSet, Right };
+enum class Role { None, Project, Device, Item, Node, Subnet, Connection, IoSystem, RightSet, Right, Persistence };
 
 const char kBaseDevice[] = "Siemens.Automation.DomainModel.BaseDeviceData";
 const char kBaseDeviceItem[] = "Siemens.Automation.DomainModel.BaseDeviceItemData";
@@ -174,6 +174,15 @@ std::string accessLevelName(const std::string& type, const std::string& firmware
     return std::string();
 }
 
+std::string projectEventText(const ProjectEvent& e) {
+    if (e.event == "ProjectHistoryUserCreated") return "Project created with TIA Portal " + e.version;
+    if (e.event == "ProjectHistoryConverted")
+        return "Project converted to TIA Portal " + e.version +
+               (e.oldVersion.empty() ? std::string() : " (from version " + e.oldVersion + ")");
+    if (e.event == "ProjectSave") return "Project saved with TIA Portal " + e.version;
+    return std::string();
+}
+
 Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
     Inventory inv;
     const Container& c = project.container();
@@ -189,6 +198,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
 
     inv.stats.blocks = c.blocks().size();
     inv.stats.saves = c.saveCount();
+    inv.stats.objectsAfterLastSave = c.objectsAfterLastSave();
     for (const auto& m : c.markers())
         if (m.kind == "commit") inv.saves.push_back(formatTicks(m.ticks));
 
@@ -208,6 +218,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
                 else if (meta.derivesFromShort(t->name, "MastersystemData")) r = Role::IoSystem;
                 else if (meta.derivesFromShort(t->name, "DeviceFunctionRightSet")) r = Role::RightSet;
                 else if (meta.derivesFromShort(t->name, "DeviceFunctionRight")) r = Role::Right;
+                else if (meta.derivesFromShort(t->name, "CorePersistenceInfo")) r = Role::Persistence;
             }
         }
         roles[type] = r;
@@ -341,6 +352,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             items[key] = std::move(r);
         } else if (role == Role::Subnet) {
             Subnet s;
+            s.id = b.id;
             s.name = o.attrString(core, "Name");
             s.netType = intAttr(o, "ISubnetData", "NetType");
             subnets[key] = std::move(s);
@@ -369,6 +381,24 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
                     if (rel.relation == relIoHeads && (rel.targetType || rel.targetId))
                         r.heads.emplace_back(rel.targetType, rel.targetId);
             ioRecs.push_back(std::move(r));
+        } else if (role == Role::Persistence) {
+            // The history TIA Portal keeps itself, a list of structures.
+            const Value* h = o.attr("IPersistenceInfoAttributes", "History");
+            if (h && h->type == Value::Type::List)
+                for (const Value& rec : h->elements) {
+                    auto text = [&](const char* name) {
+                        const Value* f = rec.field(name);
+                        return f && (f->type == Value::Type::String || f->type == Value::Type::DateTime) ? f->s
+                                                                                                         : std::string();
+                    };
+                    ProjectEvent e;
+                    e.date = text("Date");
+                    e.event = text("FeedbackId");
+                    e.version = text("CurrentVersion");
+                    e.oldVersion = text("OldVersion");
+                    e.logFile = text("LogFile");
+                    inv.events.push_back(std::move(e));
+                }
         } else if (role == Role::Connection) {
             ConnRec r;
             r.self = key;
@@ -397,6 +427,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             NodeRec n;
             n.self = key;
             Interface& i = n.iface;
+            i.id = b.id;
             i.name = o.attrString(core, "Name");
             i.nodeId = o.attrString("INodeData", "NodeID");
             i.nodeType = intAttr(o, "INodeData", "NodeType");
@@ -653,6 +684,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
     // Port to port cabling. Each port names the other; keep one of the two.
     auto portEnd = [&](Key port) {
         PortEnd e;
+        e.id = port.second;
         auto it = items.find(port);
         if (it == items.end()) return e;
         const Module& pm = it->second.module;

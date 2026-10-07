@@ -180,6 +180,16 @@ what they show:
 OB1 `Main` of ZZCHARLIE has one network, an empty one, as counted in TIA
 Portal.
 
+The tables above are also the reference for the save history
+(`tiaconv --history`): for every save listed in them, the test expects the
+history to show that action and what TIA Portal changed along with it, and
+nothing else. The seven steps of `s00` to `s07` are saves 3, 5, 7, 9, 11, 13
+and 15 of the later files, each followed by the "Save as" that made the next
+project. Two saves show no change by design: 67 (a password) and 68 (a role).
+For the time of a save there is one reference: the file of `s12_constants`
+on the PC was last written at 2026-10-07 20:44:27.140 UTC, and its last save
+holds 20:44:27.109 as the latest change.
+
 An HMI connection is missing: adding an HMI device, a Basic panel included,
 needs a WinCC licence that was not available.
 
