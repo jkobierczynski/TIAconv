@@ -15,6 +15,8 @@ it:
 - hardware identifiers with the module, interface or port each one stands
   for, and user constants with data type, value and comment,
 - PLC tags with data type, address and comment,
+- the tags of HMI devices (panels): which PLC tag or data block member each
+  one stands for, over which connection, with data type and update cycle,
 - data blocks with their members, data types, start values, comments and,
   for blocks with standard access, absolute offsets,
 - the save history, as far as the file still holds it: what was added,
@@ -31,7 +33,7 @@ engineering station.
 - output as text, JSON or CSV
 
 > **Status: early.** Checked against four public projects (V13, V15.1, V16,
-> V19) and fourteen V21 test project files made for this repository. In those, every
+> V19) and fifteen V21 test project files made for this repository. In those, every
 > name, address and module was entered by hand and is read back exactly, and
 > tags and function block interfaces match what TIA Portal itself exported.
 > See [What is verified](#what-is-verified) for what is not covered yet.
@@ -98,6 +100,7 @@ Options:
 | `-j`, `--json FILE` | inventory as JSON (`-` for standard output) |
 | `-c`, `--csv FILE` | hardware inventory as CSV, one row per module or interface |
 | `--tags-csv FILE` | PLC tags as CSV, one row per tag |
+| `--hmi-tags-csv FILE` | the tags of the HMI devices as CSV, one row per tag |
 | `--constants-csv FILE` | constants as CSV, one row each: hardware identifiers, user constants and the other system constants |
 | `--block-list-csv FILE` | the list of blocks as CSV, one row per block |
 | `--blocks-csv FILE` | data block members as CSV, one row per member, nested members as `outer.inner` |
@@ -199,7 +202,7 @@ differences from one to the next:
 - **What is compared** is what tiaconv reports: devices, modules, interfaces
   and their addresses, the security settings of a CPU, subnets, IO systems,
   port connections, connections, blocks and their properties, data block
-  members, tags, constants, and the name of the project. A change in
+  members, tags, HMI tags, constants, and the name of the project. A change in
   anything else does not appear as a change. The line then reads `No change
   in what is reported` and names the kinds of object the save wrote, so that
   it is at least visible that something was saved. Save 67 above is a
@@ -547,8 +550,70 @@ This is `tiaconv --save 15 tests/fixtures/s12_constants`, the rows of one PLC:
 - Arrays are listed as one member with their declared type
   (`Array[0..9] of Byte`); elements are not expanded.
 - Copies of tags and blocks that the project keeps for library types are not
-  listed.
+  listed. Neither is what TIA Portal keeps in place of a tag that was
+  deleted while something still names it (an HMI tag, for instance): an
+  object with the name and nothing else. Up to version 0.9.0 that was listed
+  as a tag without table, type and address.
 - A data type that the project does not name shows as `type#N`.
+
+### HMI tags
+
+The tags of every HMI device in the project, as in the "HMI tags" table of
+TIA Portal and in the order of its export (the order in which the tags were
+created):
+
+    HMI tags:
+      HMI      Table              Name    Type              Connection        PLC        PLC tag                   Address      Cycle
+      ZZPANEL  Default tag table  ZZINT   Int               (internal)        -          -                         -            1 s  // ZZCOMMENT
+      ZZPANEL  Default tag table  ZZSTD   Int               HMI_Connection_1  ZZBRAVO    DB_Standard.my_int        %DB1.DBW264  500 ms
+      ZZPANEL  Default tag table  ZZMEM   Word              HMI_Connection_1  ZZBRAVO    MyInt                     -            1 s  (link to the PLC tag broken)
+      ZZPANEL  Default tag table  ZZABS   Word              HMI_Connection_1  ZZBRAVO    -                         %MW100       1 s
+      ZZPANEL  ZZTABLE            ZZUDT   User_data_type_1  HMI_Connection_1  ZZBRAVO    DB_Standard.my_data_type  %DB1.DBX0.0  1 s
+      ZZPANEL  ZZTABLE            ZZCH    Word              HMI_Connection_2  ZZCHARLIE  -                         %MW200       1 s
+      ZZPANEL  ZZTABLE            ZZOPT1  Real              HMI_Connection_1  ZZBRAVO    DB_Optimized.my_real      -            1 s
+
+An HMI tag is what a panel can read from a PLC and, unless the screen that
+uses it is read-only, write to it. The list says for each tag where in the
+PLC that is.
+
+- **Connection** is the HMI connection the tag uses and **PLC** the
+  controller at its other end, taken from the connections of the project
+  (see above). `(internal)` is a tag without a connection: the panel keeps
+  the value itself.
+- **PLC tag** is the PLC tag or data block member the HMI tag stands for,
+  written as in TIA Portal: `Motor_DB.Speed`, `Tag_1`. TIA Portal calls this
+  symbolic access.
+- **Address** is, for a tag that stands for a PLC tag, the address of that
+  PLC tag where it has one: a tag in I, Q or M, or a member of a data block
+  with standard access. TIA Portal's own tag table leaves the address of
+  such a tag empty; tiaconv shows it because it says what the panel touches
+  in the PLC. A member of an optimized block has no address. The HMI tag
+  stores an address even then, but a stale one (`%DB1.DBD0` for a Bool); it
+  is in the JSON and the CSV as `address_stored` and should not be relied
+  on. tiaconv decides which case it is by looking the PLC tag up in the tags
+  and data blocks of that PLC.
+- A tag with a connection and an address but no PLC tag has **absolute
+  access**: it reads and writes whatever is at that address. The JSON and the CSV have
+  the kind of access as `access` (`symbolic`, `absolute`, `internal`).
+- **Cycle** is the acquisition cycle. The acquisition mode is in the JSON
+  and the CSV under the name TIA Portal's tag editor uses: `Cyclic in
+  operation` (the default) and `Cyclic continuous`. TIA Portal's export
+  writes the second one as `Continuous`, which is also how it is stored
+  (`acquisition_mode_stored` in the JSON). Other modes are given as stored.
+- Notes at the end of a line: `link to the PLC tag broken` when TIA Portal
+  has marked it so (it shows the PLC tag on a red background; deleting the
+  PLC tag does that), `PLC tag not found in the PLC's tags and data blocks`
+  when the name leads nowhere in what tiaconv reads of that PLC.
+- A tag of a structured type (a PLC data type) has its members in the JSON;
+  the CSV has their number.
+- The tags an HMI device creates itself (`@CurrentUser`,
+  `@DiagnosticsIndicatorTag`) are not listed, and neither are screens,
+  alarms, scripts or recipes. Which screen uses a tag is not read.
+- Passwords are not reported: the settings of an HMI connection include an
+  entry named `Password`, and tiaconv does not write its value anywhere.
+- To compare with TIA Portal: HMI tags → "Show all tags" → Export gives an
+  `.xlsx` with the same rows in the same order as `--hmi-tags-csv`. Its
+  `Address` column is empty for symbolic access.
 
 ## Building
 
@@ -564,8 +629,8 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 
 | | |
 |---|---|
-| File structure | Every byte of the eighteen project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match. |
-| Object decoding | All 28 302 objects decode without an out-of-range read. |
+| File structure | Every byte of the nineteen project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match. |
+| Object decoding | All 30 324 objects decode without an out-of-range read. |
 | Device name, IP address, mask, router, PROFINET name, subnet | Read back exactly as entered in the V21 test projects, each at the step where it was entered. |
 | Order number, type, firmware | For the V16 sample all three match what its author documented; for the V19 sample the CPU type does. In the V21 test projects all three were confirmed by the person who configured them. |
 | Which attributes are stored | The rule reproduces, for all 2 629 object types listed there, the resolved layout table that the V13 sample carries; and with it every plain attribute segment of all samples is covered exactly, byte for byte, with two exceptions (one audit-trail object in each of two projects). `tools/check_storage_rule.py` repeats both checks. |
@@ -573,8 +638,8 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | IO systems | V21: in a test project saved once per action, an ET 200SP station appears as a device when added, under the controller's IO system when assigned (with the IO system name and number TIA Portal shows), under the other controller after being reassigned; the IO system it left is reported empty. **Not checked:** PROFIBUS, I-devices, shared devices. |
 | Port connections | V21: two cables drawn in the topology view appear, one per save, between the ports they were drawn between. |
 | S7 connections | V21: a connection between two PLCs of the project and one to an unspecified partner appear in the save in which they were made, with the end points, partner address and local and partner IDs of TIA Portal's connection table; a deleted connection disappears. **Not checked:** other connection types configured in the network view, connections over PROFIBUS or MPI. |
-| HMI connections | V15.1 and V19 samples only: one connection each, between the panel and the PLC of the project, with the addresses of those two devices. **Not compared with TIA Portal**, and no test project has one. |
-| Save history (`--history`) | V21: in the test projects 68 saves are documented with the one action taken in TIA Portal before each (hardware, addresses, 23 security settings, IO systems, cables, connections, blocks and their properties, constants). For every one of them the history lists exactly that action and what TIA Portal changed along with it, and nothing else; the two saves that only changed a password or a role list no change. Adding up the first state and all additions and removals gives the final contents of each of the eight test projects checked that way. Time: every save that changed something has one, the times are in order, and that of the last save of one test project is 31 ms before the modification time of the file on the PC; no other save could be compared with a clock. V13 sample: the four saves carry their own times and two user names; what was done in each is not known, so the changes listed there are unchecked. TIA Portal's own list reads "created with V21" in the test projects; whether TIA Portal shows the same has not been compared. |
+| HMI connections | V21: two HMI connections from a KTP400 Basic panel, one to each of two PLCs, appear in the save in which each was made, with the addresses of both ends; the tags on them show the PLC that TIA Portal's tag table shows as "PLC name". V15.1 and V19 samples: one connection each. |
+| Save history (`--history`) | V21: in the test projects 85 saves are documented with the one action taken in TIA Portal before each (hardware, addresses, 23 security settings, IO systems, cables, connections, blocks and their properties, constants, an HMI panel and its tags). For every one of them the history lists exactly that action and what TIA Portal changed along with it, and nothing else; the two saves that only changed a password or a role list no change. Adding up the first state and all additions and removals gives the final contents of each of the nine test projects checked that way. Time: every save that changed something has one, the times are in order, and that of the last save of one test project is 31 ms before the modification time of the file on the PC; no other save could be compared with a clock. V13 sample: the four saves carry their own times and two user names; what was done in each is not known, so the changes listed there are unchecked. TIA Portal's own list reads "created with V21" in the test projects; whether TIA Portal shows the same has not been compared. |
 | Earlier saves (`--save`) | V21: test projects with 61 saves of one known action each; the report for save N shows exactly the actions up to N. One of them was rewritten by TIA Portal along the way and lost its history; the copy from before is kept as a fixture of its own. V13 sample: four saves are found and the modification date steps back accordingly, but what was done in each is not known. |
 | Blocks | V21: a test project with one action per save: a new function block and a cyclic interrupt OB appear with type, number, language and kind; a block moved into a group shows the group; a number set by hand, title, comment, author, family, version and user-defined ID read back as entered, for a code block and a data block; know-how protection set and removed, write protection, copy protection with its serial number, a data block write-protected in the device and the two "accessible from" options each show in the save in which they were set; a change makes the block "not compiled", compiling makes every block "compiled". The block numbers match two screenshots of the project tree, and one block's protection page matches what is reported for it. V19 sample: title, comment, author, family and version of the author's five function blocks are those in the SCL sources published with the project. The time stamps of one block match its "Time stamps" page, the network counts of two OBs match the editor, and the load and work memory of all ten blocks of a PLC match Program info > Resources. **Not checked:** the download times (none of the test projects was ever downloaded; in the public samples they lie within the project's lifetime), fail-safe blocks, languages other than LAD, FBD, STL and SCL. |
 | Tags | V21: the eight tags of the test project's tag table are identical to TIA Portal's own export of that table (name, data type, address, comment), and the number of tags per table matches the project tree. V13 sample: the four system-memory tags have the addresses TIA Portal assigns to them (`%MB1`, `%M1.1` .. `%M1.3`). |
@@ -582,6 +647,7 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | Offsets | V21: all twelve offsets of a standard block (Bool, Byte, Int, DInt, Real, Date, String, arrays, a nested PLC data type) are the ones in the Offset column of TIA Portal's block editor. In the ten blocks of the V13 and V15.1 samples that have offsets they are consistent with the sizes of the data types. Offsets in instance blocks with standard access: V13 sample only, **not compared with TIA Portal**. |
 | `standard` / `optimized` | V21: of two global blocks made with the same members, the one with "optimized block access" switched off is reported as standard, the other as optimized; a block whose generated source says `S7_Optimized_Access := 'TRUE'` is reported as optimized. |
 | Constants | V21: four user constants entered one per save (Int, Real, Time, String, in two tag tables, one with a comment) read back with name, type, value, comment and table; a changed value and a deleted constant show in their save. The three constants left at the end are identical to TIA Portal's own export of them (name, tag table, data type, value, comment). What TIA Portal showed at the end (the three constants left, and the number of entries it gives for each tag table, which counts tags, user constants and system constants: 63 and 10) is what tiaconv reports. V16 sample: the connection block its author wrote refers to interface 64, and 64 is the hardware identifier of the CPU's PROFINET interface. All 58 system constants of that PLC (23 hardware identifiers, among them those of two IO devices, the OB constant and 34 process image partitions) have the name, data type and value shown in TIA Portal's "System constants" tab. What a hardware identifier stands for is not shown there; it agrees with the constant's name in every case. **Not checked:** PLCs with PROFIBUS, central modules of an S7-1500 or technology objects, which bring further kinds of identifiers. |
+| HMI tags | V21: a test project with a KTP400 Basic panel, one action per save: an internal tag, tags on a data block member (standard and optimized access), on a PLC tag and on a PLC data type, two tags with absolute access on two connections to two PLCs, cycle, acquisition mode, comment and start value changed, a tag deleted, a PLC tag deleted under its HMI tag. Each appears in the save in which it was made. At the end all 7 tags agree with TIA Portal's own export of the tag table (name, tag table, connection, PLC tag, data type, access method, address, start value, comment, acquisition mode and cycle, in the export's order) and with screenshots of the tag table (PLC name per tag, the four members of the structured tag, the broken link shown in red). V19 sample: the 100 tags on a Comfort panel agree with TIA Portal V21's export of that project in every one of those columns, 100 of 100. On the PLC side, every tag with an intact link leads to a tag or member that tiaconv reads from the block interface, with the same data type; where the block has standard access the address stored with the HMI tag is the offset read there (V21 and V15.1). Not checked: limits and linear scaling (never changed from their defaults), multiplexed tags, acquisition mode "On demand", PC runtimes, WinCC Unified, HMI tags in V13 projects. |
 | Anonymous structures | Checked on the V19 sample only. |
 | V11, V12, V14, V17, V18, V20 projects | **Not tested.** |
 | Large projects split over several data files | **Not supported**; a warning is printed. |

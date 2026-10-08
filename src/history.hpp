@@ -6,7 +6,7 @@
 // earlier versions of its objects, so the project can be read as it was after
 // each save; the history is the difference between consecutive states of
 // what tiaconv reports (hardware, network, security settings, connections,
-// blocks, data block members, tags, constants).
+// blocks, data block members, tags, HMI tags, constants).
 #pragma once
 
 #include <cstdint>

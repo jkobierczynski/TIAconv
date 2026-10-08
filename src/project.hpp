@@ -20,8 +20,8 @@ namespace tia {
 
 struct Value {
     // Record: a structure, `names` and `elements` side by side. List: an
-    // array of structures, each element a Record. Opaque: a structure or
-    // array that is there but not read.
+    // array, its values in `elements`. Opaque: a structure or array that is
+    // there but not read.
     enum class Type { Null, Bool, Int, UInt, Float, String, Bytes, DateTime, Text, Opaque, Record, List };
     Type type = Type::Null;
     bool b = false;
@@ -108,8 +108,8 @@ private:
     // `type` is the definition of the value's type where that matters: an
     // enumeration, a structure or an array.
     Value readValue(const Storage& st, const TypeDef* type, Span seg, size_t pos) const;
-    bool readRecord(const TypeDef& type, Span seg, size_t offset, Value& out) const;
-    bool readList(const TypeDef& type, Span seg, size_t offset, Value& out) const;
+    bool readRecord(const TypeDef& type, Span seg, size_t offset, Value& out, int depth = 0) const;
+    bool readList(const TypeDef& type, Span seg, size_t offset, Value& out, int depth = 0) const;
     static Value readText(Span seg, size_t offset);
     void decodeExpando(uint32_t objectType, Span seg, Object& out) const;
     void decodeRelations(Span block, const Block& b, size_t firstSlot, Object& out) const;

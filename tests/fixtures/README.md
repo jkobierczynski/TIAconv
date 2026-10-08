@@ -161,6 +161,55 @@ tag table [63]" and "Tag MyTagTable [10]". TIA Portal counts tags and
 constants together: 4 tags, 1 user constant and 58 system constants; 8 tags
 and 2 user constants.
 
+`s13_hmi` continues from `s12_constants`, for HMI tags: a panel is added and
+tags are made on it, one action per save. TIA Portal ran with a trial
+licence for WinCC Advanced.
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 18, 19 | saved without a change; "Save as" `s13_hmi` |
+| 20 | HMI device added: KTP400 Basic PN, 6AV2 123-2DB03-0AX0, version 17.0.0.0, named `ZZPANEL`, without the device wizard |
+| 21 | the panel attached to subnet `PN/IE_1`; TIA Portal gave it the address 192.168.77.3 |
+| 22 | HMI connection from `ZZPANEL` to ZZBRAVO (`HMI_Connection_1`) |
+| 23 | HMI tag `ZZINT` in the default tag table: Int, internal tag |
+| 24 | `ZZSTD`: `HMI_Connection_1`, PLC tag `DB_Standard.my_int` |
+| 25 | `ZZMEM`: PLC tag `MyInt` (a PLC tag of "Tag MyTagTable", %MW20) |
+| 26 | `ZZABS`: Word, absolute access, address %MW100 |
+| 27 | `ZZSTD`: acquisition cycle 500 ms |
+| 28 | `ZZSTD`: acquisition mode "Cyclic continuous" |
+| 29 | `ZZINT`: comment `ZZCOMMENT` |
+| 30 | `ZZINT`: start value 7 |
+| 31 | new HMI tag table `ZZTABLE` with the tag `ZZUDT` on `DB_Standard.my_data_type`, a PLC data type |
+| 32 | `ZZOPT` on `DB_Standard.my_real` (meant for `DB_Optimized`) |
+| 33 | `ZZOPT` deleted |
+| 34 | on ZZBRAVO the PLC tag `MyInt` deleted, which `ZZMEM` still names |
+| 35 | second HMI connection, to ZZCHARLIE (`HMI_Connection_2`), and in `ZZTABLE` the tag `ZZCH` on it: Word, absolute access, %MW200 |
+| 36 | in `ZZTABLE` the tag `ZZOPT1` on `DB_Optimized.my_real` |
+
+References from TIA Portal, all taken after save 36 unless stated:
+
+- `s13_hmi/exports/HMITags.xlsx`: its export of "Show all tags". Seven rows
+  in the order ZZINT, ZZSTD, ZZMEM, ZZABS, ZZUDT, ZZCH, ZZOPT1 with name,
+  path (the tag table), connection, PLC tag, data type, access method
+  ("Symbolic access", "Absolute access"), address (only for the two with
+  absolute access), start value, comment, acquisition mode ("Cyclic in
+  operation", and "Continuous" for `ZZSTD`) and acquisition cycle.
+- Screenshots of "Show all tags": the same, and a column "PLC name" with
+  ZZBRAVO for five tags and ZZCHARLIE for `ZZCH`; the PLC tag of `ZZMEM` on a
+  red background; `ZZUDT` opened to its members memberDate (Date),
+  memberString (String), memberInt (Int), memberBolean (Bool).
+- A screenshot of the Inspector window for `ZZSTD`: acquisition mode "Cyclic
+  continuous", acquisition cycle 500 ms.
+- A screenshot of the default tag table after save 27: the address column is
+  empty for `ZZSTD` and `ZZMEM` (symbolic access) and has %MW100 for `ZZABS`.
+- A screenshot of the topology comparison after save 21: `ZZPANEL.IE_CP_1`,
+  PROFINET device name `zzpanel`, 192.168.77.3.
+
+The export of the public V19 sample project (github.com/LCC-Automation/
+OpenPID-TIA-SCL, opened in TIA Portal V21) was compared in the same way by
+hand, 100 rows without a difference; neither that project nor its export is
+in this repository.
+
 The following belongs to `s11_blocks`.
 
 Three more screenshots were taken at the end, on ZZBRAVO, and the test holds
@@ -190,8 +239,6 @@ For the time of a save there is one reference: the file of `s12_constants`
 on the PC was last written at 2026-10-07 20:44:27.140 UTC, and its last save
 holds 20:44:27.109 as the latest change.
 
-An HMI connection is missing: adding an HMI device, a Basic panel included,
-needs a WinCC licence that was not available.
 
 All passwords in these projects are throwaway test passwords.
 

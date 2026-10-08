@@ -54,6 +54,12 @@ if(NOT rc EQUAL 0 OR NOT constants MATCHES "^plc,kind,table,name,data_type,value
   message(FATAL_ERROR "unexpected constants CSV")
 endif()
 
+# HMI tags: a project without an HMI device gives the header and nothing else
+execute_process(COMMAND "${TIACONV}" -q --hmi-tags-csv - "${PROJECT}" OUTPUT_VARIABLE hmi RESULT_VARIABLE rc)
+if(NOT rc EQUAL 0 OR NOT hmi MATCHES "^hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,comment,start_value,members,plc_tag_found,plc_data_type,address_stored\r?\n$")
+  message(FATAL_ERROR "unexpected HMI tags CSV: ${hmi}")
+endif()
+
 # standard output never gets the mark
 execute_process(COMMAND "${TIACONV}" -q --tags-csv - "${PROJECT}" OUTPUT_VARIABLE piped RESULT_VARIABLE rc)
 string(SUBSTRING "${piped}" 0 4 start)

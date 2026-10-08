@@ -32,6 +32,13 @@ struct Part {
     bool externalsLooked = false;
 };
 
+// One link of an HMI tag table to the PLC: the HMI tag names it by a number,
+// the link says which PLC tag is meant.
+struct PlcLink {
+    std::string path;  // "Motor_DB.Speed"
+    bool connected = true;
+};
+
 std::string attrStr(const Object& o, const char* set, const char* name) { return o.attrString(set, name); }
 
 bool attrInt(const Object& o, const char* set, const char* name, int64_t& out) {
@@ -94,11 +101,19 @@ public:
             int role = roleOf(*t);
             const bool listed = isListedBlock(*t);
             const bool constant = isConstant(*t);
-            if (role == 0 && !listed && !constant) continue;
+            const bool hmiTag = isHmiTag(*t);
+            if (role == 0 && !listed && !constant && !hmiTag) continue;
             Object o;
             try {
                 if (!project_.decode(b, o)) continue;
             } catch (const ParseError&) {
+                continue;
+            }
+            // A name that leads nowhere any more is kept as an object of the
+            // type it was (a PLC tag deleted while an HMI tag still names it):
+            // not a tag or block of the project.
+            if (!targets(o, "TRefParent").empty()) {
+                ++out.stats.unresolvedReferences;
                 continue;
             }
             if (role == 3 || role == 4) noteComments(o);
@@ -109,6 +124,10 @@ public:
             if (constant) {
                 if (inProject(o)) out.constants.push_back(makeConstant(o));
                 else ++out.stats.constantsOutsideProject;
+            }
+            if (hmiTag) {
+                if (inProject(o)) out.hmiTags.push_back(makeHmiTag(o));
+                else ++out.stats.hmiTagsOutsideProject;
             }
             if (role == 1) {
                 addCatalogueEntry(o);
@@ -162,6 +181,11 @@ public:
             }
             return a.id < b.id;
         });
+        // The order of TIA Portal's own export of the tags: as they were created.
+        std::stable_sort(out.hmiTags.begin(), out.hmiTags.end(), [](const HmiTag& a, const HmiTag& b) {
+            if (a.hmi != b.hmi) return a.hmi < b.hmi;
+            return a.id < b.id;
+        });
         std::stable_sort(out.blockList.begin(), out.blockList.end(), [](const BlockInfo& a, const BlockInfo& b) {
             if (a.plc != b.plc) return a.plc < b.plc;
             const int ra = typeRank(a.type), rb = typeRank(b.type);
@@ -184,6 +208,8 @@ private:
              relBlockComment_ = 0, relBlockCommentCode_ = 0, relBlockCommentData_ = 0;
     uint32_t relItemParent_ = 0, relConstantItem_ = 0, relConstantBlock_ = 0;
     std::map<uint32_t, bool> constantTypes_;
+    std::map<uint32_t, bool> hmiTagTypes_;
+    std::map<Key, std::map<int64_t, PlcLink>> links_;
     std::map<Key, std::string> deviceOf_;
     std::map<uint32_t, bool> listed_;
     struct FolderRec {
@@ -261,6 +287,122 @@ private:
             k = parent;
         }
         return deviceOf_[start] = name;
+    }
+
+    // HMI tags. The tags an HMI device creates itself ("@CurrentUser") are a
+    // type of their own and are not listed, as in TIA Portal's tag table.
+    bool isHmiTag(const TypeDef& t) {
+        auto it = hmiTagTypes_.find(t.id);
+        if (it != hmiTagTypes_.end()) return it->second;
+        const bool yes = meta_.derivesFromShort(t.name, "HmiTagData");
+        hmiTagTypes_[t.id] = yes;
+        return yes;
+    }
+
+    // Targets of the relations with this name, in stored order. Used where
+    // the type that declares the relation differs between versions.
+    std::vector<Key> targets(const Object& o, const char* relation) const {
+        std::vector<Key> out;
+        for (const auto& r : o.relations) {
+            if (!r.relation || (!r.targetType && !r.targetId)) continue;
+            const RelationDef* d = meta_.relation(r.relation);
+            if (d && d->name == relation) out.emplace_back(r.targetType, r.targetId);
+        }
+        return out;
+    }
+
+    // The links of one tag table, kept in an object of their own
+    // (ScopedLinkMaintainerData.Links, an array of structures).
+    const std::map<int64_t, PlcLink>& linksOf(const Key& maintainer) {
+        auto it = links_.find(maintainer);
+        if (it != links_.end()) return it->second;
+        std::map<int64_t, PlcLink>& out = links_[maintainer];
+        Object o;
+        if (!decodeKey(maintainer, o)) return out;
+        const Value* list = o.attr("IScopedLinkMaintainerData", "Links");
+        if (!list || list->type != Value::Type::List) return out;
+        std::map<int64_t, int> seen;
+        for (const Value& l : list->elements) {
+            const Value* handle = l.field("Handle");
+            const Value* index = handle ? handle->field("Index") : nullptr;
+            const Value* path = l.field("QuotedNamePath");
+            if (!index || index->type != Value::Type::Int || !path || path->type != Value::Type::String) continue;
+            PlcLink link;
+            link.path = path->s;
+            if (const Value* c = l.field("IsConnected")) link.connected = c->truthy();
+            // a number used twice says nothing
+            if (++seen[index->i] > 1) out.erase(index->i);
+            else out[index->i] = std::move(link);
+        }
+        return out;
+    }
+
+    void hmiMembers(const Object& o, std::vector<HmiTagMember>& out, size_t& count, int depth) {
+        if (depth > kMaxDepth) return;
+        for (const Key& k : targets(o, "Members")) {
+            Object m;
+            if (count >= kMaxMembersPerBlock || !decodeKey(k, m)) continue;
+            HmiTagMember member;
+            member.name = attrStr(m, "ICoreAttributes", "Name");
+            member.dataType = attrStr(m, "IStructureItem", "DisplayTypeName");
+            ++count;
+            hmiMembers(m, member.members, count, depth + 1);
+            out.push_back(std::move(member));
+        }
+    }
+
+    HmiTag makeHmiTag(const Object& o) {
+        HmiTag t;
+        t.id = o.id;
+        t.name = attrStr(o, "ICoreAttributes", "Name");
+        t.comment = attrText(o, "ICoreAttributes", "Comment");
+        t.dataType = attrStr(o, "IStructureItem", "DisplayTypeName");
+        if (t.dataType.empty()) t.dataType = attrStr(o, "IStructureItem", "DataTypeRefName");
+        t.startValue = attrStr(o, "IHmiTagStructureAttributes", "StartValue");
+        t.addressStored = attrStr(o, "ITagAddress", "LogicalAddress");
+        t.addressMode = attrStr(o, "ITagAddress", "AddressMode");
+        t.acquisitionMode = attrStr(o, "IHmiTagAttributes", "AcquisitionTriggerMode");
+        // the runtime item of the HMI device, and the device it is in
+        Key runtime;
+        if (o.relationTarget(relTarget_, runtime)) {
+            t.runtime = nameOf(runtime);
+            t.hmi = deviceOfItem(runtime);
+        }
+        if (t.hmi.empty()) t.hmi = t.runtime;
+        Key table;
+        if (o.relationTarget(relTagTable_, table)) t.table = nameOf(table);
+        for (const Key& k : targets(o, "IHmiTagAttributes_AcquisitionCycle")) t.acquisitionCycle = nameOf(k);
+        for (const Key& k : targets(o, "IHmiTagAttributes_Connection")) {
+            t.connection = nameOf(k);
+            // The connection the tag names is the HMI device's view of it; the
+            // hardware side lists the connection point it belongs to.
+            Object c;
+            if (decodeKey(k, c))
+                for (const Key& point : targets(c, "ConnectionPoint")) t.connectionId = point.second;
+        }
+        // The PLC tag: the tag has the number of a link, the tag table's link
+        // list has the name.
+        const Value* handle = o.expandoValue("LinkHandle");
+        const Value* index = handle ? handle->field("Index") : nullptr;
+        // A tag that has a link at all is one with symbolic access, also when
+        // the name behind the link cannot be read here.
+        const std::vector<Key> maintainers = targets(o, "InverseConsumer");
+        bool linked = handle != nullptr || !maintainers.empty();
+        if (index && index->type == Value::Type::Int) {
+            for (const Key& m : maintainers) {
+                const auto& links = linksOf(m);
+                auto it = links.find(index->i);
+                if (it == links.end()) continue;
+                t.plcTag = it->second.path;
+                t.plcTagLinked = it->second.connected;
+                break;
+            }
+        }
+        if (t.connection.empty() && !linked) t.access = "internal";
+        else if (linked) t.access = "symbolic";
+        else t.access = "absolute";
+        hmiMembers(o, t.members, t.memberCount, 0);
+        return t;
     }
 
     Constant makeConstant(const Object& o) {
@@ -930,5 +1072,91 @@ std::string formatOffset(const BlockMember& m) {
 }
 
 ProgramData buildProgramData(const Project& project) { return Builder(project).run(); }
+
+std::string acquisitionModeName(const std::string& stored) {
+    // Both seen in a V21 project: the default, and after "Cyclic continuous"
+    // was chosen. The type model has a CyclicContinuous as well, which is
+    // not what TIA Portal stores for that choice.
+    if (stored == "Visible") return "Cyclic in operation";
+    if (stored == "Continuous") return "Cyclic continuous";
+    return stored;
+}
+
+namespace {
+
+// "Motor_DB".Speed."my member"[2] as its parts, without the quotes.
+std::vector<std::string> splitTagPath(const std::string& path) {
+    std::vector<std::string> out;
+    std::string cur;
+    bool quoted = false;
+    for (char c : path) {
+        if (c == '"') {
+            quoted = !quoted;
+        } else if (c == '.' && !quoted) {
+            out.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    out.push_back(cur);
+    return out;
+}
+
+const BlockMember* findMember(const std::vector<BlockMember>& members, const std::string& name) {
+    for (const auto& m : members)
+        if (m.name == name) return &m;
+    return nullptr;
+}
+
+}  // namespace
+
+void linkHmiTags(const Inventory& inv, ProgramData& prog) {
+    for (HmiTag& t : prog.hmiTags) {
+        t.address = t.access == "absolute" ? t.addressStored : std::string();
+        if (!t.connectionId) continue;
+        for (const auto& c : inv.connections)
+            if (c.id == t.connectionId) {
+                t.plc = c.partner.module;
+                t.plcDevice = c.partner.device;
+            }
+        if (t.plc.empty() || t.plcTag.empty()) continue;
+
+        const std::vector<std::string> parts = splitTagPath(t.plcTag);
+        if (parts.empty() || parts[0].empty()) continue;
+        if (parts.size() == 1) {
+            // a PLC tag: its own address is the one that counts
+            for (const auto& tag : prog.tags)
+                if (tag.plc == t.plc && tag.name == parts[0]) {
+                    t.plcTagFound = true;
+                    t.plcDataType = tag.dataType;
+                    t.address = tag.address;
+                }
+            continue;
+        }
+        for (const auto& db : prog.blocks) {
+            if (db.plc != t.plc || db.name != parts[0]) continue;
+            const std::vector<BlockMember>* level = &db.members;
+            const BlockMember* m = nullptr;
+            bool element = false;  // an element of an array: found by the array, no address of its own here
+            for (size_t i = 1; i < parts.size(); ++i) {
+                std::string name = parts[i];
+                const size_t bracket = name.find('[');
+                if (bracket != std::string::npos) {
+                    name.erase(bracket);
+                    element = true;
+                }
+                m = findMember(*level, name);
+                if (!m) break;
+                level = &m->members;
+            }
+            if (!m) continue;
+            t.plcTagFound = true;
+            t.plcDataType = m->dataType;
+            // Only a block with standard access gives its members addresses.
+            if (!element && m->hasOffset && db.hasAccess && !db.symbolicAccessOnly) t.address = t.addressStored;
+        }
+    }
+}
 
 }  // namespace tia

@@ -185,6 +185,48 @@ bool decodeBlob(const std::string& raw, std::string& out) {
 
 namespace {
 
+// Number of bytes a blob takes, from its kind byte on. Inside a structure a
+// blob has no length in front of it. 0 when the bytes are not a blob.
+size_t blobExtent(Span s) {
+    try {
+        const uint8_t kind = s.u8(0);
+        if (kind == 4) {
+            size_t off = 1;
+            const uint64_t len = s.varint(off);
+            if (len > s.size() - off) return 0;
+            return off + static_cast<size_t>(len);
+        }
+        if (kind != 0 && kind != 1) return 0;
+        const uint64_t total = s.u64(1);
+        const uint16_t pageSize = s.u16(13);
+        const uint32_t count = s.u32(15);
+        size_t off = 19;
+        const uint64_t words = s.varint(off);
+        if (total > s.size() * 1100ull + 4096 || words > s.size() / 4 || (count && pageSize == 0)) return 0;
+        if (static_cast<uint64_t>(count) * pageSize < total || count > total / (pageSize ? pageSize : 1) + 1) return 0;
+        const size_t bitmap = off;
+        s.need(bitmap, static_cast<size_t>(words) * 4);
+        off += static_cast<size_t>(words) * 4;
+        uint64_t left = total;
+        for (uint32_t i = 0; i < count; ++i) {
+            const size_t want = static_cast<size_t>(left < pageSize ? left : pageSize);
+            const bool present = i / 32 < words && ((s.u32(bitmap + 4 * (i / 32)) >> (i % 32)) & 1);
+            if (present && kind == 0) {
+                s.need(off, want);
+                off += want;
+            } else if (present) {
+                const uint64_t len = s.varint(off);
+                s.need(off, static_cast<size_t>(len));
+                off += static_cast<size_t>(len);
+            }
+            left -= want;
+        }
+        return left == 0 ? off : 0;
+    } catch (const ParseError&) {
+        return 0;
+    }
+}
+
 // True when the root element is <MetaInfo>. Older projects also carry a
 // StorageMetaInfoXML document, which describes the same types after
 // resolution and is not needed here.
@@ -278,10 +320,12 @@ bool Project::loadExpandoTable(Span p) {
 // A stored structure, at `offset` in a segment:
 //   size (u32; u16 in the older layout), counting itself
 //   one fixed-size field per element, in the order of the type model
-//   the strings and blobs those fields point to, offsets from the size field
-// Read only when every element is a plain value and the fields and their
-// strings cover the structure exactly; anything else stays unread.
-bool Project::readRecord(const TypeDef& type, Span seg, size_t offset, Value& out) const {
+//   what those fields point to: strings, blobs, structures, arrays; offsets
+//   are from the size field
+// Read only when the fields and what they point to cover the structure
+// exactly; anything else stays unread.
+bool Project::readRecord(const TypeDef& type, Span seg, size_t offset, Value& out, int depth) const {
+    if (depth > 8) return false;
     const size_t head = container_.layout() == Layout::V11 ? 2 : 4;
     if (!seg.has(offset, head)) return false;
     const size_t size = head == 2 ? seg.u16(offset) : seg.u32(offset);
@@ -294,6 +338,8 @@ bool Project::readRecord(const TypeDef& type, Span seg, size_t offset, Value& ou
     for (const auto& e : type.elements) {
         const TypeDef* et = meta_.find(e.type);
         const Storage st = meta_.storage(e.type);
+        if (st.size == 0 || pos + st.size > size) return false;
+        Value field;
         switch (st.kind) {
             case ValueKind::Bool:
             case ValueKind::UInt:
@@ -302,10 +348,9 @@ bool Project::readRecord(const TypeDef& type, Span seg, size_t offset, Value& ou
             case ValueKind::DateTime:
             case ValueKind::Guid:
             case ValueKind::Enum:
+                field = readValue(st, st.kind == ValueKind::Enum ? et : nullptr, rec, pos);
                 break;
-            case ValueKind::String:
-            case ValueKind::Blob: {
-                if (pos + 4 > size) return false;
+            case ValueKind::String: {
                 const size_t at = rec.u32(pos);
                 if (at == 0) break;
                 if (at >= size) return false;
@@ -313,14 +358,43 @@ bool Project::readRecord(const TypeDef& type, Span seg, size_t offset, Value& ou
                 const uint64_t n = rec.varint(p);
                 if (n < p - at || n > size - at) return false;
                 spans.emplace_back(at, at + static_cast<size_t>(n));
+                field = readValue(st, nullptr, rec, pos);
+                break;
+            }
+            case ValueKind::Blob: {
+                // no length in front of it here: the blob says how long it is
+                const size_t at = rec.u32(pos);
+                if (at == 0) break;
+                if (at >= size) return false;
+                const size_t n = blobExtent(rec.from(at));
+                if (n == 0) return false;
+                spans.emplace_back(at, at + n);
+                field.type = Value::Type::Bytes;
+                field.s = rec.str(at, n);
+                break;
+            }
+            case ValueKind::Relative: {
+                const size_t at = rec.u32(pos);
+                if (at == 0) break;
+                if (!et || at >= size) return false;
+                size_t inner = 0;
+                if (et->kind == TypeKind::Structure) {
+                    if (!readRecord(*et, rec, at, field, depth + 1)) return false;
+                    inner = head == 2 ? rec.u16(at) : rec.u32(at);
+                } else if (et->kind == TypeKind::Array) {
+                    if (!readList(*et, rec, at, field, depth + 1)) return false;
+                    inner = rec.u32(at);
+                } else {
+                    return false;
+                }
+                spans.emplace_back(at, at + inner);
                 break;
             }
             default:
-                return false;  // nested structures, texts, references, unknown types
+                return false;  // texts, references, unknown types
         }
-        if (st.size == 0 || pos + st.size > size) return false;
         v.names.push_back(e.name);
-        v.elements.push_back(readValue(st, st.kind == ValueKind::Enum ? et : nullptr, rec, pos));
+        v.elements.push_back(std::move(field));
         pos += st.size;
     }
     std::sort(spans.begin(), spans.end());
@@ -334,29 +408,66 @@ bool Project::readRecord(const TypeDef& type, Span seg, size_t offset, Value& ou
     return true;
 }
 
-// A stored array of structures: u32 size, u32 count, count x u32 offset from
-// the size field, then the structures.
-bool Project::readList(const TypeDef& type, Span seg, size_t offset, Value& out) const {
+// A stored array: u32 size (counting itself), u32 count, then
+//   plain values:  the values, one after the other
+//   strings:       count x u32 offset from the size field, then the strings
+//   structures:    count x u32 offset from the size field, then the structures
+// Read only when that covers the array exactly.
+bool Project::readList(const TypeDef& type, Span seg, size_t offset, Value& out, int depth) const {
+    if (depth > 8) return false;
     const TypeDef* element = meta_.find(type.elementType);
-    if (!element || element->kind != TypeKind::Structure) return false;
+    const Storage st = meta_.storage(type.elementType);
     if (!seg.has(offset, 8)) return false;
     const size_t size = seg.u32(offset);
     const size_t count = seg.u32(offset + 4);
-    if (size < 8 || !seg.has(offset, size) || count > 100000 || 8 + 4 * count > size) return false;
+    if (size < 8 || !seg.has(offset, size) || count > 100000) return false;
     const Span arr = seg.sub(offset, size);
     Value v;
     v.type = Value::Type::List;
+
+    switch (st.kind) {
+        case ValueKind::Bool:
+        case ValueKind::UInt:
+        case ValueKind::Int:
+        case ValueKind::Float:
+        case ValueKind::DateTime:
+        case ValueKind::Guid:
+        case ValueKind::Enum:
+            if (st.size == 0 || 8 + st.size * count != size) return false;
+            for (size_t i = 0; i < count; ++i)
+                v.elements.push_back(readValue(st, st.kind == ValueKind::Enum ? element : nullptr, arr, 8 + st.size * i));
+            out = std::move(v);
+            return true;
+        case ValueKind::String:
+            break;
+        case ValueKind::Relative:
+            if (!element || element->kind != TypeKind::Structure) return false;  // arrays of arrays: not seen
+            break;
+        default:
+            return false;
+    }
+
+    if (8 + 4 * count > size) return false;
     const size_t head = container_.layout() == Layout::V11 ? 2 : 4;
     std::vector<std::pair<size_t, size_t>> spans;
     for (size_t i = 0; i < count; ++i) {
         const size_t at = arr.u32(8 + 4 * i);
-        if (at < 8 + 4 * count || at >= size) return false;
-        Value record;
-        if (!readRecord(*element, arr, at, record)) return false;
-        spans.emplace_back(at, at + (head == 2 ? arr.u16(at) : arr.u32(at)));
-        v.elements.push_back(std::move(record));
+        Value item;
+        if (st.kind == ValueKind::Relative) {
+            if (at < 8 + 4 * count || at >= size) return false;
+            if (!readRecord(*element, arr, at, item, depth + 1)) return false;
+            spans.emplace_back(at, at + (head == 2 ? arr.u16(at) : arr.u32(at)));
+        } else if (at != 0) {
+            if (at < 8 + 4 * count || at >= size) return false;
+            size_t p = at;
+            const uint64_t n = arr.varint(p);
+            if (n < p - at || n > size - at) return false;
+            spans.emplace_back(at, at + static_cast<size_t>(n));
+            item = readValue(st, nullptr, arr, 8 + 4 * i);
+        }
+        v.elements.push_back(std::move(item));
     }
-    // the structures follow the offsets without a gap, to the end
+    // what the offsets point to follows them without a gap, to the end
     std::sort(spans.begin(), spans.end());
     size_t end = 8 + 4 * count;
     for (const auto& sp : spans) {
@@ -615,6 +726,14 @@ void Project::decodeExpando(uint32_t objectType, Span seg, Object& out) const {
                     v = readText(seg, p);
                 } else if (st.kind == ValueKind::Relative) {
                     v.type = Value::Type::Opaque;
+                    // a structure or an array, as in an attribute segment
+                    const TypeDef* vt = meta_.findById(ek->typeId);
+                    try {
+                        Value read;
+                        if (vt && vt->kind == TypeKind::Structure && readRecord(*vt, seg, p, read)) v = std::move(read);
+                        else if (vt && vt->kind == TypeKind::Array && readList(*vt, seg, p, read)) v = std::move(read);
+                    } catch (const ParseError&) {
+                    }
                 } else {
                     v = readValue(st, et, seg, p);
                 }

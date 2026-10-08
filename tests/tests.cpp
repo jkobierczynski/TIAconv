@@ -568,15 +568,52 @@ const char kProgramMeta[] =
     "<Relation name=\"ConstantTags\" id=\"0x2108\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.ConstantTagData\"/>"
     "<Inverse name=\"DeviceItem\" id=\"0x2109\" cardinality=\"1\"/></Relation>"
     "</ObjectType>"
+        // HMI tags and the list that links them to PLC tags
+    "<Enumeration name=\"AcquisitionModes\" id=\"0x5010\" base=\"xs:int\"><Constant name=\"OnDemand\" value=\"3\"/>"
+    "<Constant name=\"Visible\" value=\"4\"/></Enumeration>"
+    "<Structure name=\"LinkHandle\" id=\"0x4101\"><Element name=\"Index\" type=\"xs:int\"/></Structure>"
+    "<Array name=\"CoreArrayString\" id=\"0x4102\" type=\"xs:string\"/>"
+    "<Structure name=\"LinkInformation\" id=\"0x4103\"><Element name=\"Coid\" type=\"pe:BlobT\"/>"
+    "<Element name=\"ConsumerIndex\" type=\"xs:int\"/><Element name=\"Handle\" type=\"LinkHandle\"/>"
+    "<Element name=\"IsConnected\" type=\"xs:boolean\"/><Element name=\"NamePath\" type=\"CoreArrayString\"/>"
+    "<Element name=\"ProviderIndex\" type=\"xs:int\"/><Element name=\"QuotedNamePath\" type=\"xs:string\"/></Structure>"
+    "<Array name=\"LinkArray\" id=\"0x4104\" type=\"LinkInformation\"/>"
+    "<AttributeSet name=\"IScopedLinkMaintainerData\" id=\"0x3010\" persistent=\"true\">"
+    "<Attribute name=\"Links\" id=\"0\" type=\"LinkArray\"/><Attribute name=\"Version\" id=\"1\" type=\"xs:uint\"/></AttributeSet>"
+    "<AttributeSet name=\"IHmiTagAttributes\" id=\"0x3011\" persistent=\"true\">"
+    "<Attribute name=\"AcquisitionTriggerMode\" id=\"0\" type=\"AcquisitionModes\"/></AttributeSet>"
+    "<AttributeSet name=\"IHmiTagStructureAttributes\" id=\"0x3012\" persistent=\"true\">"
+    "<Attribute name=\"StartValue\" id=\"0\" type=\"xs:string\"/></AttributeSet>"
+    "<AttributeSet name=\"ISoftlinkAttributes\" id=\"0x3013\" persistent=\"true\" expando=\"true\"/>"
+    "<ObjectType name=\"ScopedLinkMaintainerData\" id=\"0x1020\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Implements ref=\"IScopedLinkMaintainerData\"/>"
+    "<Relation name=\"Consumer\" id=\"0x2201\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/>"
+    "<Inverse name=\"InverseConsumer\" id=\"0x2202\" cardinality=\"*\"/></Relation></ObjectType>"
+    "<ObjectType name=\"HmiConnectionData\" id=\"0x1021\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Relation name=\"ConnectionPoint\" id=\"0x2203\" cardinality=\"1\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "</ObjectType>"
+    "<ObjectType name=\"HmiCycleData\" id=\"0x1022\"><Base ref=\"M.CoreObject\" primary=\"true\"/></ObjectType>"
+    "<ObjectType name=\"HmiTagData\" id=\"0x1023\"><Base ref=\"M.TagTableContentData\" primary=\"true\"/>"
+    "<Implements ref=\"IStructureItem\"/><Implements ref=\"ITagAddress\"/><Implements ref=\"IHmiTagAttributes\"/>"
+    "<Implements ref=\"IHmiTagStructureAttributes\"/><Implements ref=\"ISoftlinkAttributes\"/>"
+    "<Relation name=\"IHmiTagAttributes_Connection\" id=\"0x2204\" cardinality=\"1\" behaviourType=\"x.ref\"><Target ref=\"M.HmiConnectionData\"/></Relation>"
+    "<Relation name=\"IHmiTagAttributes_AcquisitionCycle\" id=\"0x2205\" cardinality=\"1\" behaviourType=\"x.ref\"><Target ref=\"M.HmiCycleData\"/></Relation>"
+    "<Relation name=\"Members\" id=\"0x2206\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "</ObjectType>"
+    "<ObjectType name=\"HmiStructureMemberTagData\" id=\"0x1024\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Implements ref=\"IStructureItem\"/>"
+    "<Relation name=\"Members\" id=\"0x2207\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "</ObjectType>"
     "</Namespace></Package></MetaInfo>";
 
 struct Field {
-    char kind;  // s string, b blob, i 32-bit number, o boolean
+    char kind;  // s string, b blob, r structure or array, i 32-bit number, o boolean
     std::string text;
     uint32_t number;
 };
 Field fs(const std::string& v) { return {'s', v, 0}; }
 Field fb(const Bytes& v) { return {'b', str(v), 0}; }
+Field fr(const Bytes& v) { return {'r', str(v), 0}; }
 Field fi(uint32_t v) { return {'i', std::string(), v}; }
 Field fo(bool v) { return {'o', std::string(), v ? 1u : 0u}; }
 
@@ -593,6 +630,10 @@ Bytes segment(const std::vector<Field>& fields) {
             fixed.push_back(static_cast<uint8_t>(f.number));
         } else {
             put32(fixed, static_cast<uint32_t>(fixedSize + var.size()));
+            if (f.kind == 'r') {  // a structure or an array brings its own size
+                var.insert(var.end(), f.text.begin(), f.text.end());
+                continue;
+            }
             size_t prefix = 1;
             while (varint(f.text.size() + prefix).size() != prefix) ++prefix;
             append(var, varint(f.text.size() + prefix));
@@ -1041,6 +1082,10 @@ const char kStructMeta[] =
     "<Attribute name=\"History\" id=\"0\" type=\"Events\"/><Attribute name=\"One\" id=\"1\" type=\"Event\"/>"
     "<Attribute name=\"After\" id=\"2\" type=\"xs:int\"/></AttributeSet>"
     "<ObjectType name=\"Info\" id=\"0x1001\"><Implements ref=\"IInfo\"/></ObjectType>"
+    "<AttributeSet name=\"IVault\" id=\"0x3002\" persistent=\"true\">"
+    "<Attribute name=\"Settings\" id=\"0\" type=\"Events\"/><Attribute name=\"OldPasswords\" id=\"1\" type=\"Events\"/>"
+    "</AttributeSet>"
+    "<ObjectType name=\"Vault\" id=\"0x1002\"><Implements ref=\"IVault\"/></ObjectType>"
     "</Namespace></Package></MetaInfo>";
 
 // A stored structure "Event": its size, one field per element, the strings.
@@ -1184,6 +1229,335 @@ void testStructures() {
         set32(l, 12, l[8]);
         opaque(l, one, true);
     }
+
+    // The object dump shows what is read, and no password in it: neither a
+    // value that a structure itself calls a password (the settings of an HMI
+    // connection are name and value pairs), nor anything below an attribute
+    // that is named like one.
+    {
+        const Bytes settings = eventList({eventRecord("NTP", t1, "TimeSyncMode", 1, true),
+                                          eventRecord("hunter2", t1, "Password", 2, true),
+                                          eventRecord("", t1, "Password", 3, true)});
+        const Bytes old = eventList({eventRecord("s3cret", t1, "first", 4, false)});
+        Bytes seg;
+        put32(seg, static_cast<uint32_t>(12 + settings.size() + old.size()));
+        put32(seg, 12);
+        put32(seg, static_cast<uint32_t>(12 + settings.size()));
+        append(seg, settings);
+        append(seg, old);
+        Bytes f(98, 0);
+        f[0] = 0x40;
+        f[4] = 1;
+        f[97] = 0xff;
+        for (const Bytes& blk : {block(0x70000, 1, 0, 0, systemBody(deflated(kStructMeta))), object(0x1002, 6, {seg}, {}, {})}) {
+            size_t from = f.size();
+            append(f, blk);
+            appendHash(f, from);
+        }
+        tia::Project p(tia::Container::parse(f, {}));
+        tia::Object o;
+        const tia::Block* b = p.live(0x1002, 6);
+        CHECK(b && p.decode(*b, o));
+        const tia::Value* v = o.attr("IVault", "Settings");
+        CHECK(v && v->type == T::List && v->elements.size() == 3 && v->elements[1].field("Version")->s == "hunter2");
+        std::ostringstream dump;
+        tia::writeObjects(dump, p);
+        const std::string d = dump.str();
+        CHECK(d.find("\"Settings\": [{\"Version\": \"NTP\", \"Date\": \"2000-01-01T00:00:00Z\", \"Id\": \"TimeSyncMode\", "
+                     "\"Count\": 1, \"Flag\": true}, {\"Version\": {\"redacted\": true}, \"Date\": \"2000-01-01T00:00:00Z\", "
+                     "\"Id\": \"Password\", \"Count\": 2, \"Flag\": true}, {\"Version\": \"\",") != std::string::npos);
+        CHECK(d.find("\"OldPasswords\": [{\"Version\": {\"redacted\": true}, \"Date\": \"2000-01-01T00:00:00Z\", "
+                     "\"Id\": {\"redacted\": true}, \"Count\": 4, \"Flag\": false}]") != std::string::npos);
+        CHECK(d.find("hunter2") == std::string::npos && d.find("s3cret") == std::string::npos);
+    }
+}
+
+// ---- HMI tags ---------------------------------------------------------------
+
+// A segment of run-time named attributes holding one value at the start of
+// its variable data.
+Bytes keyedSegment(uint32_t key, const Bytes& value) {
+    Bytes b;
+    put32(b, 0);  // used, patched below
+    put32(b, 0);  // capacity, patched below
+    put32(b, 1);
+    b.push_back(2);  // names in the key table
+    b.push_back(0);
+    put32(b, 0);
+    put32(b, key);
+    put32(b, 0);
+    append(b, value);
+    set32(b, 0, static_cast<uint32_t>(b.size()));
+    set32(b, 4, static_cast<uint32_t>(b.size()));
+    return b;
+}
+
+// One entry of a tag table's link list, laid out as TIA Portal V19 writes it:
+// a blob without a length in front, a structure inside the structure, an
+// array of strings, a string.
+Bytes linkRecord(const Bytes& coid, uint32_t consumer, uint32_t handle, bool connected,
+                 const std::vector<std::string>& names, uint32_t provider, const std::string& quoted) {
+    Bytes inner;
+    put32(inner, 8);
+    put32(inner, handle);
+    Bytes path;
+    put32(path, 0);
+    put32(path, static_cast<uint32_t>(names.size()));
+    size_t at = 8 + 4 * names.size();
+    for (const auto& n : names) {
+        put32(path, static_cast<uint32_t>(at));
+        at += 1 + n.size();
+    }
+    for (const auto& n : names) {
+        path.push_back(static_cast<uint8_t>(1 + n.size()));
+        path.insert(path.end(), n.begin(), n.end());
+    }
+    set32(path, 0, static_cast<uint32_t>(path.size()));
+    const size_t fixed = 4 + 4 + 4 + 4 + 1 + 4 + 4 + 4;
+    const size_t coidAt = fixed, innerAt = coidAt + coid.size(), pathAt = innerAt + inner.size(),
+                 quotedAt = pathAt + path.size();
+    Bytes r;
+    put32(r, static_cast<uint32_t>(quotedAt + 1 + quoted.size()));
+    put32(r, static_cast<uint32_t>(coidAt));
+    put32(r, consumer);
+    put32(r, static_cast<uint32_t>(innerAt));
+    r.push_back(connected ? 1 : 0);
+    put32(r, static_cast<uint32_t>(pathAt));
+    put32(r, provider);
+    put32(r, static_cast<uint32_t>(quotedAt));
+    append(r, coid);
+    append(r, inner);
+    append(r, path);
+    r.push_back(static_cast<uint8_t>(1 + quoted.size()));
+    r.insert(r.end(), quoted.begin(), quoted.end());
+    return r;
+}
+
+void testHmiTags() {
+    Bytes f = programProject();
+    auto add = [&](const Bytes& blk) {
+        size_t from = f.size();
+        append(f, blk);
+        appendHash(f, from);
+    };
+    enum : uint32_t { Project = 0x1001, Plc = 0x1002, Table = 0x1003, Device = 0x100f, Item = 0x1010 };
+    enum : uint32_t { Maintainer = 0x1020, Connection, Cycle, HmiTag, MemberTag };
+    enum : uint32_t { Target = 0x2101, Environment, TagTable, ItemParent = 0x2107 };
+    enum : uint32_t { InverseConsumer = 0x2202, ConnectionPoint, TagConnection, TagCycle, Members, MemberMembers };
+    auto name = [](const std::string& n) { return segment({fs(n), fnone()}); };
+    const Rel inProject{Environment, Project, 1}, onHmi{Target, Item, 301}, inTable{TagTable, Table, 313};
+    const Rel viaConnection{TagConnection, Connection, 310}, cycle{TagCycle, Cycle, 312}, linked{InverseConsumer, Maintainer, 320};
+
+    {
+        // key table of HmiTagData: 1 -> "LinkHandle", a structure
+        Bytes t;
+        put32(t, 0);
+        put32(t, HmiTag);
+        put32(t, 1);
+        put32(t, 1);
+        put32(t, 1);
+        t.push_back(10);
+        for (char c : std::string("LinkHandle")) t.push_back(static_cast<uint8_t>(c));
+        put32(t, 0x4101);
+        set32(t, 0, static_cast<uint32_t>(t.size()));
+        add(block(0x70011, 1025, 0, 0, systemBody(t)));
+    }
+    // the panel and its runtime, a connection, a cycle, a tag table
+    add(object(Device, 300, {name("HMI_1")}, {inProject}, {}));
+    add(object(Item, 301, {name("HMI_RT_1")}, {inProject, {ItemParent, Device, 300}}, {}));
+    add(object(Connection, 310, {name("HMI_Connection_1")}, {inProject, onHmi, {ConnectionPoint, Item, 311}}, {}));
+    add(object(Cycle, 312, {name("1 s")}, {inProject, onHmi}, {}));
+    add(object(Table, 313, {name("HMI tags")}, {inProject, onHmi}, {}));
+    // the links of that table; the number 1007 is used twice
+    add(object(Maintainer, 320,
+               {name(""),
+                segment({fr(eventList({
+                             linkRecord(blobPaged("fifteen bytes..", 4096, false), 0, 1001, true, {"Speed"}, 0, "Data.Speed"),
+                             linkRecord(blobPlain("x"), 1, 1002, true, {"Cfg", "On"}, 0, "Data.Cfg.On"),
+                             linkRecord(blobPaged("compressed page", 64, true), 2, 1003, true, {"Go"}, 1, "Inst.Go"),
+                             linkRecord(blobPlain(""), 3, 1004, true, {}, 2, "Start"),
+                             linkRecord(blobPlain("x"), 4, 1005, false, {"x"}, 3, "\"Gone.DB\".x"),
+                             linkRecord(blobPlain("x"), 5, 1006, true, {"Buf[2]"}, 0, "Data.Buf[2]"),
+                             linkRecord(blobPlain("x"), 6, 1007, true, {"Run"}, 0, "Data.Run"),
+                             linkRecord(blobPlain("x"), 7, 1007, true, {"Run"}, 0, "Data.Run"),
+                         })),
+                         fi(3)})},
+               {inProject, onHmi}, {}));
+    // sets in slot order: ICoreAttributes, IHmiTagAttributes, IHmiTagStructureAttributes,
+    // ISoftlinkAttributes, IStructureItem, ITagAddress
+    auto tag = [&](uint64_t id, const std::string& n, const std::string& type, const std::string& address, int handle,
+                   std::vector<Rel> rels, const std::vector<Rel>& members = {}, const std::string& start = "") {
+        Bytes soft;
+        if (handle) {
+            Bytes h;
+            put32(h, 8);
+            put32(h, static_cast<uint32_t>(handle));
+            soft = keyedSegment(1, h);
+        }
+        rels.insert(rels.begin(), {onHmi, inTable, cycle});
+        add(object(HmiTag, id, {name(n), segment({fi(4)}), segment({fs(start)}), soft, segment({fs(type)}), segment({fs(address)})},
+                   rels, members));
+    };
+    tag(330, "Data_Speed", "Int", "%DB7.DBW2", 1001, {inProject, viaConnection, linked}, {}, "12");
+    tag(331, "Data_Cfg_On", "Bool", "%DB7.DBX4.0", 1002, {inProject, viaConnection, linked});
+    tag(332, "Inst_Go", "Bool", "%DB1.DBD0", 1003, {inProject, viaConnection, linked});  // a stale address, as seen
+    tag(333, "Start", "Bool", "%I9.9", 1004, {inProject, viaConnection, linked});
+    tag(334, "Lost", "Int", "%DB1.DBD0", 1005, {inProject, viaConnection, linked});
+    tag(335, "Buf2", "Byte", "%DB7.DBB14", 1006, {inProject, viaConnection, linked});
+    tag(336, "Internal", "UInt", "", 0, {inProject});
+    tag(337, "Abs", "Word", "%MW10", 0, {inProject, viaConnection});
+    tag(338, "Struct", "MotorUDT", "", 0, {inProject}, {{Members, MemberTag, 340}, {Members, MemberTag, 341}});
+    add(object(MemberTag, 340, {name("A"), segment({fs("Bool")})}, {inProject}, {}));
+    add(object(MemberTag, 341, {name("B"), segment({fs("Struct")})}, {inProject}, {{MemberMembers, MemberTag, 342}}));
+    add(object(MemberTag, 342, {name("C"), segment({fs("Int")})}, {inProject}, {}));
+    tag(339, "Copy", "Int", "", 0, {{Environment, Plc, 2}});              // belongs to a library object
+    tag(343, "Unnamed", "Int", "%DB1.DBD0", 1999, {inProject, viaConnection, linked});  // a link that is not in the list
+    tag(344, "Twice", "Bool", "%DB7.DBX0.0", 1007, {inProject, viaConnection, linked});
+
+    tia::Project p(tia::Container::parse(f, {}));
+    {
+        // the link list reads as a list of structures with everything in it
+        tia::Object o;
+        const tia::Block* b = p.live(Maintainer, 320);
+        CHECK(b && p.decode(*b, o));
+        const tia::Value* links = o.attr("IScopedLinkMaintainerData", "Links");
+        CHECK(links && links->type == tia::Value::Type::List && links->elements.size() == 8);
+        if (links && links->type == tia::Value::Type::List && links->elements.size() == 8) {
+            const tia::Value& l = links->elements[1];
+            CHECK(l.field("Coid") && l.field("Coid")->type == tia::Value::Type::Bytes);
+            std::string coid;
+            CHECK(l.field("Coid") && tia::decodeBlob(l.field("Coid")->s, coid) && coid == "x");
+            CHECK(tia::decodeBlob(links->elements[0].field("Coid")->s, coid) && coid == "fifteen bytes..");
+            CHECK(tia::decodeBlob(links->elements[2].field("Coid")->s, coid) && coid == "compressed page");
+            CHECK(l.field("ConsumerIndex")->i == 1 && l.field("ProviderIndex")->i == 0 && l.field("IsConnected")->b);
+            const tia::Value* h = l.field("Handle");
+            CHECK(h && h->type == tia::Value::Type::Record && h->field("Index") && h->field("Index")->i == 1002);
+            const tia::Value* np = l.field("NamePath");
+            CHECK(np && np->type == tia::Value::Type::List && np->elements.size() == 2 && np->elements[1].s == "On");
+            CHECK(l.field("QuotedNamePath")->s == "Data.Cfg.On");
+            CHECK(links->elements[3].field("NamePath")->elements.empty());
+        }
+        CHECK(o.attr("IScopedLinkMaintainerData", "Version") && o.attr("IScopedLinkMaintainerData", "Version")->u == 3);
+    }
+
+    tia::ProgramData d = tia::buildProgramData(p);
+    CHECK(d.hmiTags.size() == 11 && d.stats.hmiTagsOutsideProject == 1);
+    CHECK(d.tags.size() == 1);  // HMI tags are not PLC tags
+    auto find = [&](const char* n) -> const tia::HmiTag* {
+        for (const auto& t : d.hmiTags)
+            if (t.name == n) return &t;
+        return nullptr;
+    };
+    // before the hardware is known: what the HMI side alone says
+    const tia::HmiTag* speed = find("Data_Speed");
+    CHECK(speed != nullptr);
+    if (speed) {
+        CHECK(speed->hmi == "HMI_1" && speed->runtime == "HMI_RT_1" && speed->table == "HMI tags");
+        CHECK(speed->dataType == "Int" && speed->startValue == "12");
+        CHECK(speed->access == "symbolic" && speed->plcTag == "Data.Speed" && speed->plcTagLinked);
+        CHECK(speed->connection == "HMI_Connection_1" && speed->connectionId == 311);
+        CHECK(speed->acquisitionCycle == "1 s" && speed->acquisitionMode == "Visible");
+        CHECK(speed->addressStored == "%DB7.DBW2" && speed->address.empty() && speed->plc.empty());
+    }
+
+    // the connection as the hardware inventory lists it, and one that is not the tag's
+    tia::Inventory inv;
+    tia::Connection other, mine;
+    other.id = 999;
+    other.partner.module = "PLC_9";
+    mine.id = 311;
+    mine.partner.module = "PLC_1";
+    mine.partner.device = "Station_1";
+    inv.connections = {other, mine};
+    tia::linkHmiTags(inv, d);
+
+    speed = find("Data_Speed");
+    if (speed) {
+        // a member of a block with standard access: it has an address
+        CHECK(speed->plc == "PLC_1" && speed->plcDevice == "Station_1");
+        CHECK(speed->plcTagFound && speed->plcDataType == "Int" && speed->address == "%DB7.DBW2");
+    }
+    const tia::HmiTag* on = find("Data_Cfg_On");
+    CHECK(on && on->plcTag == "Data.Cfg.On" && on->plcTagFound && on->plcDataType == "Bool" && on->address == "%DB7.DBX4.0");
+    // a member of an optimized block has no address; what the tag stores is left over
+    const tia::HmiTag* go = find("Inst_Go");
+    CHECK(go && go->plcTagFound && go->plcDataType == "Bool" && go->address.empty() && go->addressStored == "%DB1.DBD0");
+    // a PLC tag: its own address counts
+    const tia::HmiTag* start = find("Start");
+    CHECK(start && start->access == "symbolic" && start->plcTagFound && start->plcDataType == "Bool" && start->address == "%I0.0");
+    // a link TIA Portal marked as broken, to something that is not there
+    const tia::HmiTag* lost = find("Lost");
+    CHECK(lost && lost->access == "symbolic" && lost->plcTag == "\"Gone.DB\".x" && !lost->plcTagLinked && !lost->plcTagFound);
+    CHECK(lost && lost->address.empty());
+    // an element of an array is found by the array
+    const tia::HmiTag* buf = find("Buf2");
+    CHECK(buf && buf->plcTagFound && buf->plcDataType == "Array[0..3] of Byte" && buf->address.empty());
+    const tia::HmiTag* internal = find("Internal");
+    CHECK(internal && internal->access == "internal" && internal->connection.empty() && internal->plcTag.empty());
+    CHECK(internal && internal->plc.empty() && internal->address.empty());
+    const tia::HmiTag* abs = find("Abs");
+    CHECK(abs && abs->access == "absolute" && abs->plc == "PLC_1" && abs->plcTag.empty() && abs->address == "%MW10");
+    const tia::HmiTag* st = find("Struct");
+    CHECK(st && st->memberCount == 3 && st->members.size() == 2);
+    if (st && st->members.size() == 2) {
+        CHECK(st->members[0].name == "A" && st->members[0].dataType == "Bool" && st->members[0].members.empty());
+        CHECK(st->members[1].name == "B" && st->members[1].members.size() == 1 && st->members[1].members[0].name == "C");
+    }
+    // a tag with a link is never taken for one with an absolute address
+    const tia::HmiTag* unnamed = find("Unnamed");
+    CHECK(unnamed && unnamed->access == "symbolic" && unnamed->plcTag.empty() && unnamed->address.empty());
+    const tia::HmiTag* twice = find("Twice");
+    CHECK(twice && twice->access == "symbolic" && twice->plcTag.empty() && twice->address.empty());
+    CHECK(find("Copy") == nullptr);
+
+    CHECK(tia::acquisitionModeName("Visible") == "Cyclic in operation" && tia::acquisitionModeName("New") == "New");
+    CHECK(tia::acquisitionModeName("Continuous") == "Cyclic continuous");
+    CHECK(tia::acquisitionModeName("CyclicContinuous") == "CyclicContinuous");  // not what the choice of that name stores
+
+    std::ostringstream csv;
+    tia::writeHmiTagsCsv(csv, d);
+    const std::string c = csv.str();
+    CHECK(c.find("hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,"
+                 "comment,start_value,members,plc_tag_found,plc_data_type,address_stored\r\n") == 0);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Data_Speed,Int,symbolic,HMI_Connection_1,PLC_1,Data.Speed,%DB7.DBW2,1 s,"
+                 "Cyclic in operation,,12,,yes,Int,%DB7.DBW2\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Lost,Int,symbolic,HMI_Connection_1,PLC_1,\"\"\"Gone.DB\"\".x\",,1 s,Cyclic in operation,,,,"
+                 "no,,%DB1.DBD0\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Internal,UInt,internal,,,,,1 s,Cyclic in operation,,,,,,\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Unnamed,Int,symbolic,HMI_Connection_1,PLC_1,,,1 s,Cyclic in operation,,,,,,%DB1.DBD0\r\n") !=
+          std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Struct,MotorUDT,internal,,,,,1 s,Cyclic in operation,,,3,,,\r\n") != std::string::npos);
+
+    tia::ReportContext ctx;
+    std::ostringstream text, json;
+    tia::writeText(text, inv, d, ctx);
+    tia::writeJson(json, inv, d, ctx);
+    const std::string t = text.str(), j = json.str();
+    CHECK(t.find("\nHMI tags:\n") != std::string::npos);
+    CHECK(t.find("  HMI_1  HMI tags  Inst_Go      Bool      HMI_Connection_1  PLC_1  Inst.Go      -            1 s\n") !=
+          std::string::npos);
+    CHECK(t.find("  HMI_1  HMI tags  Internal     UInt      (internal)        -      -            -            1 s\n") !=
+          std::string::npos);
+    CHECK(t.find("  HMI_1  HMI tags  Abs          Word      HMI_Connection_1  PLC_1  -            %MW10        1 s\n") !=
+          std::string::npos);
+    CHECK(t.find("(link to the PLC tag broken)") != std::string::npos);
+    CHECK(t.find("(stands for a PLC tag whose name could not be read)") != std::string::npos);
+    CHECK(j.find("{\"hmi\": \"HMI_1\", \"runtime\": \"HMI_RT_1\", \"table\": \"HMI tags\", \"name\": \"Inst_Go\", "
+                 "\"data_type\": \"Bool\", \"access\": \"symbolic\", \"connection\": \"HMI_Connection_1\", \"plc\": \"PLC_1\", "
+                 "\"plc_device\": \"Station_1\", \"plc_tag\": \"Inst.Go\", \"plc_tag_linked\": true, \"plc_tag_found\": true, "
+                 "\"plc_data_type\": \"Bool\", \"address\": null, \"address_stored\": \"%DB1.DBD0\"") != std::string::npos);
+    CHECK(j.find("\"members\": [{\"name\": \"A\", \"data_type\": \"Bool\", \"members\": []}, {\"name\": \"B\", "
+                 "\"data_type\": \"Struct\", \"members\": [{\"name\": \"C\", \"data_type\": \"Int\", \"members\": []}]}]") !=
+          std::string::npos);
+
+    // the history counts them with the first state it finds
+    tia::History h = tia::buildHistory(std::make_shared<const std::vector<uint8_t>>(f));
+    CHECK(h.saves.size() == 1 && h.saves[0].afterLastSave && h.saves[0].firstState);
+    size_t counted = 0;
+    if (h.saves.size() == 1)
+        for (const auto& kv : h.saves[0].contents)
+            if (kv.first == "HMI tag") counted = kv.second;
+    CHECK(counted == 11);
 }
 
 // ---- save history -----------------------------------------------------------
@@ -1342,6 +1716,7 @@ int main() {
     testSaves();
     testAccessLevels();
     testStructures();
+    testHmiTags();
     testHistory();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

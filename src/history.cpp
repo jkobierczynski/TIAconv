@@ -126,7 +126,8 @@ Snapshot takeSnapshot(const Project& project) {
     Snapshot snap;
     if (project.meta().empty()) return snap;
     const Inventory inv = buildInventory(project);
-    const ProgramData prog = buildProgramData(project);
+    ProgramData prog = buildProgramData(project);
+    linkHmiTags(inv, prog);
 
     snap.hasProject = inv.project.found;
     snap.modified = inv.project.modified;
@@ -159,6 +160,7 @@ Snapshot takeSnapshot(const Project& project) {
         snap.add(std::move(e));
     }
 
+    std::map<std::string, std::string> deviceKeys;  // device name -> its key
     std::map<std::string, std::string> plcKeys;  // PLC name -> key of its module
     for (const auto& d : inv.devices) {
         if (!d.inProject) continue;
@@ -170,6 +172,7 @@ Snapshot takeSnapshot(const Project& project) {
         de.attrs.push_back({"name", d.name, 0});
         de.attrs.push_back({"type", d.type, 0});
         const std::string deviceKey = de.key;
+        deviceKeys.emplace(d.name, deviceKey);
         snap.add(std::move(de));
         for (const auto& m : d.modules) {
             Entity me;
@@ -344,6 +347,36 @@ Snapshot takeSnapshot(const Project& project) {
         snap.add(std::move(e));
     }
 
+    for (const auto& t : prog.hmiTags) {
+        Entity e;
+        e.key = key("hmitag", t.id);
+        auto dev = deviceKeys.find(t.hmi);
+        if (dev != deviceKeys.end()) e.parent = dev->second;
+        e.kind = "HMI tag";
+        e.label = path({t.hmi, t.table, t.name});
+        e.description = commaList([&] {
+            std::vector<std::string> parts;
+            if (!t.dataType.empty()) parts.push_back(t.dataType);
+            if (t.access == "internal") parts.push_back("internal");
+            else if (!t.plcTag.empty()) parts.push_back("PLC tag " + t.plcTag);
+            else if (!t.address.empty()) parts.push_back(t.address);
+            return parts;
+        }());
+        e.attrs.push_back({"name", t.name, 0});
+        e.attrs.push_back({"tag table", t.table, 0});
+        e.attrs.push_back({"data type", t.dataType, 0});
+        e.attrs.push_back({"connection", t.connection, kRef});
+        e.attrs.push_back({"PLC", t.plc, kRef});
+        e.attrs.push_back({"PLC tag", t.plcTag, 0});
+        e.attrs.push_back({"link to the PLC tag", t.access == "symbolic" && !t.plcTagLinked ? "broken" : "", 0});
+        e.attrs.push_back({"address", t.address, 0});
+        e.attrs.push_back({"acquisition cycle", t.acquisitionCycle, 0});
+        e.attrs.push_back({"acquisition mode", acquisitionModeName(t.acquisitionMode), 0});
+        e.attrs.push_back({"comment", t.comment, 0});
+        e.attrs.push_back({"start value", t.startValue, 0});
+        snap.add(std::move(e));
+    }
+
     for (const auto& c : prog.constants) {
         // The process image partitions are the same 34 constants in every PLC.
         if (c.kind == "pip") continue;
@@ -390,7 +423,8 @@ Snapshot rekey(const Snapshot& before, const Snapshot& after, std::map<std::stri
     // Only what belongs to a PLC and is named within it: a station deleted
     // and another added under the same default name are two stations.
     auto eligible = [](const Entity& e) {
-        return e.kind == "block" || e.kind == "data type" || e.kind == "tag" || e.kind == "user constant" ||
+        return e.kind == "block" || e.kind == "data type" || e.kind == "tag" || e.kind == "HMI tag" ||
+               e.kind == "user constant" ||
                e.kind == "hardware identifier" || e.kind == "system constant";
     };
     for (const auto& e : before.list)

@@ -98,7 +98,7 @@ by content.
 In the newer layout every save ends with one system object of type `0x7000C`
 (**verified**: a V21 project saved 23 times in a row, one change per save,
 gained exactly one per save, and the blocks before each one hold exactly that
-change; later extended to 68 saves, see [Save history](#save-history)).
+change; later extended to 85 saves, see [Save history](#save-history)).
 Reading the block list only up to the n-th of them gives the project as it
 was after save n; `ContainerOptions::throughSave` does that. The object
 carries counters, among them the number of the save, and **no time stamp**.
@@ -251,28 +251,38 @@ stored like a small segment of its own, at the offset the attribute holds:
 
     size (including this field): u32 in the newer layout, u16 in the older
     one field per element, in the order of the type model
-    the strings and blobs the fields point to
+    what the fields point to
 
-Fields have the sizes of the table above. A string or blob field is a u32
-offset **from the size field of the structure** to a varint length counting
-itself and the bytes; 0 means the string is not there (an empty string has an
-offset and the length 1).
+Fields have the sizes of the table above. All offsets are **from the size
+field of the structure**; 0 means the value is not there.
 
-An `<Array type="...">` of structures:
+| element | field | points to |
+|---|---|---|
+| string | u32 offset | varint length counting itself, bytes (an empty string has an offset and the length 1) |
+| blob | u32 offset | the blob **without a length in front**: its kind byte and what follows (see Large values). The blob says itself how long it is |
+| structure | u32 offset | the structure, starting with its own size |
+| array | u32 offset | the array, see below |
+
+An `<Array type="...">`:
 
     u32 size (including this field)
     u32 count
-    count x u32 offset, from the size field of the array
-    the structures
+    plain values:        the values, one after the other
+    strings, structures: count x u32 offset from the size field of the array,
+                         then the strings or structures
+
+The same holds for a structure or array that is the value of an expando
+attribute; it sits in the variable data of the expando segment like a
+string.
 
 `tiaconv` reads a value this way only when everything fits exactly: the
-fields and the strings they point to cover the structure without gap or
-overlap, and the structures cover the array. In the samples that holds for
-every structure made of numbers, booleans, enumerations, dates, strings and
-blobs (**verified**: 3 339 structures of 17 kinds in seven project files,
-both layouts). Anything else stays an unread value: structures that contain
-structures or texts, and arrays of plain values, whose layout has not been
-worked out.
+fields and what they point to cover the structure without gap or overlap,
+and the elements cover the array. In seven project files of both layouts
+that holds for all but two values: 14 472 structures of 40 kinds and 7 640
+arrays, 1 651 of them of plain values and 580 of strings (**verified** in
+that sense). The two exceptions are the same attribute in two files, a list
+of earlier passwords that the project keeps in protected form; they stay
+unread, as does anything else that does not fit.
 
 ### Text in several languages
 
@@ -676,7 +686,7 @@ nothing else).
   another between saves 2 and 3.
 
 **What** a save changed: `tiaconv --history` builds its whole report once
-per save and compares. The test projects document 68 saves with the action
+per save and compares. The test projects document 85 saves with the action
 taken in TIA Portal before each, and for each the difference is that action
 (`tests/fixtures/README.md`, `tests/fixtures_test.cpp`). Things learned from
 that:
@@ -690,6 +700,100 @@ that:
 - Entering a password for an access level writes the CPU item and nothing
   that `tiaconv` reports; creating a role writes `CustomRole`,
   `UmacRootData` and a `SystemDeviceFunctionRightProxy`.
+
+## HMI tags
+
+**Verified** on a V21 project made for the purpose (`s13_hmi`, a KTP400
+Basic panel, one action per save) against TIA Portal's own export of the
+tag table and screenshots, and on the V19 sample (a Comfort panel, 100 tags)
+against TIA Portal V21's export of that project. The V15.1 sample stores the
+same.
+
+A tag of an HMI device is an `HmiTagData` object. The tags the device makes
+itself (`@CurrentUser`) are `HmiSystemTagData`, the members of a tag of a
+structured type `HmiStructureMemberTagData`, reached through the relation
+`Members`.
+
+| | |
+|---|---|
+| name, comment | `ICoreAttributes` |
+| data type | `IStructureItem.DisplayTypeName` (`Real`, `String[20]`, the name of a PLC data type). A `String` shows as `String[254]` in a member |
+| HMI device | relation `Target` to the runtime item (`HmiApplicationData`, "HMI_RT_1"), whose parent is the device |
+| tag table | relation `TagTable` to `HmiTagTableData` |
+| connection | relation `IHmiTagAttributes_Connection` to `HmiConnectionData`; none for an internal tag |
+| acquisition cycle | relation `IHmiTagAttributes_AcquisitionCycle` to `HmiCycleData`, whose name is the cycle ("1 s", "500 ms") |
+| acquisition mode | `IHmiTagAttributes.AcquisitionTriggerMode`: `Visible` is the default, "Cyclic in operation" in the editor and in the export. `Continuous` is what the editor calls "Cyclic continuous" and the export "Continuous". The model also has a `CyclicContinuous`, which is **not** what that choice stores, and `OnDemand`, `OnChange` and others not seen |
+| start value | `IHmiTagStructureAttributes.StartValue` |
+| limits, scaling, coding | `IHmiTagStructureAttributes`; the defaults read 10 / 0 / 100 / 0 for the scaling ends, as in the export. Never seen changed |
+| address | `ITagAddress.LogicalAddress` and `AddressMode`, see below |
+
+In the file the tags of a device are in the order of their object ids, which
+is the order of TIA Portal's export.
+
+`HmiConnectionData` is the panel's view of a connection. Its relation
+`ConnectionPoint` leads to the `HmiConnectionPointData` object of the
+hardware configuration (see Connections), and through that to the PLC that
+the tag table shows as "PLC name". Its attributes `PhysicValue` and
+`ProtocolValue` are arrays of name and value pairs with the settings of the
+driver. One of the names is `Password`; `tiaconv` does not write the value
+that goes with it.
+
+**Three kinds of access**, as the editor and the export name them:
+
+- internal tag: no connection.
+- absolute access: a connection and an address (`LogicalAddress`
+  `%MW100`, `AddressMode` `Fixed`), no link (see next).
+- symbolic access: a connection and a link to a PLC tag.
+
+**The PLC tag** of a symbolic tag is not on the tag. Each tag table has a
+`ScopedLinkMaintainerData` object (relation `InverseScopedLinkMaintainer`
+to the table, `InverseConsumer` from each tag that has a link) whose
+attribute `IScopedLinkMaintainerData.Links` is an array of
+`LinkInformation`:
+
+| element | |
+|---|---|
+| `Handle.Index` | a number; the tag has the same one in its expando attribute `LinkHandle.Index` |
+| `QuotedNamePath` | the PLC tag as TIA Portal writes it: `DB_Standard.my_int`, `MyInt` |
+| `NamePath` | the members below the block, an array of strings; empty for a PLC tag |
+| `ConsumerIndex`, `ProviderIndex` | positions in the object's relation lists `Consumer` (the HMI tags) and `Provider` (a `DataBlockData` or the PLC tag itself, `EAMTZTagData`). Those lists keep empty entries so that the positions stay fixed |
+| `IsConnected` | false once the PLC tag is gone: deleting a PLC tag under its HMI tag sets it, and TIA Portal then shows the PLC tag on a red background |
+| `Coid` | a blob of 39 bytes for a block member, 29 for a PLC tag |
+
+`tiaconv` takes the PLC from the connection and looks the name up in that
+PLC's tags and data blocks; it does not use `Provider`, because in a link
+object with many links the relation lists are of the kind that carries no
+relation id (see Relation lists). For every tag with an intact link in the
+three projects (4 + 100 + 3) the name leads to a tag or member there, and
+the data type of the HMI tag is the data type found (a PLC data type is
+written in quotes on the PLC side and without on the HMI side).
+
+When a PLC tag is deleted that an HMI tag still names, TIA Portal writes a
+new object of the tag's type (`EAMTZTagData`) with the name and nothing
+else, and makes it the `Provider`. It hangs under the tag table by the
+relation `TRefParent` ("textual reference") instead of `TagTable`. Objects
+with a `TRefParent` are not tags or blocks of the project; the V19 sample
+has four code blocks of that kind.
+
+The tag also has an expando attribute `TypeSafeAddress` (`CRC`, `Rid`, and
+`LidPath`, the member IDs from the block down with flags in the top bits);
+not used.
+
+**The address.** TIA Portal shows and exports an address for absolute
+access only. For symbolic access `LogicalAddress` still holds one, and it is
+right where the PLC tag has an address: `%DB1.DBW264` for a member at offset
+264 of a block with standard access, `%MW20` for a PLC tag, `%DB1.DBX0.0`
+for a structure at the start of the block (V21); the four tags of the V15.1
+sample likewise. For members of optimized blocks it is empty with
+`AddressMode` `Invalid` in the V21 project, and in the V19 sample often
+left over from something else (`%DB1.DBD0` for a Bool, mode `Fixed`).
+`tiaconv` therefore reports an address for a symbolic tag only when the PLC
+side says the tag or member has one. After the PLC tag was deleted the HMI
+tag still stores `%MW20`.
+
+**Not seen**: limits, linear scaling, multiplexed tags, acquisition modes
+other than the two above, HMI tags in the older layout, PC runtimes, WinCC
+Unified devices.
 
 ## Blocks
 
@@ -963,7 +1067,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 16 234 | 12 083 | `tests/fixtures` (fourteen project files, in this repository) |
+| V21 | v14 | 18 771 | 14 105 | `tests/fixtures` (fifteen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -1018,7 +1122,11 @@ all three configured items (both CPUs and the signal module) are as decoded.
 - Other `FeedbackId` values of the project history (upgrades between V14+
   versions, library updates), and whether TIA Portal's "Project history" tab
   shows the same entries.
-- Structures that contain structures or texts, and arrays of plain values.
+- HMI tags: see the list at the end of that section. Screens, alarms,
+  scripts and recipes are not looked at; a screen item names the tags it
+  uses in expando attributes (`Dyn.ProcessValue.Tag#`).
+- Which relation a relation list without ids belongs to (`Consumer` and
+  `Provider` of a link object, in that order, when there are many links).
 - Blocks: fail-safe blocks, GRAPH and other languages not in the samples,
   blocks that are instances of library types (relation `IsInstanceOf`),
   the call list kept with the compiled block, download times against a real

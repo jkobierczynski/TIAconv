@@ -390,6 +390,45 @@ void textConstants(std::ostream& out, const ProgramData& prog) {
             << " not listed (OB numbers, process image partitions); the JSON and the constants CSV have them.\n";
 }
 
+// What to say in place of a PLC tag or an address that is not there.
+std::string hmiTagNote(const HmiTag& t) {
+    if (t.access == "symbolic" && t.plcTag.empty()) return "stands for a PLC tag whose name could not be read";
+    if (t.access == "symbolic" && !t.plcTagLinked) return "link to the PLC tag broken";
+    if (t.access == "symbolic" && !t.plc.empty() && !t.plcTagFound) return "PLC tag not found in the PLC's tags and data blocks";
+    return std::string();
+}
+
+void textHmiTags(std::ostream& out, const ProgramData& prog) {
+    if (prog.hmiTags.empty()) return;
+    out << "\nHMI tags:\n";
+    size_t wHmi = 3, wTable = 5, wName = 4, wType = 4, wConn = 10, wPlc = 3, wTag = 7, wAddr = 7;
+    for (const auto& t : prog.hmiTags) {
+        wHmi = std::max(wHmi, width(t.hmi));
+        wTable = std::max(wTable, width(t.table));
+        wName = std::max(wName, width(t.name));
+        wType = std::max(wType, width(t.dataType));
+        wConn = std::max(wConn, width(t.connection));
+        wPlc = std::max(wPlc, width(t.plc));
+        wTag = std::max(wTag, width(t.plcTag));
+        wAddr = std::max(wAddr, width(t.address));
+    }
+    out << "  " << pad("HMI", wHmi + 2) << pad("Table", wTable + 2) << pad("Name", wName + 2) << pad("Type", wType + 2)
+        << pad("Connection", wConn + 2) << pad("PLC", wPlc + 2) << pad("PLC tag", wTag + 2) << pad("Address", wAddr + 2)
+        << "Cycle\n";
+    for (const auto& t : prog.hmiTags) {
+        out << "  " << pad(dash(t.hmi), wHmi + 2) << pad(dash(t.table), wTable + 2) << pad(t.name, wName + 2)
+            << pad(dash(t.dataType), wType + 2) << pad(t.access == "internal" ? "(internal)" : dash(t.connection), wConn + 2)
+            << pad(dash(t.plc), wPlc + 2) << pad(dash(t.plcTag), wTag + 2) << pad(dash(t.address), wAddr + 2)
+            << dash(t.acquisitionCycle);
+        const std::string note = hmiTagNote(t);
+        if (!note.empty()) out << "  (" << note << ")";
+        if (!t.comment.empty()) out << "  // " << oneLine(t.comment);
+        out << "\n";
+    }
+    out << "  For a tag that stands for a PLC tag, the address is that of the PLC tag, where it has one\n"
+           "  (a tag in I, Q or M, a member of a data block with standard access). TIA Portal shows none there.\n";
+}
+
 void textProgram(std::ostream& out, const ProgramData& prog, const ReportContext& ctx) {
     textBlockList(out, prog);
     textConstants(out, prog);
@@ -438,6 +477,7 @@ void textProgram(std::ostream& out, const ProgramData& prog, const ReportContext
             if (ctx.members) textMembers(out, b.members, 0);
         }
     }
+    textHmiTags(out, prog);
 }
 
 void jsonMembers(std::ostream& out, const std::vector<BlockMember>& members, const std::string& indent) {
@@ -517,6 +557,17 @@ void jsonConstants(std::ostream& out, const ProgramData& prog) {
     out << (prog.constants.empty() ? "],\n" : "\n  ],\n");
 }
 
+void jsonHmiMembers(std::ostream& out, const std::vector<HmiTagMember>& members) {
+    out << "[";
+    for (size_t i = 0; i < members.size(); ++i) {
+        out << (i ? ", " : "") << "{\"name\": " << q(members[i].name) << ", \"data_type\": " << qn(members[i].dataType)
+            << ", \"members\": ";
+        jsonHmiMembers(out, members[i].members);
+        out << "}";
+    }
+    out << "]";
+}
+
 void jsonProgram(std::ostream& out, const ProgramData& prog) {
     jsonBlockList(out, prog);
     jsonConstants(out, prog);
@@ -545,6 +596,28 @@ void jsonProgram(std::ostream& out, const ProgramData& prog) {
         out << "}";
     }
     out << (prog.blocks.empty() ? "],\n" : "\n  ],\n");
+    out << "  \"hmi_tags\": [";
+    for (size_t i = 0; i < prog.hmiTags.size(); ++i) {
+        const HmiTag& t = prog.hmiTags[i];
+        out << (i ? ",\n" : "\n") << "    {\"hmi\": " << qn(t.hmi) << ", \"runtime\": " << qn(t.runtime) << ", \"table\": "
+            << qn(t.table) << ", \"name\": " << q(t.name) << ", \"data_type\": " << qn(t.dataType) << ", \"access\": "
+            << q(t.access) << ", \"connection\": " << qn(t.connection) << ", \"plc\": " << qn(t.plc)
+            << ", \"plc_device\": " << qn(t.plcDevice) << ", \"plc_tag\": " << qn(t.plcTag) << ", \"plc_tag_linked\": ";
+        if (t.access == "symbolic") out << tf(t.plcTagLinked);
+        else out << "null";
+        out << ", \"plc_tag_found\": ";
+        if (!t.plcTag.empty() && !t.plc.empty()) out << tf(t.plcTagFound);
+        else out << "null";
+        out << ", \"plc_data_type\": " << qn(t.plcDataType) << ", \"address\": " << qn(t.address)
+            << ", \"address_stored\": " << qn(t.addressStored) << ", \"address_mode\": " << qn(t.addressMode)
+            << ", \"acquisition_cycle\": " << qn(t.acquisitionCycle) << ", \"acquisition_mode\": "
+            << qn(acquisitionModeName(t.acquisitionMode)) << ", \"acquisition_mode_stored\": " << qn(t.acquisitionMode)
+            << ", \"comment\": " << qn(t.comment) << ", \"start_value\": " << qn(t.startValue)
+            << ", \"member_count\": " << t.memberCount << ", \"members\": ";
+        jsonHmiMembers(out, t.members);
+        out << "}";
+    }
+    out << (prog.hmiTags.empty() ? "],\n" : "\n  ],\n");
 }
 
 void csvRow(std::ostream& out, std::initializer_list<std::string> cols) {
@@ -572,6 +645,17 @@ void csvMembers(std::ostream& out, const DataBlock& b, const std::vector<BlockMe
 void writeTagsCsv(std::ostream& out, const ProgramData& prog) {
     out << "plc,table,name,data_type,address,comment\r\n";
     for (const auto& t : prog.tags) csvRow(out, {t.plc, t.table, t.name, t.dataType, t.address, t.comment});
+}
+
+void writeHmiTagsCsv(std::ostream& out, const ProgramData& prog) {
+    out << "hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,comment,"
+           "start_value,members,plc_tag_found,plc_data_type,address_stored\r\n";
+    for (const auto& t : prog.hmiTags)
+        csvRow(out, {t.hmi, t.table, t.name, t.dataType, t.access, t.connection, t.plc, t.plcTag, t.address,
+                     t.acquisitionCycle, acquisitionModeName(t.acquisitionMode), t.comment, t.startValue,
+                     t.memberCount ? std::to_string(t.memberCount) : std::string(),
+                     !t.plcTag.empty() && !t.plc.empty() ? (t.plcTagFound ? "yes" : "no") : "", t.plcDataType,
+                     t.addressStored});
 }
 
 void writeConstantsCsv(std::ostream& out, const ProgramData& prog) {
@@ -1223,9 +1307,24 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
 
 namespace {
 
-bool secretAttribute(const std::string& name);
+bool secretAttribute(const std::string& name) {
+    for (const char* part : {"assword", "Salt", "ProtectionIV", "VerificationTag"})
+        if (name.find(part) != std::string::npos) return true;
+    return false;
+}
 
-void writeValue(std::ostream& out, const Value& v) {
+// A structure that names what it holds in one of its own fields, as the
+// settings of an HMI connection do: {"Name": "Password", "Value": "..."}.
+bool namesSecret(const Value& record) {
+    for (const Value& f : record.elements)
+        if (f.type == Value::Type::String && secretAttribute(f.s)) return true;
+    return false;
+}
+
+// `secret`: the value belongs to something that is, or goes with, a password.
+// Texts in it are not written, at any depth; bytes are only ever written by
+// their size.
+void writeValue(std::ostream& out, const Value& v, bool secret = false) {
     switch (v.type) {
         case Value::Type::Null: out << "null"; break;
         case Value::Type::Bool: out << tf(v.b); break;
@@ -1236,9 +1335,16 @@ void writeValue(std::ostream& out, const Value& v) {
             else out << "null";
             break;
         case Value::Type::String:
+            if (secret && !v.s.empty()) out << "{\"redacted\": true}";
+            else out << q(v.s);
+            break;
         case Value::Type::DateTime: out << q(v.s); break;
         case Value::Type::Bytes: out << "{\"bytes\": " << v.s.size() << "}"; break;
         case Value::Type::Text: {
+            if (secret) {
+                out << "{\"redacted\": true}";
+                break;
+            }
             // one entry per language id; "-" for the entry without a language
             out << "{\"text\": {";
             for (size_t i = 0; i < v.texts.size(); ++i)
@@ -1248,31 +1354,28 @@ void writeValue(std::ostream& out, const Value& v) {
             break;
         }
         case Value::Type::Opaque: out << "{\"opaque\": true}"; break;
-        case Value::Type::Record:
+        case Value::Type::Record: {
+            // the field that does the naming is itself written
+            const bool named = !secret && namesSecret(v);
             out << "{";
             for (size_t i = 0; i < v.elements.size() && i < v.names.size(); ++i) {
                 out << (i ? ", " : "") << q(v.names[i]) << ": ";
                 const Value& f = v.elements[i];
-                if (secretAttribute(v.names[i]) && f.type == Value::Type::String && !f.s.empty()) out << "{\"redacted\": true}";
-                else writeValue(out, f);
+                const bool naming = named && f.type == Value::Type::String && secretAttribute(f.s);
+                writeValue(out, f, secret || secretAttribute(v.names[i]) || (named && !naming));
             }
             out << "}";
             break;
+        }
         case Value::Type::List:
             out << "[";
             for (size_t i = 0; i < v.elements.size(); ++i) {
                 out << (i ? ", " : "");
-                writeValue(out, v.elements[i]);
+                writeValue(out, v.elements[i], secret);
             }
             out << "]";
             break;
     }
-}
-
-bool secretAttribute(const std::string& name) {
-    for (const char* part : {"assword", "Salt", "ProtectionIV", "VerificationTag"})
-        if (name.find(part) != std::string::npos) return true;
-    return false;
 }
 
 void writeValues(std::ostream& out, const NamedValues& vals) {
@@ -1286,9 +1389,7 @@ void writeValues(std::ostream& out, const NamedValues& vals) {
         // checking a password (salt, initialisation vector, verification tag
         // of a protected block), stays out of the output: a text is not shown,
         // and bytes only ever by their size.
-        if (secretAttribute(kv.first) && kv.second.type == Value::Type::String && !kv.second.s.empty())
-            out << "{\"redacted\": true}";
-        else writeValue(out, kv.second);
+        writeValue(out, kv.second, secretAttribute(kv.first));
     }
     out << "}";
 }

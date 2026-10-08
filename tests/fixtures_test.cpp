@@ -56,6 +56,7 @@ Loaded load(const std::string& name, size_t throughSave = 0) {
     Loaded l;
     l.inv = tia::buildInventory(p);
     l.prog = tia::buildProgramData(p);
+    tia::linkHmiTags(l.inv, l.prog);
     l.hashErrors = p.container().hashErrors();
     l.saves = p.container().saveCount();
     l.layout = p.container().layout();
@@ -243,6 +244,33 @@ const Step kStepsConstants[] = {
     {17, "-|user constant|ZZBRAVO / Default tag table / ZZCONST_REAL|Real = 3.5"},
 };
 
+// s13_hmi: saves 19 to 36, an HMI panel and its tags.
+const Step kStepsHmi[] = {
+    {19, "~|project|s13_hmi|name|s12_constants|s13_hmi"},
+    {20, "+|device|ZZPANEL|HMI.Device"},
+    {21, "~|interface|ZZPANEL / PROFINET Interface_1 / X1|IP address|192.168.0.2|192.168.77.3"},
+    {21, "~|interface|ZZPANEL / PROFINET Interface_1 / X1|subnet||PN/IE_1"},
+    {22, "+|connection|ZZPANEL / HMI_Connection_1|HMI to S7-1500/ET200MP station_1 / ZZBRAVO / X1"},
+    {23, "+|HMI tag|ZZPANEL / Default tag table / ZZINT|Int, internal"},
+    {24, "+|HMI tag|ZZPANEL / Default tag table / ZZSTD|Int, PLC tag DB_Standard.my_int"},
+    {25, "+|HMI tag|ZZPANEL / Default tag table / ZZMEM|Word, PLC tag MyInt"},
+    {26, "+|HMI tag|ZZPANEL / Default tag table / ZZABS|Word, %MW100"},
+    {27, "~|HMI tag|ZZPANEL / Default tag table / ZZSTD|acquisition cycle|1 s|500 ms"},
+    {28, "~|HMI tag|ZZPANEL / Default tag table / ZZSTD|acquisition mode|Cyclic in operation|Cyclic continuous"},
+    {29, "~|HMI tag|ZZPANEL / Default tag table / ZZINT|comment||ZZCOMMENT"},
+    {30, "~|HMI tag|ZZPANEL / Default tag table / ZZINT|start value||7"},
+    {31, "+|HMI tag|ZZPANEL / ZZTABLE / ZZUDT|User_data_type_1, PLC tag DB_Standard.my_data_type"},
+    {32, "+|HMI tag|ZZPANEL / Default tag table / ZZOPT|Real, PLC tag DB_Standard.my_real"},
+    {33, "-|HMI tag|ZZPANEL / Default tag table / ZZOPT|Real, PLC tag DB_Standard.my_real"},
+    // the PLC tag is gone, and with it the address of the HMI tag that still names it
+    {34, "-|tag|ZZBRAVO / Tag MyTagTable / MyInt|Word, %MW20"},
+    {34, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|link to the PLC tag||broken"},
+    {34, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|address|%MW20|"},
+    {35, "+|connection|ZZPANEL / HMI_Connection_2|HMI to S7-1500/ET200MP station_2 / ZZCHARLIE / X1"},
+    {35, "+|HMI tag|ZZPANEL / ZZTABLE / ZZCH|Word, %MW200"},
+    {36, "+|HMI tag|ZZPANEL / ZZTABLE / ZZOPT1|Real, PLC tag DB_Optimized.my_real"},
+};
+
 std::string stepText(const tia::HistoryChange& c) {
     if (c.change == "changed") return "~|" + c.kind + "|" + c.item + "|" + c.attribute + "|" + c.from + "|" + c.to;
     return std::string(c.change == "added" ? "+" : "-") + "|" + c.kind + "|" + c.item + "|" + c.description;
@@ -314,6 +342,7 @@ void checkTotals(const tia::History& h, const Loaded& end) {
     CHECK(n["block"] == blocks);
     CHECK(n["data type"] == types);
     CHECK(n["tag"] == static_cast<long>(end.prog.tags.size()));
+    CHECK(n["HMI tag"] == static_cast<long>(end.prog.hmiTags.size()));
     CHECK(n["user constant"] == user);
     CHECK(n["hardware identifier"] == hardware);
 }
@@ -419,6 +448,136 @@ void testHistory() {
         CHECK(!problems);
         checkTotals(h, load(name));
     }
+}
+
+// s13_hmi: a KTP400 Basic panel with seven tags. The reference is what TIA
+// Portal V21 itself said about them at the end: its export of the tag table
+// (exports/HMITags.xlsx), two screenshots of "Show all tags" and one of the
+// Inspector window.
+void testHmi() {
+    Loaded l = load("s13_hmi");
+    common(l, "s13_hmi");
+    CHECK(l.saves == 36);
+
+    // the panel, as added and as the topology view listed it
+    const tia::Module* panel = module(l.inv, "ZZPANEL");
+    CHECK(panel != nullptr);
+    if (panel) {
+        CHECK(panel->typeName == "KTP400 Basic PN" && panel->orderNumber == "6AV2 123-2DB03-0AX0");
+        CHECK(panel->firmware == "17.0.0.0");
+    }
+    const tia::Interface* pn = firstInterface(l.inv, "PROFINET Interface_1");
+    CHECK(pn && pn->ip == "192.168.77.3" && pn->mask == "255.255.255.0" && pn->subnet == "PN/IE_1");
+
+    // two HMI connections from the panel, one to each of two PLCs
+    size_t hmiConnections = 0;
+    for (const auto& c : l.inv.connections) {
+        if (c.kind != "HMI") continue;
+        ++hmiConnections;
+        CHECK(c.local.device == "ZZPANEL" && c.local.ip == "192.168.77.3");
+        if (c.name == "HMI_Connection_1") CHECK(c.partner.module == "ZZBRAVO" && c.partner.ip == "192.168.77.12");
+        else if (c.name == "HMI_Connection_2") CHECK(c.partner.module == "ZZCHARLIE" && c.partner.ip == "192.168.77.13");
+        else CHECK(false);
+    }
+    CHECK(hmiConnections == 2);
+
+    // The export, sheet "Hmi Tags", row by row and in its order: Name, Path,
+    // Connection, PLC tag, DataType, Access Method, Address, Start value,
+    // Comment, Acquisition mode, Acquisition cycle. An empty text is the
+    // export's "<No Value>". "PLC name" is from the screenshot; the export
+    // does not have it.
+    const struct {
+        const char* name; const char* path; const char* connection; const char* plcTag; const char* dataType;
+        const char* access; const char* address; const char* start; const char* comment; const char* mode;
+        const char* cycle; const char* plcName;
+    } exported[] = {
+        {"ZZINT", "Default tag table", "", "", "Int", "", "", "7", "ZZCOMMENT", "Cyclic in operation", "1 s", ""},
+        {"ZZSTD", "Default tag table", "HMI_Connection_1", "DB_Standard.my_int", "Int", "Symbolic access", "", "", "",
+         "Continuous", "500 ms", "ZZBRAVO"},
+        {"ZZMEM", "Default tag table", "HMI_Connection_1", "MyInt", "Word", "Symbolic access", "", "", "",
+         "Cyclic in operation", "1 s", "ZZBRAVO"},
+        {"ZZABS", "Default tag table", "HMI_Connection_1", "", "Word", "Absolute access", "%MW100", "", "",
+         "Cyclic in operation", "1 s", "ZZBRAVO"},
+        {"ZZUDT", "ZZTABLE", "HMI_Connection_1", "DB_Standard.my_data_type", "User_data_type_1", "Symbolic access", "", "",
+         "", "Cyclic in operation", "1 s", "ZZBRAVO"},
+        {"ZZCH", "ZZTABLE", "HMI_Connection_2", "", "Word", "Absolute access", "%MW200", "", "", "Cyclic in operation",
+         "1 s", "ZZCHARLIE"},
+        {"ZZOPT1", "ZZTABLE", "HMI_Connection_1", "DB_Optimized.my_real", "Real", "Symbolic access", "", "", "",
+         "Cyclic in operation", "1 s", "ZZBRAVO"},
+    };
+    const auto& tags = l.prog.hmiTags;
+    CHECK(tags.size() == 7);
+    for (size_t i = 0; i < tags.size() && i < 7; ++i) {
+        const tia::HmiTag& t = tags[i];
+        const auto& e = exported[i];
+        current = std::string("s13_hmi: export row ") + e.name;
+        CHECK(t.hmi == "ZZPANEL" && t.runtime == "HMI_RT_1");
+        CHECK(t.name == e.name && t.table == e.path && t.connection == e.connection && t.plcTag == e.plcTag);
+        CHECK(t.dataType == e.dataType && t.startValue == e.start && t.comment == e.comment);
+        CHECK(t.acquisitionCycle == e.cycle && t.plc == e.plcName);
+        const std::string access = t.access == "symbolic" ? "Symbolic access" : t.access == "absolute" ? "Absolute access" : "";
+        CHECK(access == e.access);
+        // TIA Portal gives an address for absolute access only
+        CHECK((t.access == "absolute" ? t.address : std::string()) == e.address);
+        // the export's name for the mode: the stored one, except for the default
+        CHECK((t.acquisitionMode == "Visible" ? std::string("Cyclic in operation") : t.acquisitionMode) == e.mode);
+    }
+    current = "s13_hmi";
+    auto tag = [&](const char* name) -> const tia::HmiTag* {
+        for (const auto& t : tags)
+            if (t.name == name) return &t;
+        return nullptr;
+    };
+    // The Inspector window shows "Cyclic continuous" where the export says "Continuous".
+    const tia::HmiTag* std_ = tag("ZZSTD");
+    CHECK(std_ && tia::acquisitionModeName(std_->acquisitionMode) == "Cyclic continuous");
+    // What tiaconv adds for the symbolic tags: the address the PLC tag has.
+    // 264 is where the block interface puts my_int, 0 the PLC data type.
+    CHECK(std_ && std_->plcTagFound && std_->plcDataType == "Int" && std_->address == "%DB1.DBW264");
+    const tia::HmiTag* udt = tag("ZZUDT");
+    CHECK(udt && udt->plcTagFound && udt->address == "%DB1.DBX0.0");
+    // screenshot: ZZUDT opens to four members (TIA Portal writes String for String[254])
+    CHECK(udt && udt->memberCount == 4 && udt->members.size() == 4);
+    if (udt && udt->members.size() == 4) {
+        const char* const names[] = {"memberDate", "memberString", "memberInt", "memberBolean"};
+        const char* const types[] = {"Date", "String[254]", "Int", "Bool"};
+        for (size_t i = 0; i < 4; ++i) CHECK(udt->members[i].name == names[i] && udt->members[i].dataType == types[i]);
+    }
+    // a member of an optimized block has no address, and the tag stores none
+    const tia::HmiTag* opt = tag("ZZOPT1");
+    CHECK(opt && opt->plcTagFound && opt->plcDataType == "Real" && opt->address.empty() && opt->addressStored.empty());
+    // screenshot: the PLC tag of ZZMEM on a red background. The PLC tag MyInt
+    // was deleted in save 34; the HMI tag keeps the name and its old address.
+    const tia::HmiTag* mem = tag("ZZMEM");
+    CHECK(mem && !mem->plcTagLinked && !mem->plcTagFound && mem->address.empty() && mem->addressStored == "%MW20");
+    for (const auto& t : tags)
+        if (t.name != "ZZMEM") CHECK(t.plcTagLinked);
+    // What TIA Portal keeps in place of the deleted PLC tag is not a PLC tag.
+    CHECK(l.prog.tags.size() == 11 && l.prog.stats.unresolvedReferences == 1);
+    for (const auto& t : l.prog.tags) CHECK(t.name != "MyInt" && !t.table.empty());
+
+    // before the PLC tag was deleted: found, with the address of the PLC tag
+    {
+        Loaded before = load("s13_hmi", 33);
+        const tia::HmiTag* m = nullptr;
+        for (const auto& t : before.prog.hmiTags)
+            if (t.name == "ZZMEM") m = &t;
+        CHECK(m && m->plcTagLinked && m->plcTagFound && m->plcDataType == "Word" && m->address == "%MW20");
+        CHECK(before.prog.tags.size() == 12 && before.prog.stats.unresolvedReferences == 0);
+    }
+    // save 32: the tag that was deleted in the next one, on a block with standard access
+    {
+        Loaded then = load("s13_hmi", 32);
+        const tia::HmiTag* o = nullptr;
+        for (const auto& t : then.prog.hmiTags)
+            if (t.name == "ZZOPT") o = &t;
+        CHECK(o && o->plcTag == "DB_Standard.my_real" && o->address == "%DB1.DBD270" && o->plcDataType == "Real");
+    }
+
+    const tia::History h = history("s13_hmi");
+    CHECK(h.savesInFile == 36 && h.saves.size() == 36);
+    checkSteps(h, kStepsHmi, 18, {});
+    checkTotals(h, load("s13_hmi"));
 }
 
 }  // namespace
@@ -1367,6 +1526,7 @@ int main() {
         // 23 hardware identifiers and the OB constant: nothing else, nothing missing
         CHECK(matched == 24 && kinds["hardware"] + kinds["ob"] == 24);
     }
+    testHmi();
     testHistory();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

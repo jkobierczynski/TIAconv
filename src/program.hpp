@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "inventory.hpp"
 #include "project.hpp"
 
 namespace tia {
@@ -137,12 +138,68 @@ std::string languageName(const std::string& stored);
 // The times in a block's stored download history, newest first, as ISO 8601.
 std::vector<std::string> parseDownloadHistory(const std::string& stored);
 
+// A member of an HMI tag of a structured type.
+struct HmiTagMember {
+    std::string name;
+    std::string dataType;
+    std::vector<HmiTagMember> members;
+};
+
+// A tag of an HMI device (a panel or a PC runtime): what the device reads
+// from and writes to a PLC, or keeps for itself.
+struct HmiTag {
+    uint64_t id = 0;
+    std::string hmi;      // the HMI device as the project tree names it, "HMI_1"
+    std::string runtime;  // the runtime item in it the tag belongs to, "HMI_RT_1"
+    std::string table;
+    std::string name;
+    std::string dataType;
+    std::string comment;
+    std::string startValue;
+    // "internal": the tag has no connection, the HMI device keeps the value
+    // "symbolic": it stands for a PLC tag or data block member, named in plcTag
+    // "absolute": it has a connection and an address, no PLC tag
+    std::string access;
+    std::string connection;     // name of the HMI connection; empty for an internal tag
+    uint64_t connectionId = 0;  // the connection as Inventory::connections lists it
+    // The PLC tag as TIA Portal writes it: "Motor_DB.Speed", "Tag_1"
+    std::string plcTag;
+    bool plcTagLinked = true;  // false: TIA Portal has marked the link to the PLC tag as broken
+    // The address the HMI tag stores. For symbolic access it is only
+    // meaningful when the PLC tag has an address at all (a tag in I, Q or M,
+    // a member of a data block with standard access); otherwise TIA Portal
+    // leaves a stale value there.
+    std::string addressStored;
+    std::string addressMode;       // as stored: Fixed, Invalid, ...
+    std::string acquisitionCycle;  // "1 s"
+    std::string acquisitionMode;   // as stored: Visible, Continuous, OnDemand, ...
+    std::vector<HmiTagMember> members;  // tags of a structured type
+    size_t memberCount = 0;             // all levels
+
+    // Filled in by linkHmiTags, from the hardware and the PLC program:
+    std::string plc;        // the PLC at the other end of the connection
+    std::string plcDevice;  // and its station
+    // The PLC tag was found in that PLC's tags or data blocks.
+    bool plcTagFound = false;
+    std::string plcDataType;  // its data type there
+    // The address to report: of an absolute tag as stored; of a symbolic tag
+    // only when the PLC side confirms that the tag has one.
+    std::string address;
+};
+
+// TIA Portal's name for an acquisition mode ("Cyclic in operation" for
+// Visible); modes that have not been seen in a project are returned as stored.
+std::string acquisitionModeName(const std::string& stored);
+
 struct ProgramStats {
     size_t tagsOutsideProject = 0;
     size_t blocksOutsideProject = 0;
     size_t blocksWithoutInterface = 0;
     size_t listedBlocksOutsideProject = 0;
     size_t constantsOutsideProject = 0;
+    size_t hmiTagsOutsideProject = 0;
+    // objects that only stand for a name TIA Portal could not resolve
+    size_t unresolvedReferences = 0;
 };
 
 struct ProgramData {
@@ -150,11 +207,17 @@ struct ProgramData {
     std::vector<Constant> constants;
     std::vector<DataBlock> blocks;
     std::vector<BlockInfo> blockList;
+    std::vector<HmiTag> hmiTags;
     ProgramStats stats;
     std::vector<std::string> warnings;
 };
 
 ProgramData buildProgramData(const Project& project);
+
+// Completes the HMI tags with what the hardware inventory and the PLC
+// program say: the PLC at the other end of each tag's connection, whether
+// the PLC tag exists there, its data type and whether it has an address.
+void linkHmiTags(const Inventory& inv, ProgramData& prog);
 
 // "12.3" for a bit, "12" for anything else.
 std::string formatOffset(const BlockMember& m);

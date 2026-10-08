@@ -31,6 +31,8 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
 
 // One row per tag.
 void writeTagsCsv(std::ostream& out, const ProgramData& prog);
+// One row per tag of an HMI device.
+void writeHmiTagsCsv(std::ostream& out, const ProgramData& prog);
 // One row per constant of a PLC: hardware identifiers, user constants and
 // the other system constants.
 void writeConstantsCsv(std::ostream& out, const ProgramData& prog);

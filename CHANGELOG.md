@@ -1,5 +1,30 @@
 # Changes
 
+## 0.10.0
+
+- HMI tags: the tags of every HMI device with tag table, data type,
+  connection, the PLC at the other end, the PLC tag or data block member the
+  tag stands for, the address, and the acquisition cycle; internal tags and
+  tags with absolute access as well. In the text report, the JSON
+  (`hmi_tags`) and the new `--hmi-tags-csv`, in the order of TIA Portal's
+  own export; the save history lists them too. Checked against TIA Portal
+  V21's export of the tag table of a new test project (`s13_hmi`) and of a
+  public sample project with 100 tags.
+- What TIA Portal keeps in place of a tag or block that was deleted while
+  something still names it is no longer listed as a tag or block.
+- **`--objects` in 0.9.0 could write a password.** 0.9.0 began to read
+  structures, and the settings of an HMI connection are a list of name and
+  value structures, one of them named `Password`. Its value would have been
+  written as it is stored. It is empty in the two sample projects, so no
+  password is known to have been written; the report, the JSON and the CSV
+  files were not affected. Fixed: a value that a structure itself names as a
+  password is not written, and nothing below an attribute named like one, at
+  any depth. If you kept an `--objects` file made with 0.9.0 from a project
+  with an HMI device, check it for `"Name": "Password"`.
+- Structures inside structures, arrays of numbers and of strings, and
+  structures in expando attributes are decoded. Nearly every structured
+  value of the sample projects now reads.
+
 ## 0.9.0
 
 - Save history: `--history` adds to the text report and the JSON what was
