@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "code.hpp"
 #include "container.hpp"
 #include "history.hpp"
 #include "inventory.hpp"
@@ -578,6 +579,260 @@ void testHmi() {
     CHECK(h.savesInFile == 36 && h.saves.size() == 36);
     checkSteps(h, kStepsHmi, 18, {});
     checkTotals(h, load("s13_hmi"));
+}
+
+
+// ---- block code: s14_code ----
+
+// s14_code, one action per save (tests/fixtures/README.md). Save 22 holds two
+// steps, the compiling and the deleted network; save 23 the know-how
+// protection, after which TIA Portal wrote the file anew (s14_code_rewritten).
+const Step kStepsCode[] = {
+    {3, "+|device|S7-1500/ET200MP station_1|S71500.Device"},
+    {4, "+|tag|ZZPLC / Default tag table / ZZA|Bool, %M10.0"},
+    {4, "+|tag|ZZPLC / Default tag table / ZZB|Bool, %M10.1"},
+    {4, "+|tag|ZZPLC / Default tag table / ZZC|Bool, %M10.2"},
+    {4, "+|tag|ZZPLC / Default tag table / ZZOUT|Bool, %M11.0"},
+    {4, "+|tag|ZZPLC / Default tag table / ZZN1|Int, %MW20"},
+    {4, "+|tag|ZZPLC / Default tag table / ZZN2|Int, %MW22"},
+    {4, "+|tag|ZZPLC / Default tag table / ZZN3|Int, %MW24"},
+    {5, "+|block|ZZPLC / ZZDATA [DB1]|global, DB"},
+    {6, "~|block|ZZPLC / Main [OB1]|networks|1|2"},
+    {6, "~|network|ZZPLC / Main [OB1] / network 1|title||ZZ series"},
+    {6, "~|network|ZZPLC / Main [OB1] / network 1|code||1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\""},
+    {6, "+|network|ZZPLC / Main [OB1] / network 2|LAD, empty"},
+    {7, "~|block|ZZPLC / Main [OB1]|networks|2|3"},
+    {7, "~|network|ZZPLC / Main [OB1] / network 2|title||ZZ parallel"},
+    {7, "~|network|ZZPLC / Main [OB1] / network 2|comment||two branches"},
+    {7, "~|network|ZZPLC / Main [OB1] / network 2|code||1: S(\"ZZDATA\".run) := \"ZZA\" OR \"ZZC\""},
+    {7, "+|network|ZZPLC / Main [OB1] / network 3|LAD, empty"},
+    {8, "~|block|ZZPLC / Main [OB1]|networks|3|4"},
+    {8, "~|network|ZZPLC / Main [OB1] / network 3|code||1: Move(en := \"ZZN1\" > 100, in := \"ZZN2\", out1 => \"ZZDATA\".speed)"},
+    {8, "+|network|ZZPLC / Main [OB1] / network 4|LAD, empty"},
+    {9, "~|block|ZZPLC / Main [OB1]|networks|4|5"},
+    {9, "~|network|ZZPLC / Main [OB1] / network 4|code||1: Add(in1 := \"ZZN1\", in2 := 5, out => \"ZZN3\")"},
+    {9, "+|network|ZZPLC / Main [OB1] / network 5|LAD, empty"},
+    {10, "~|block|ZZPLC / Main [OB1]|networks|5|6"},
+    {10, "+|block|ZZPLC / IEC_Timer_0_DB [DB2]|instance, DB"},
+    {10, "+|data type|ZZPLC / IEC_TIMER [SDT31]|SDT"},
+    {10, "~|network|ZZPLC / Main [OB1] / network 5|code||1: TON, \"IEC_Timer_0_DB\"(IN := \"ZZA\", PT := T#5S, ET => \"IEC_Timer_0_DB\".ET)\n2: \"ZZC\" := [1].Q"},
+    {10, "+|network|ZZPLC / Main [OB1] / network 6|LAD, empty"},
+    {11, "+|block|ZZPLC / ZZFBD [FC1]|FBD"},
+    {12, "+|block|ZZPLC / ZZSCL [FC2]|SCL"},
+    {14, "+|block|ZZPLC / ZZSTL [FC3]|STL"},
+    {15, "~|block|ZZPLC / ZZSTL [FC3]|networks|1|2"},
+    {15, "+|network|ZZPLC / ZZSTL [FC3] / network 2|STL"},
+    {16, "+|block|ZZPLC / ZZFB [FB1]|LAD"},
+    {17, "~|block|ZZPLC / Main [OB1]|networks|6|7"},
+    {17, "+|block|ZZPLC / ZZFB_DB [DB3]|instance, DB"},
+    {17, "~|network|ZZPLC / Main [OB1] / network 6|code||1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZA\", out1 => \"ZZC\")"},
+    {17, "+|network|ZZPLC / Main [OB1] / network 7|LAD, empty"},
+    {18, "~|block|ZZPLC / Main [OB1]|networks|7|8"},
+    {18, "~|network|ZZPLC / Main [OB1] / network 7|code||1: \"ZZFBD\"()\n2: \"ZZSCL\"(en := [1].eno)\n3: \"ZZSTL\"(en := [2].eno)"},
+    {18, "+|network|ZZPLC / Main [OB1] / network 8|LAD, empty"},
+    {19, "~|network|ZZPLC / Main [OB1] / network 5|code|1: TON, \"IEC_Timer_0_DB\"(IN := \"ZZA\", PT := T#5S, ET => \"IEC_Timer_0_DB\".ET)|1: TON, \"IEC_Timer_0_DB\"(IN := \"ZZA\", PT := T#5S)"},
+    {20, "~|network|ZZPLC / Main [OB1] / network 1|code|1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\"|1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZC\""},
+    {21, "~|tag|ZZPLC / Default tag table / ZZALPHA|name|ZZA|ZZALPHA"},
+    {22, "~|block|ZZPLC / Main [OB1]|networks|8|7"},
+    {22, "-|network|ZZPLC / Main [OB1] / network 2|ZZ parallel, LAD"},
+    {23, "~|block|ZZPLC / ZZSCL [FC2]|protection||know-how"},
+};
+
+struct LoadedCode {
+    tia::ProgramData prog;
+    tia::CodeData code;
+};
+
+// As tiaconv does it: an earlier save is read with the protected versions of
+// the whole file in mind.
+LoadedCode loadCode(const std::string& name, size_t throughSave = 0) {
+    current = throughSave ? name + " code after save " + std::to_string(throughSave) : name + " code";
+    tia::LoadedSource src = tia::loadProjectData(std::string(TIACONV_FIXTURES) + "/" + name);
+    auto data = std::make_shared<const std::vector<uint8_t>>(std::move(src.data));
+    tia::ContainerOptions opt;
+    opt.throughSave = throughSave;
+    tia::Project p(tia::Container::parse(data, opt));
+    tia::Project whole(tia::Container::parse(data, tia::ContainerOptions()));
+    const tia::ProtectedVersions upTo = tia::protectedVersions(whole);
+    LoadedCode l;
+    l.prog = tia::buildProgramData(p);
+    l.code = tia::buildCode(p, l.prog, throughSave ? &upTo : nullptr);
+    return l;
+}
+
+const tia::BlockCode* codeOf(const LoadedCode& l, const std::string& name) {
+    for (const auto& b : l.code.blocks)
+        if (b.name == name) return &b;
+    return nullptr;
+}
+
+std::string joined(const std::vector<std::string>& lines) {
+    std::string out;
+    for (const auto& s : lines) out += s + "\n";
+    return out;
+}
+
+// The listing of every network of a block, with its title.
+std::string listing(const tia::BlockCode* b) {
+    if (!b) return "(no block)";
+    std::string out;
+    for (const auto& n : b->networks) {
+        out += "#" + std::to_string(n.number) + " " + n.title + (n.comment.empty() ? "" : " // " + n.comment) + "\n";
+        out += joined(n.lines);
+    }
+    return out;
+}
+
+// The body of a source TIA Portal generated: the lines between BEGIN and
+// END_..., without the tab it puts in front of each.
+std::vector<std::string> sourceBody(const std::string& file) {
+    std::vector<std::string> out;
+    FILE* f = std::fopen((std::string(TIACONV_FIXTURES) + "/" + file).c_str(), "rb");
+    if (!f) return out;
+    std::string text;
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+    std::fclose(f);
+    bool in = false;
+    size_t from = 0;
+    while (from < text.size()) {
+        size_t nl = text.find('\n', from);
+        if (nl == std::string::npos) nl = text.size();
+        std::string line = text.substr(from, nl - from);
+        from = nl + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.compare(0, 4, "END_") == 0) break;
+        if (in) out.push_back(!line.empty() && line[0] == '\t' ? line.substr(1) : line);
+        if (line == "BEGIN") in = true;
+    }
+    while (!out.empty() && out.back().empty()) out.pop_back();
+    return out;
+}
+
+void testCode() {
+    // The history: every save shows the one action taken before it, and
+    // nothing of ZZSCL's code, which was protected at the end.
+    const tia::History h = history("s14_code");
+    CHECK(h.savesInFile == 23 && h.saves.size() == 23 && h.notes.empty());
+    checkSteps(h, kStepsCode, 3, {});
+    for (const auto& s : h.saves)
+        for (const auto& c : s.changes) {
+            CHECK(c.item.find("ZZSCL [FC2] / network") == std::string::npos);
+            CHECK(c.from.find("ZZN1\" + 2") == std::string::npos && c.to.find("ZZN1\" + 2") == std::string::npos);
+        }
+
+    // Save 19: everything made and compiled, before the edits of steps 17 to 21.
+    {
+        const LoadedCode l = loadCode("s14_code", 19);
+        // the screenshots of Main, of ZZFB, ZZFBD and ZZSTL
+        CHECK(listing(codeOf(l, "Main")) ==
+              "#1 ZZ series\n1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\"\n"
+              "#2 ZZ parallel // two branches\n1: S(\"ZZDATA\".run) := \"ZZA\" OR \"ZZC\"\n"
+              "#3 \n1: Move(en := \"ZZN1\" > 100, in := \"ZZN2\", out1 => \"ZZDATA\".speed)\n"
+              "#4 \n1: Add(in1 := \"ZZN1\", in2 := 5, out => \"ZZN3\")\n"
+              "#5 \n1: TON, \"IEC_Timer_0_DB\"(IN := \"ZZA\", PT := T#5S)\n2: \"ZZC\" := [1].Q\n"
+              "#6 \n1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZA\", out1 => \"ZZC\")\n"
+              "#7 \n1: \"ZZFBD\"()\n2: \"ZZSCL\"(en := [1].eno)\n3: \"ZZSTL\"(en := [2].eno)\n"
+              "#8 \n");
+        CHECK(listing(codeOf(l, "ZZFB")) == "#1 \n1: #out1 := #in1\n#2 \n");
+        CHECK(listing(codeOf(l, "ZZFBD")) == "#1 \n1: \"ZZDATA\".run := \"ZZA\" AND NOT \"ZZB\"\n#2 \n");
+        CHECK(listing(codeOf(l, "ZZSTL")) == "#1 \nA     \"ZZA\"\nAN    \"ZZB\"\n=     \"ZZOUT\"\n"
+                                             "#2 \nL     \"ZZN1\"\nL     5\n+I\nT     \"ZZN3\"\n");
+        // the sources TIA Portal generated at that point: the SCL body line
+        // for line; the STL statements, which the source writes as `A "ZZA";`
+        const tia::BlockCode* scl = codeOf(l, "ZZSCL");
+        CHECK(scl && scl->isProtected && scl->protectedLater && scl->networks.empty());
+        const std::vector<std::string> sclSource = sourceBody("s14_code/exports/ZZSCL.scl");
+        CHECK(sclSource.size() == 7);
+        const std::vector<std::string> stlSource = sourceBody("s14_code/exports/ZZSTL.awl");
+        std::vector<std::string> stlStatements;
+        for (const auto& line : stlSource) {
+            if (line == "NETWORK" || line.compare(0, 5, "TITLE") == 0 || line.empty()) continue;
+            std::string s = line.substr(line.find_first_not_of(' '));
+            if (!s.empty() && s.back() == ';') s.pop_back();
+            stlStatements.push_back(s);
+        }
+        std::vector<std::string> ours;
+        if (const tia::BlockCode* stl = codeOf(l, "ZZSTL"))
+            for (const auto& n : stl->networks)
+                for (const auto& line : n.lines) {
+                    // the two columns back to one blank
+                    const size_t gap = line.find(' ');
+                    ours.push_back(gap == std::string::npos ? line : line.substr(0, gap) + " " + line.substr(line.find_first_not_of(' ', gap)));
+                }
+        CHECK(ours == stlStatements && ours.size() == 7);
+
+        // the cross-references of ZZA as TIA Portal listed them, and the call structure
+        std::set<std::string> zza, calls, dataBlocks;
+        for (const auto& b : l.code.blocks)
+            for (const auto& r : b.references)
+                for (const auto& u : r.uses) {
+                    if (u.hidden) continue;
+                    const std::string where = b.name + " " + std::to_string(u.network);
+                    if (r.text == "\"ZZA\"") zza.insert(where + " " + u.access);
+                    if (u.access == "call" && r.kind == "block") calls.insert(where + " " + r.text);
+                    if (r.kind == "data block" || r.kind == "instance data block") dataBlocks.insert(where + " " + r.text);
+                }
+        CHECK(zza == (std::set<std::string>{"Main 1 read", "Main 2 read", "Main 5 read", "Main 6 read", "ZZFBD 1 read",
+                                             "ZZSTL 1 read"}));  // and ZZSCL's program code, which is not read here
+        CHECK(calls == (std::set<std::string>{"Main 6 \"ZZFB\"", "Main 7 \"ZZFBD\"", "Main 7 \"ZZSCL\"", "Main 7 \"ZZSTL\""}));
+        CHECK(dataBlocks == (std::set<std::string>{"Main 2 \"ZZDATA\"", "Main 3 \"ZZDATA\"", "Main 5 \"IEC_Timer_0_DB\"",
+                                                    "Main 6 \"ZZFB_DB\"", "ZZFBD 1 \"ZZDATA\""}));
+    }
+
+    // Save 22, before the protection, read on its own: the SCL text is the
+    // generated source; the renamed tag has its new name in every block,
+    // also where the block still stores the old one.
+    {
+        current = "s14_code code after save 22, without the later protection";
+        tia::LoadedSource src = tia::loadProjectData(std::string(TIACONV_FIXTURES) + "/s14_code");
+        tia::ContainerOptions opt;
+        opt.throughSave = 22;
+        tia::Project p(tia::Container::parse(std::move(src.data), opt));
+        const tia::ProgramData prog = tia::buildProgramData(p);
+        LoadedCode l;
+        l.code = tia::buildCode(p, prog);
+        const tia::BlockCode* scl = codeOf(l, "ZZSCL");
+        CHECK(scl && !scl->isProtected && scl->networks.size() == 1);
+        if (scl && scl->networks.size() == 1) {
+            std::vector<std::string> expected = sourceBody("s14_code/exports/ZZSCL.scl");
+            for (auto& line : expected) {
+                const size_t at = line.find("\"ZZA\"");
+                if (at != std::string::npos) line.replace(at, 5, "\"ZZALPHA\"");
+            }
+            CHECK(scl->networks[0].lines == expected);
+        }
+        CHECK(listing(codeOf(l, "ZZFBD")) == "#1 \n1: \"ZZDATA\".run := \"ZZALPHA\" AND NOT \"ZZB\"\n#2 \n");
+        if (const tia::BlockCode* stl = codeOf(l, "ZZSTL"))
+            CHECK(!stl->networks.empty() && !stl->networks[0].lines.empty() && stl->networks[0].lines[0] == "A     \"ZZALPHA\"");
+        CHECK(listing(codeOf(l, "Main")).find("#1 ZZ series\n1: \"ZZOUT\" := \"ZZALPHA\" AND NOT \"ZZC\"\n#2 \n1: Move(") == 0);
+    }
+
+    // After the protection TIA Portal wrote the file anew; then step 20b.
+    {
+        const LoadedCode l = loadCode("s14_code_rewritten");
+        const tia::BlockCode* scl = codeOf(l, "ZZSCL");
+        CHECK(scl && scl->isProtected && !scl->protectedLater && scl->protection == "know-how" && scl->networks.empty() &&
+              scl->references.empty());
+        const tia::BlockCode* main = codeOf(l, "Main");
+        CHECK(main && main->networks.size() == 8);
+        if (main && main->networks.size() == 8) {
+            // the network inserted after the first is the second, with the next free number
+            CHECK(main->networks[1].title == "ZZ inserted" && main->networks[1].networkId == 9);
+            CHECK(joined(main->networks[1].lines) == "1: \"ZZOUT\" := \"ZZC\"\n");
+            CHECK(main->networks[0].networkId == 1 && main->networks[2].networkId == 3);
+        }
+        const tia::History hr = history("s14_code_rewritten");
+        CHECK(hr.saves.size() == 3 && hr.notes.size() == 1);
+        if (hr.saves.size() == 3) {
+            CHECK(hr.saves[1].firstState);
+            std::multiset<std::string> found;
+            for (const auto& c : hr.saves[2].changes)
+                if (!followsFromSomethingElse(c)) found.insert(stepText(c));
+            CHECK(found == (std::multiset<std::string>{"~|network|ZZPLC / Main [OB1] / network 2|code||1: \"ZZOUT\" := \"ZZC\""}));
+        }
+    }
 }
 
 }  // namespace
@@ -1528,6 +1783,7 @@ int main() {
     }
     testHmi();
     testHistory();
+    testCode();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

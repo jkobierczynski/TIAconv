@@ -66,3 +66,10 @@ string(SUBSTRING "${piped}" 0 4 start)
 if(NOT rc EQUAL 0 OR NOT start STREQUAL "plc,")
   message(FATAL_ERROR "unexpected start of CSV on standard output: ${start}")
 endif()
+
+# cross-reference: header, and the two calls in OB1 of the second PLC
+execute_process(COMMAND "${TIACONV}" -q --xref-csv - "${PROJECT}" OUTPUT_VARIABLE xref RESULT_VARIABLE rc)
+if(NOT rc EQUAL 0 OR NOT xref MATCHES "^plc,block,block_name,network,network_title,access,kind,item,data_type,data_block\r?\n"
+   OR NOT xref MATCHES "\nZZBRAVO,OB1,Main,1,,call,block,\"\"\"Block_1\"\"\",Block_1,\r?\n")
+  message(FATAL_ERROR "unexpected cross-reference CSV: ${xref}")
+endif()

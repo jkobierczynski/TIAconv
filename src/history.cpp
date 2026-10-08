@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 
+#include "code.hpp"
 #include "container.hpp"
 #include "program.hpp"
 #include "project.hpp"
@@ -30,6 +31,9 @@ struct Attr {
 struct Entity {
     std::string key, parent, kind, label, description;
     std::vector<Attr> attrs;
+    // a network: its code as text; a block: its code is not read
+    std::vector<std::string> code;
+    bool codeUnread = false;
 };
 
 struct Snapshot {
@@ -66,6 +70,12 @@ std::string commaList(const std::vector<std::string>& v) {
         if (!out.empty()) out += ", ";
         out += s;
     }
+    return out;
+}
+
+std::string joinLines(const std::vector<std::string>& lines) {
+    std::string out;
+    for (size_t i = 0; i < lines.size(); ++i) out += (i ? "\n" : "") + lines[i];
     return out;
 }
 
@@ -122,12 +132,13 @@ void addMembers(Snapshot& snap, const std::string& blockKey, const std::string& 
     }
 }
 
-Snapshot takeSnapshot(const Project& project) {
+Snapshot takeSnapshot(const Project& project, const ProtectedVersions& protectedUpTo) {
     Snapshot snap;
     if (project.meta().empty()) return snap;
     const Inventory inv = buildInventory(project);
     ProgramData prog = buildProgramData(project);
     linkHmiTags(inv, prog);
+    const CodeData code = buildCode(project, prog, &protectedUpTo);
 
     snap.hasProject = inv.project.found;
     snap.modified = inv.project.modified;
@@ -320,6 +331,38 @@ Snapshot takeSnapshot(const Project& project) {
         snap.add(std::move(e));
     }
 
+    // The networks of the code blocks. A block whose code is not read has
+    // none here, in any save.
+    for (const BlockCode& b : code.blocks) {
+        const std::string blockKey = key("blk", b.blockId);
+        auto it = snap.index.find(blockKey);
+        if (it == snap.index.end()) continue;
+        if (b.isProtected) {
+            snap.list[it->second].codeUnread = true;
+            continue;
+        }
+        const std::string blockLabel = snap.list[it->second].label;
+        for (const Network& n : b.networks) {
+            Entity e;
+            e.key = key("nw", n.id);
+            e.parent = blockKey;
+            e.kind = "network";
+            e.label = blockLabel + " / network " + std::to_string(n.number);
+            e.description = commaList([&] {
+                std::vector<std::string> parts;
+                if (!n.title.empty()) parts.push_back(n.title);
+                if (!n.language.empty()) parts.push_back(n.language);
+                if (n.content == "empty") parts.push_back("empty");
+                return parts;
+            }());
+            e.attrs.push_back({"title", n.title, 0});
+            e.attrs.push_back({"comment", n.comment, 0});
+            e.attrs.push_back({"language", n.language.empty() ? n.languageStored : n.language, 0});
+            e.code = n.lines;
+            snap.add(std::move(e));
+        }
+    }
+
     for (const auto& db : prog.blocks) {
         const std::string blockKey = key("blk", db.id);
         auto it = snap.index.find(blockKey);
@@ -413,6 +456,23 @@ std::string renamed(const std::string& value, const std::map<std::string, std::s
     return out;
 }
 
+// The code is the same but for names that changed in this save: a renamed
+// tag or block appears with its new name wherever it is used.
+bool renamedCode(const std::vector<std::string>& before, const std::vector<std::string>& after,
+                 const std::map<std::string, std::string>& renames) {
+    if (renames.empty() || before.size() != after.size()) return false;
+    for (size_t i = 0; i < before.size(); ++i) {
+        std::string line = before[i];
+        for (const auto& r : renames) {
+            const std::string from = "\"" + r.first + "\"", to = "\"" + r.second + "\"";
+            for (size_t pos = line.find(from); pos != std::string::npos; pos = line.find(from, pos + to.size()))
+                line.replace(pos, from.size(), to);
+        }
+        if (line != after[i]) return false;
+    }
+    return true;
+}
+
 // An item that was removed and added again under the same name in one save
 // (TIA Portal generates an instance data block anew when its function block
 // changes) is one item that changed, not two. Returns `before` with the keys
@@ -479,7 +539,19 @@ void diff(const Snapshot& original, const Snapshot& after, std::vector<HistoryCh
             renames.emplace(old.attrs[0].value, e.attrs[0].value);
     }
 
+    // The networks of a block whose code is not read, before or after, say
+    // nothing: they are not compared.
+    auto unreadBlock = [&](const Entity& e) {
+        if (e.kind != "network") return false;
+        for (const Snapshot* s : {&before, &after}) {
+            auto p = s->index.find(e.parent);
+            if (p != s->index.end() && s->list[p->second].codeUnread) return true;
+        }
+        return false;
+    };
+
     for (const auto& e : after.list) {
+        if (unreadBlock(e)) continue;
         auto it = before.index.find(e.key);
         if (it == before.index.end()) {
             HistoryChange c;
@@ -487,6 +559,7 @@ void diff(const Snapshot& original, const Snapshot& after, std::vector<HistoryCh
             c.kind = e.kind;
             c.item = e.label;
             c.description = e.description;
+            c.to = joinLines(e.code);
             c.key = e.key;
             c.parentKey = e.parent;
             if (!e.parent.empty()) {
@@ -532,14 +605,36 @@ void diff(const Snapshot& original, const Snapshot& after, std::vector<HistoryCh
             c.parentKey = e.parent;
             out.push_back(std::move(c));
         }
+        if (e.code != old.code && !renamedCode(old.code, e.code, renames)) {
+            // the lines that differ, without what is the same before and after them
+            size_t head = 0;
+            while (head < e.code.size() && head < old.code.size() && e.code[head] == old.code[head]) ++head;
+            size_t tail = 0;
+            while (tail < e.code.size() - head && tail < old.code.size() - head &&
+                   e.code[e.code.size() - 1 - tail] == old.code[old.code.size() - 1 - tail])
+                ++tail;
+            HistoryChange c;
+            c.change = "changed";
+            c.kind = e.kind;
+            c.item = e.label;
+            c.attribute = "code";
+            c.from = joinLines(std::vector<std::string>(old.code.begin() + static_cast<long>(head),
+                                                        old.code.end() - static_cast<long>(tail)));
+            c.to = joinLines(std::vector<std::string>(e.code.begin() + static_cast<long>(head),
+                                                      e.code.end() - static_cast<long>(tail)));
+            c.key = e.key;
+            c.parentKey = e.parent;
+            out.push_back(std::move(c));
+        }
     }
     for (const auto& e : before.list) {
-        if (!removed(e)) continue;
+        if (!removed(e) || unreadBlock(e)) continue;
         HistoryChange c;
         c.change = "removed";
         c.kind = e.kind;
         c.item = e.label;
         c.description = e.description;
+        c.from = joinLines(e.code);
         c.key = e.key;
         c.parentKey = e.parent;
         if (!e.parent.empty()) {
@@ -564,6 +659,15 @@ History buildHistory(std::shared_ptr<const std::vector<uint8_t>> data, size_t th
     for (const auto& m : whole.markers())
         if (m.kind == "commit") commitTimes.push_back(formatTicks(m.ticks));
 
+    // A block is not read from the versions the file keeps from before it
+    // was know-how protected.
+    ProtectedVersions protectedUpTo;
+    try {
+        const Project latest(Container::parse(data));
+        if (!latest.meta().empty()) protectedUpTo = protectedVersions(latest);
+    } catch (const ParseError&) {
+    }
+
     Snapshot before;
     bool seenProject = false;
     // Objects written after the last save marker. Seen in project files that
@@ -583,7 +687,7 @@ History buildHistory(std::shared_ptr<const std::vector<uint8_t>> data, size_t th
             opt.throughSave = s.afterLastSave ? 0 : n;
             project.reset(new Project(Container::parse(data, opt)));
             meta = &project->meta();
-            after = takeSnapshot(*project);
+            after = takeSnapshot(*project, protectedUpTo);
         } catch (const ParseError& e) {
             s.problem = e.what();
         }

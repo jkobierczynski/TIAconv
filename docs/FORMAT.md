@@ -121,9 +121,9 @@ gone. Seen once (V21): a file of 2.9 MB with 80 saves was 1.2 MB with two
 save markers a few saves later, the first right after the type model, the
 second at the end, and only the current version of every object in between.
 In those saves a block was edited, the program compiled, one block know-how
-protected and one write-protected; which of these caused it is **unknown**.
-Removing the old, readable versions of a block when it becomes protected
-would be a reason, but that is a guess. The saves after it were appended
+protected and one write-protected. In a later test project the file was
+rewritten right after a know-how protection and nothing else, so that is
+very likely the cause; see [Know-how protection](#know-how-protection). The saves after it were appended
 again, including the one that removed the protection.
 
 Timestamps are .NET `DateTime` values: 100 ns ticks since 0001-01-01 in the low
@@ -370,8 +370,12 @@ Further slots hold lists marked by `0x7FFFFFFF`:
     u32 size, u32 0x7FFFFFFF, u32 count
     count x { u32 target type id, u64 target object id }
 
-Which relation such a list belongs to is **unknown**. For the inventory this
-does not matter: every child names its parent in its keyed single-valued list.
+Which relation such a list belongs to is **unknown** in general. Where the
+relations of an object have different target types they can be told apart by
+those (the parts of a block's reference table, below). A list can have empty
+places (target type and id zero): some relations are indexed by position.
+For the inventory the question does not matter: every child names its parent
+in its keyed single-valued list.
 For data blocks it could matter in large projects: if the list of interface
 parts of a block were moved to such a slot, `tiaconv` would report the nested
 members as not followed. That has not happened in the samples.
@@ -829,7 +833,7 @@ library types have something else) as for tags.
 | relation `FolderElementData.AggregatingFolder` → `FolderData` | the folder; follow it upwards for the path |
 | relation `Parent4LoadableBinaryData.LoadableBinaries` → `LoadablePlus...BlockData` | result of the last compilation: `IGeneralBlockResultData.CompileTime`, `.DownloadTime`, `.LoadMemoryRequired`, `.WorkMemoryRequired` (V13: the times are on the block, the sizes in `ILoadableObjectOmspData`) |
 | expando `DownloadHistory` | `FB3-638682897237619877;FB3-...;FB?-0`: one entry per download, newest first, at most 20 seen: the block's address then, and the time as .NET ticks. `FB?-0` = never. The newest entry equals `DownloadTime` to the millisecond |
-| relation `Parent4SourceData.Sources` → `CompileUnitData` | one per network (one in all for a block written as text); each has its own title, comment and `ProgrammingLanguage` |
+| relation `Parent4SourceData.Sources` → `CompileUnitData` | one per network (one in all for a block written as text); see [Block code](#block-code) |
 | expando `IsWriteProtectedInAS` | data block: "Data block write-protected in the device" |
 | expando `DBAccessibleFromOPCUA`, `DBAccessibleFromWebserver` | data block: absent while the two "accessible from" boxes are ticked, as on a new block; `false` once unticked. In the V19 sample every data block has the first one as `false` |
 | expando `Unlinked`, `NonRetain` | data block: presumably "Only store in load memory" and the retain setting; **not checked** |
@@ -841,7 +845,8 @@ resources), `ControllerDataTypeFolder` (PLC data types), `SystemDataTypeFolder`,
 `TechnologicalParamFolder` (Technology objects).
 
 What a know-how or write protection adds to the block is described under
-[Passwords](#passwords): `tiaconv` reads the two settings and nothing else.
+[Passwords](#passwords): `tiaconv` reads the two settings and nothing else,
+and does not read the code of a know-how protected block.
 
 **Verified** with `tests/fixtures/s11_blocks_a` and `s11_blocks`, one action
 per save in TIA Portal V21: new FB and OB with type, number, language and
@@ -873,6 +878,272 @@ in the four public samples they lie within the project's lifetime and the two
 places that store them agree). `Modified` and `CodeModified` are not "last
 edited": compiling sets them too (seen on an OB that had only to be
 recompiled).
+
+## Block code
+
+A code block has one `CompileUnitData` object per network, in the relation
+`Sources`; a block written as text (SCL) has one in all. The order of the
+list is the order of the networks (V21: a network inserted after the first
+is second in the list).
+
+| where | what |
+|---|---|
+| `ICompileUnitData.ProgrammingLanguage` | `LAD_CLASSIC`, `FBD_CLASSIC`, `STL`, `SCL`; a block can mix them (an SCL network in an FBD block) |
+| `ICompileUnitData.RefID` | a number for the network that stays when networks are inserted or deleted (a new network gets the next free number); the reference table (below) names networks by it |
+| `ICompileUnitData.Data` | the code: a blob with an XML document in UTF-8 with byte-order mark; empty (a blob of 20 bytes) for an empty network |
+| `ICompileUnitData.AdditionalData` | layout of the editor: which boxes are collapsed. Not read |
+| `ICoreAttributes.Comment` | the network **title** (text in several languages) |
+| relation `CompileUnitComment` → `CoreText`, `ICoreTextRepository.Text` | the network **comment**; the object exists once a comment was entered |
+| relation `ElementComments` → `CoreText` | the comments in several languages inside SCL code, by position (below) |
+| `ICoreAttributes.Protection`, `.IsKnowHowProtected` | as on the block; `tiaconv` does not read a unit that has either set |
+
+### SCL
+
+    <SCLSource Version="3.3.0.0">
+      <Symbols> ... </Symbols>
+      <RootStatements Version="3.3.0.0"> ... </RootStatements>
+    </SCLSource>
+
+`RootStatements` is the source text as a tree of tokens, in the order of the
+text. Writing out every token gives the text back, blanks and line breaks
+included:
+
+| element | text |
+|---|---|
+| `BL`, attribute `NumBLs` (default 1) | that many blanks |
+| `NL` | line break |
+| `LC TE="..."` | `//` and the text |
+| `BC` ... `BCL TE="..."` ... `BCE` | `(*`, the lines of a block comment, `*)` |
+| `MLC DictId="n"` | a comment in several languages, `(/*` text `*/)`; the text is the `n`-th target (counted from 1, empty places included) of the unit's relation `ElementComments` |
+| `Statement TE="IF"` (also `REGION`, `FOR`, `CASE`, `RETURN`, ...) | the keyword, then its children |
+| `Const TE="..."` | the constant as written |
+| `SymVa`, `Sub`, `SymDB` with `ODN="..."` | a variable, block or instruction name as written, with `#` or quotes |
+| `SymPa ODN="..." FormalName="..."` | the name of a parameter in a call; `ODN=""` with `V="0"` where the source leaves the name out |
+| `OpAs` `:=`, `OpPa` `=>`, `FiSt` `;`, `BracO` `(`, `BracC` `)`, `BoxO` `[`, `BoxC` `]`, `Dot` `.`, `Comma` `,`, `Colon` `:` | |
+| `OpPl` `+`, `OpMi` `-`, `OpMu` `*`, `OpDi` `/`, `OpG` `>`, `OpL` `<`, `OpE` `=`, `OpU` `<>`, `OpLE` `<=`, `OpGE` `>=`, `OpAND` `AND`, `OpOR` `OR`, `OpNOT` `NOT` | |
+| `KwTHEN`, `KwELSE`, `KwELSIF`, `KwENDIF` `END_IF`, `KwTO`, `KwBY`, `KwDO`, `KwENDFOR` `END_FOR`, `KwOF`, `KwENDC` `END_CASE`, `KwEndRegion` `END_REGION` | |
+| `Expression`, `Statements`, `Fold`, `FctCa`, `InstCa`, `Param`, `CaseElem`, `CaseRange` | grouping only |
+
+Other keywords and operators exist (`WHILE`, `REPEAT`, `XOR`, `MOD`, `**`,
+...): they are **not in the samples**, `tiaconv` writes `{?Name}` for an
+element it does not know.
+
+V13 (`Version="1.4"`) has the same tree with three differences: the tokens
+carry no names (`ODN`), a line comment has its line break as a child, and an
+array element is followed by one more `SymVa SI="VarElem"` that stands for
+the element as a whole and has no text. Names come from `Symbols`: each
+`Symbol` has a `SymID`, which the tokens name as `SyId`, and either a `Name`
+(parameters of instructions, constants), a `BILibName` (an instruction of the
+library) or a `RefId` into the block's reference table. After a `Dot` only the
+last name of the referenced path is meant. A conversion is the instruction
+`CONVERT` with the two types in `Template0="src_type Char"` and
+`Template1="dest_type Word"`; the source text for it is `CHAR_TO_WORD`
+(in V15.1 and V19 the token has that name in `ODN` next to the same
+templates).
+
+**Verified:** in V21 (`s14_code`), the body of an SCL block with `IF`/`ELSE`,
+arithmetic, `NOT`, a block comment `(* *)` and a line comment is identical to
+the source TIA Portal generated for it. The bodies of the eight SCL blocks of the V19 and V15.1 samples
+that have a source file in their repositories come out identical to those
+files, 852 lines, compared after the leading tab that TIA Portal puts in
+front of every body line of a generated source. That covers `IF`/`ELSIF`/
+`ELSE`, `FOR` with `BY`, `CASE`, `REGION`, `RETURN`, calls of functions,
+function blocks and multi-instances with and without parameter names, array
+and structure access, slices (`.%B0`), line and block comments.
+**Not verified:** comments in several languages (`MLC`: the form `(/* */)` is
+from memory of TIA Portal's sources, the samples that have such comments
+have no source file), and the whole of V13, where the text reads as
+plausible SCL and no source exists to compare with.
+
+### STL
+
+    <Statements Version="14.0.0.0">
+      <Statement UId="21" TokenProperty="1">
+        <Token Kw="1" DispName="A" />
+        <OpdAccess NumBLs="1" RefId="1" UId="23" />
+      </Statement>
+      <Statement UId="22" TokenProperty="1">
+        <Token NumBLs="6" Kw="2" DispName="AN" />
+        <OpdAccess NumBLs="4" RefId="3" UId="24" />
+      </Statement>
+      <Statement UId="25" TokenProperty="1"><Token Kw="210" DispName="+I" /></Statement>
+      <Statement UId="28" TokenProperty="1" />
+    </Statements>
+
+One `Statement` per line. `Token` is the instruction: `DispName` as written,
+`Kw` a number for it (1 `A`, 2 `AN`, 9 `=`, 16 `L`, 17 `T`, 210 `+I`).
+`OpdAccess` is the operand, an entry of the reference table; a constant
+(`L 5`) is an entry too. `NumBLs` is the number of blanks typed in front of
+the piece; the editor does not show them, it puts instructions and operands
+in two columns (`tiaconv` does the same). A statement without children is an
+empty line. Seen in one V21 test project with seven statements, which
+agree with the editor and with the STL source TIA Portal generated for the
+block (`A "ZZA";`: one blank, and a `;`); labels, jumps, comments and
+everything else STL has are **not in the samples**.
+
+### LAD and FBD
+
+    <FlgNet xmlns="http://www.siemens.com/automation/2015/FunctionLadderDiagram"
+            Version="14.0.0.2" Lang="LAD_CLASSIC" Routed="true">
+      <Parts>
+        <Part UId="23" Gate="Contact" />
+        <Part UId="27" Gate="Contact"><Negated PinName="operand" /></Part>
+        <Part UId="31" Gate="Coil" />
+        <ORef UId="24" RefId="1" />
+        <ORef UId="28" RefId="2" />
+        <ORef UId="32" RefId="3" />
+      </Parts>
+      <Wires>
+        <Wire UId="21"><Powerrail /><PCon UId="23" PinName="in" /></Wire>
+        <Wire UId="22"><OCon UId="24" /><PCon UId="23" PinName="operand" /></Wire>
+        <Wire UId="25"><PCon UId="23" PinName="out" /><PCon UId="27" PinName="in" /></Wire>
+        ...
+      </Wires>
+    </FlgNet>
+
+This is close to the network format of TIA Portal's XML export (Openness),
+with references into the block's reference table where the export writes the
+operands out.
+
+| element | what |
+|---|---|
+| `Part Gate="..."` | a contact, coil or box. Children: `TemplateValue Name="SrcType" Type="Type"` (the data type a box was set to; its text content), `TemplateValue Name="Card" Type="Cardinality"` (number of inputs), `Negated PinName="..."` (the pin is negated: a normally closed contact has its `operand` negated). Attribute `DisableENO` |
+| `CRef RefId` | the call of a block. `RefId` names the entry for the call's interface; the children `CodeBlock RefId` and `Instance RefId` the block and its instance |
+| `LRef RefId` | an instruction that has an instance (a timer): `RefId` names the instruction, the child `Instance` its instance data block or multi-instance |
+| `ORef UId RefId` | an operand: an entry of the reference table. Without `RefId`: a pin nothing was entered for |
+| `Wire` | a connection. Its first child is where it comes from, the others where it leads: `Powerrail`, `OCon UId` (an operand), `PCon UId PinName` (a pin of a part), `Openbranch` |
+
+So `<OCon/><PCon operand/>` puts an operand on an input, and
+`<PCon out1/><OCon/>` an output on an operand; an in-out parameter of a call
+is written the first way.
+
+Gates and their pins seen: `Contact` (`in`, `operand`, `out`), `Coil`,
+`SCoil`, `RCoil` (the same three), `O` and `A` (`in1`, `in2`, ..., `out`),
+`Eq`, `Ne` and the other comparisons (`pre` in LAD, `in1`, `in2`, `out`),
+`PBox` (`in`, `bit`, `out`; drawn as P_TRIG), `Move` (`en`, `in`, `out1`,
+`eno`), `S_Move` (`en`, `in`, `out`). Calls and instructions have `en`,
+`eno` and the parameter names as pins. The parts are stored in the order
+they have on the screen, top to bottom and left to right (compared with a
+screenshot of a network of 17 parts in the V15.1 sample's repository).
+
+V13 has `Version="12.0.0.0"`, no namespace and an extra `<Labels />`; the
+sample has only empty networks in LAD.
+
+### The reference table
+
+The XML of a network names operands and blocks by number. The names are in a
+table that the block keeps of everything its code refers to, which is also
+what TIA Portal's cross-reference list is made from.
+
+V14 and later: relation `CoreObject2IdentContainer` of the block →
+`IdentContainerData`, relation `IdentParts` → `IdentPartData` objects, one per
+kind of entry. `IIdentPartData.PayLoad` is a blob with an XML document:
+
+    <IdentXmlPart xmlns="http://schemas.siemens.com/Simatic/ES/14/IdentManager/IdentXmlPart.xsd">
+      <GlobalAccess>
+        <ID N="" S="Global" RID="12" IS="1">
+          <CS><C NID="2" UID="46" OID="9" AK="Write" /></CS>
+        </ID>
+        <OD S="1"><TD TDF="OST" T="Bool:33554433:Bool" /></OD>
+        <SSD S="S" AO="0" MID="51">
+          <AOS>
+            <AO N="control" RIDI="" BO="0" BS="16" />
+            <AO N="Q_resetNewIdFlag" RIDI="" BO="0" BS="1" />
+          </AOS>
+        </SSD>
+      </GlobalAccess>
+      ...
+    </IdentXmlPart>
+
+| | |
+|---|---|
+| element name | the kind of entry: `GlobalAccess` (a data block member), `InterfaceAccess` (a parameter or variable of the block itself), `SimpleAccess` (a PLC tag), `LiteralConstant`, `LocalConstant`, `FBBlock`, `FCBlock`, `OBBlock` (a called block), `AufDBBlock` (an instance data block), `DepDBBlock` (a data block that is accessed), `MultInstAccess`, `Instruction` (of the library), `BlockInterfaceInfo` (the parameters of a called block as they were when the call was made), `Expression` |
+| `ID/@RID` | the reference number (`RefId` in the code) |
+| `ID/@N` | the name, for entries that have one: a tag, a block, a constant, an instruction. TIA Portal keeps it current: in the V19 sample a renamed data block has its new name here and the old one in the type (`OD/TD/@T`) |
+| `ID/@S` | `Global`, `Local`, `Constant`, `Instruction`, ... |
+| `ID/CS/C` | one use: `NID` the network (`RefID` of its `CompileUnitData`; 0 for the block interface), `UID` the element of the network, `AK` the kind of access (`Write`, `RW`, `Call`, `InstanceDB`, `Multiinstance`, `ArrayBoundary`, `None`; **absent for a reading access**), `XH="1"` for a use the cross-reference list does not show |
+| `OD/TD/@T` | the data type as `kind:number:name` |
+| `SSD/AOS/AO` | the path of an access, one `AO` per name: `"control".Q_resetNewIdFlag`. `RIDI` names the entries that are the indices of an array element (`"control".I_uid[3]`: `RIDI` of `I_uid` names the entry of the constant 3) |
+| `SSD/@AM` | a part of the variable: `b0` for `.%B0` |
+| `CD/CB/@SV` | a constant as written, with characters that are not letters written as `_xHHHH_` (`T_x0023_5s` is `T#5s`) |
+
+**The names in the parts can be out of date.** TIA Portal writes them when the
+block is opened or compiled. V21: after a tag was renamed and the project
+saved without compiling, the block open in the editor had the new name, the
+three others still the old one, in the parts and in the SCL tokens (`ODN`).
+The current object is reached through links. The container has, besides
+`PayLoad`, a document `FilcMetaPayload`:
+
+    <FILCMetaInfo xmlns="http://schemas.siemens.com/Simatic/ES/14/IdentManager/ICFilcMetaPayload.xsd">
+      <FILC RelId="2">
+        <Idx Value="0"><Id RefId="1" Type="17" /></Idx>
+        <Idx Value="2"><Id RefId="3" Type="17" /></Idx>
+      </FILC>
+      <FILC RelId="3">
+        <Idx Value="0"><Id RefId="5" Type="9" /></Idx>
+      </FILC>
+    </FILCMetaInfo>
+
+Each `Id` says that the entry `RefId` is the object at position `Value` of a
+relation list of the container: `Type="17"` a PLC tag, in the relation
+`SimpleAccessDataToTagData`; `Type="4"` an instruction, in
+`InstructionToInstrProxy`; other types (6, 7, 8, 9: FB, FC, instance and
+global data block, presumably) a block or data block, in
+`TypeOperandToProgramObj`. The lists keep empty places (target zero) so
+that positions stay: in V21 the place of a tag that was no longer used was
+empty. `RelId` 2, 3 and 4 went with those three lists in every container
+seen; `tiaconv` goes by `Type`. With many entries the relations of the
+container are stored as lists without relation ids
+([Relation lists](#relation-lists)); `tiaconv` tells them apart by the kind
+of object they lead to. For a data block member, `BAD/@BIRID` names the entry
+of its data block, whose link gives the current name of the block. A renamed
+member of a data block cannot be followed this way.
+
+V13 keeps the same information as objects, one per entry, in the relation
+`RelatedIdents` of the block: `InterfaceAccData`, `GlobalAccData`,
+`ConstantData`, `FBBlockData`, `AufDBBlockData`, `DepDBBlockData`,
+`InstructionData`, ... with `IIdentData.RefId`, `.Name`, `.Scope`,
+`IIdentXRefLocations.IdentXRefLocationsArray` (structures with `NetID`, `UID`,
+`AccessKind`, `XRefHidden`; here a reading access is `Read`),
+`ISimaticStorageData.AccessObj` (the path: structures with `Name` and
+`Index`) and `IConstantData.StringValue`. Watch tables use the same kind of
+object for the tags they list.
+
+**Verified:** in the V21 test project `s14_code`, the eight networks of an
+OB, an FBD network, an FB's network and two STL networks against
+screenshots; the places of one tag against TIA Portal's cross-reference list
+(seven, in four blocks: the use in an SCL block counts once per network, as
+there); calls and data block accesses against the call structure. In the
+V15.1 sample, the call in network 3 of `Main` (22
+parameters, among them ten array elements) and network 5 (a comparison, an
+edge detection, three string moves, a timer, eight coils) agree with the two
+screenshots of those networks in the sample's repository, operand by
+operand, apart from one contact that was added to the project after the
+screenshot was taken. **Not verified:** the kinds of access against TIA
+Portal's cross-reference list; a use that is hidden there; entries of kinds
+not in the samples (global constants, PLC data types, technology objects).
+
+### Know-how protection
+
+`tiaconv` does not look at the compile units or the reference table of a
+block whose `Protection` is `KnowHowProtection` or `SystemKnowHowProtection`.
+How protected code is stored was not examined.
+
+A project file keeps the earlier versions of its objects until TIA Portal
+rewrites it, so a file can hold the code of a block as it was before the
+block was protected.
+
+**Setting know-how protection makes TIA Portal write the file anew.** Seen
+twice in V21: right after a save that protected a block, the file had shrunk
+to the current version of every object, without the earlier saves, and
+written in one go (one save object after the type model, then the whole
+project; the next save closes it). Before doing so, TIA Portal keeps a copy
+of the old file in the folder `<project>.backup/<date>.<time>/` next to the
+project, as `<date>.<time>.zip` with `PEData.plf` and `PEData.idx`. That copy
+still holds the block from before its protection. In the test project, the
+backup's last save is the one that set the protection. When an earlier state of the project is read (`--save`,
+`--history`), a block is therefore not read if its version in that state is
+the last protected version in the file or an older one.
 
 ## Tags
 
@@ -1067,7 +1338,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 18 771 | 14 105 | `tests/fixtures` (fifteen project files, in this repository) |
+| V21 | v14 | 20 777 | 15 627 | `tests/fixtures` (seventeen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -1116,8 +1387,8 @@ all three configured items (both CPUs and the signal module) are as decoded.
   Anonymous user on an S7-1500 as it does on the S7-1200; other values of `OmsCommunicationMode` and `TimeSyncRole`.
 - Constants of structured types, if TIA Portal allows them, and system
   constants of kinds not in the samples.
-- What makes TIA Portal rewrite the project file, and what writes a file in
-  one go without a closing save object (seen in an archive and in one sample).
+- Whether anything besides know-how protection makes TIA Portal rewrite the
+  project file; what writes a file in one go in the V15.1 sample.
 - When exactly TIA Portal sets the "modified" time of the project object.
 - Other `FeedbackId` values of the project history (upgrades between V14+
   versions, library updates), and whether TIA Portal's "Project history" tab
@@ -1129,8 +1400,12 @@ all three configured items (both CPUs and the signal module) are as decoded.
   `Provider` of a link object, in that order, when there are many links).
 - Blocks: fail-safe blocks, GRAPH and other languages not in the samples,
   blocks that are instances of library types (relation `IsInstanceOf`),
-  the call list kept with the compiled block, download times against a real
-  download.
+  download times against a real download.
+- Block code: STL beyond the simplest statements (labels, jumps, comments,
+  calls); SCL keywords and operators not in the samples; LAD and
+  FBD gates not in the samples; the declarations of a code block's
+  parameters and variables as source text; how the code of a know-how
+  protected block is stored (not examined, and not to be read).
 - PROFIBUS master systems, I-devices, shared devices, MRP domains, IO systems
   with more than one controller interface.
 - Connection types other than S7 and HMI; TSAPs; an HMI connection in a

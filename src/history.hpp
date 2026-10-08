@@ -6,7 +6,8 @@
 // earlier versions of its objects, so the project can be read as it was after
 // each save; the history is the difference between consecutive states of
 // what tiaconv reports (hardware, network, security settings, connections,
-// blocks, data block members, tags, HMI tags, constants).
+// blocks and the code of their networks, data block members, tags, HMI tags,
+// constants).
 #pragma once
 
 #include <cstdint>
@@ -26,7 +27,12 @@ struct HistoryChange {
     std::string item;       // "ZZBRAVO / Block_1 [FB1]"
     std::string description;  // added, removed: what the item is, "FB, LAD"
     std::string attribute;  // changed: which attribute
-    std::string from, to;   // changed: its value before and after; empty = not set
+    // changed: its value before and after; empty = not set. For the code of
+    // a network these are lines of text, separated by line feeds: of a
+    // changed network the lines taken out and the lines put in, without
+    // what stayed the same before and after them; of an added network its
+    // code in `to`, of a removed one in `from`.
+    std::string from, to;
     // added, removed: the item this one is part of when that was added or
     // removed in the same save (a module of a new station); empty otherwise
     std::string partOf;

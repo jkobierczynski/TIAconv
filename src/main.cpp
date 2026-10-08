@@ -7,9 +7,11 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "code.hpp"
 #include "container.hpp"
 #include "history.hpp"
 #include "inventory.hpp"
@@ -54,6 +56,10 @@ const char kUsage[] =
     "      --blocks-csv FILE  write the data block members as CSV\n"
     "      --no-bom        CSV files without the UTF-8 byte-order mark at the start\n"
     "      --members       print the members of every data block in the text report\n"
+    "      --code          add the code of the blocks: the networks of every OB, FB\n"
+    "                      and FC as text (text report and JSON)\n"
+    "      --xref-csv FILE    write the cross-reference as CSV: which block uses\n"
+    "                         which tag, data block member or block, and how\n"
     "      --objects FILE  write every decoded object as JSON lines (for research)\n"
     "      --meta FILE     write the type model embedded in the project (XML)\n"
     "      --all-devices   also list device objects outside the project tree\n"
@@ -71,9 +77,10 @@ const char kUsage[] =
     "installed.\n";
 
 struct Args {
-    std::string input, json, csv, objects, meta, tagsCsv, blocksCsv, blockListCsv, constantsCsv, historyCsv, hmiTagsCsv;
+    std::string input, json, csv, objects, meta, tagsCsv, blocksCsv, blockListCsv, constantsCsv, historyCsv, hmiTagsCsv,
+        xrefCsv;
     bool allDevices = false, allItems = false, verify = false, quiet = false, members = false, noBom = false;
-    bool history = false;
+    bool history = false, code = false;
     size_t save = 0;  // 0: the current state
 };
 
@@ -127,6 +134,8 @@ int run(const std::vector<std::string>& argv) {
         else if (s == "--history") a.history = true;
         else if (s == "--history-csv") value(a.historyCsv);
         else if (s == "--members") a.members = true;
+        else if (s == "--code") a.code = true;
+        else if (s == "--xref-csv") value(a.xrefCsv);
         else if (s == "--no-bom") a.noBom = true;
         else if (s == "--meta") value(a.meta);
         else if (s == "--all-devices") a.allDevices = true;
@@ -183,6 +192,18 @@ int run(const std::vector<std::string>& argv) {
     ctx.members = a.members;
     ctx.shownSave = a.save;
 
+    tia::CodeData code;
+    if (a.code || !a.xrefCsv.empty()) {
+        // An earlier save is not a way around a protection set later.
+        tia::ProtectedVersions protectedUpTo;
+        if (a.save) {
+            tia::Project latest(tia::Container::parse(fileData, tia::ContainerOptions()));
+            protectedUpTo = tia::protectedVersions(latest);
+        }
+        code = tia::buildCode(project, prog, a.save ? &protectedUpTo : nullptr);
+        if (a.code) ctx.code = &code;
+    }
+
     tia::History history;
     if (a.history || !a.historyCsv.empty()) {
         // The file is read once per save: say so when that takes a while.
@@ -200,7 +221,8 @@ int run(const std::vector<std::string>& argv) {
     // Keep standard output clean when a machine-readable format goes there.
     const bool stdoutTaken = a.json == "-" || a.csv == "-" || a.objects == "-" || a.meta == "-" ||
                              a.tagsCsv == "-" || a.blocksCsv == "-" || a.blockListCsv == "-" ||
-                             a.constantsCsv == "-" || a.historyCsv == "-" || a.hmiTagsCsv == "-";
+                             a.constantsCsv == "-" || a.historyCsv == "-" || a.hmiTagsCsv == "-" ||
+                             a.xrefCsv == "-";
     if (!a.quiet) tia::writeText(stdoutTaken ? std::cerr : std::cout, inv, prog, ctx);
     if (!a.json.empty()) emit(a.json, [&](std::ostream& o) { tia::writeJson(o, inv, prog, ctx); });
     const bool bom = !a.noBom;
@@ -212,6 +234,8 @@ int run(const std::vector<std::string>& argv) {
     if (!a.blockListCsv.empty())
         emitCsv(a.blockListCsv, bom, [&](std::ostream& o) { tia::writeBlockListCsv(o, prog); });
     if (!a.blocksCsv.empty()) emitCsv(a.blocksCsv, bom, [&](std::ostream& o) { tia::writeBlocksCsv(o, prog); });
+    if (!a.xrefCsv.empty())
+        emitCsv(a.xrefCsv, bom, [&](std::ostream& o) { tia::writeCrossReferenceCsv(o, code); });
     if (!a.historyCsv.empty())
         emitCsv(a.historyCsv, bom, [&](std::ostream& o) { tia::writeHistoryCsv(o, history); });
     if (!a.csv.empty()) emitCsv(a.csv, bom, [&](std::ostream& o) { tia::writeCsv(o, inv, ctx); });

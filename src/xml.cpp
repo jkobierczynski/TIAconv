@@ -20,6 +20,12 @@ std::string XmlNode::attrOr(const std::string& key, const std::string& fallback)
     return v ? *v : fallback;
 }
 
+const XmlNode* XmlNode::child(const std::string& childName) const {
+    for (const auto& c : children)
+        if (c->name == childName) return c.get();
+    return nullptr;
+}
+
 bool XmlNode::attrIs(const std::string& key, const std::string& value) const {
     const std::string* v = attr(key);
     return v && *v == value;
@@ -91,6 +97,7 @@ public:
 private:
     const std::string& t_;
     size_t pos_ = 0;
+    std::vector<std::pair<size_t, std::string>> cdata_;  // position in the element's raw text, content
 
     static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
     static bool isNameEnd(char c) { return isSpace(c) || c == '>' || c == '/' || c == '='; }
@@ -107,21 +114,49 @@ private:
         pos_ = e + std::char_traits<char>::length(terminator);
     }
 
-    // Skips text, comments, processing instructions, CDATA and DOCTYPE up to the next tag.
-    void skipMisc() {
+    // Skips comments, processing instructions and DOCTYPE up to the next
+    // tag. Text and CDATA sections on the way are added to `text` when given.
+    void skipMisc(std::string* text = nullptr) {
         for (;;) {
             size_t lt = t_.find('<', pos_);
             if (lt == std::string::npos) {
                 pos_ = t_.size();
                 return;
             }
+            if (text && lt > pos_) text->append(t_, pos_, lt - pos_);
             pos_ = lt;
-            if (startsWith("<!--")) skipUntil("-->");
-            else if (startsWith("<![CDATA[")) skipUntil("]]>");
-            else if (startsWith("<?")) skipUntil("?>");
-            else if (startsWith("<!")) skipUntil(">");
-            else return;
+            if (startsWith("<!--")) {
+                skipUntil("-->");
+            } else if (startsWith("<![CDATA[")) {
+                const size_t start = pos_ + 9;
+                skipUntil("]]>");
+                // kept apart from entities: what a CDATA section holds is literal
+                if (text) cdata_.emplace_back(text->size(), t_.substr(start, pos_ - 3 - start));
+            } else if (startsWith("<?")) {
+                skipUntil("?>");
+            } else if (startsWith("<!")) {
+                skipUntil(">");
+            } else {
+                return;
+            }
         }
+    }
+
+    // The text collected for one element: entities resolved, CDATA sections
+    // put in as they are, nothing left when it is only white space.
+    std::string finishText(const std::string& raw, size_t firstCdata) {
+        std::string out;
+        size_t from = 0;
+        for (size_t i = firstCdata; i < cdata_.size(); ++i) {
+            out += unescape(raw.substr(from, cdata_[i].first - from));
+            out += cdata_[i].second;
+            from = cdata_[i].first;
+        }
+        out += unescape(raw.substr(from));
+        cdata_.resize(firstCdata);
+        for (char c : out)
+            if (!isSpace(c)) return out;
+        return std::string();
     }
 
     std::string name() {
@@ -165,11 +200,14 @@ private:
             node->attrs.emplace_back(std::move(key), unescape(t_.substr(pos_, e - pos_)));
             pos_ = e + 1;
         }
+        std::string raw;
+        const size_t firstCdata = cdata_.size();
         for (;;) {
-            skipMisc();
+            skipMisc(&raw);
             if (pos_ >= t_.size()) throw ParseError("XML: missing end tag");
             if (startsWith("</")) {
                 skipUntil(">");
+                node->text = finishText(raw, firstCdata);
                 return node;
             }
             node->children.push_back(element(depth + 1));

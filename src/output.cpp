@@ -683,6 +683,57 @@ void writeBlockListCsv(std::ostream& out, const ProgramData& prog) {
                      flagCsv(b.onlyInLoadMemory), flagCsv(b.accessibleFromOpcUa), flagCsv(b.accessibleFromWebServer)});
 }
 
+namespace {
+
+std::string unreadReason(const BlockCode& b) {
+    if (b.protectedLater) return "know-how protected in a later save";
+    return b.protection.empty() ? std::string("protected") : b.protection + " protected";
+}
+
+// What the cross-reference lists: not the entries the project keeps for its
+// own bookkeeping, and not plain numbers.
+bool listedReference(const CodeReference& r) {
+    return r.kind != "call interface" && r.kind != "expression" && r.kind != "constant" && !r.text.empty();
+}
+
+}  // namespace
+
+void writeCrossReferenceCsv(std::ostream& out, const CodeData& code) {
+    out << "plc,block,block_name,network,network_title,access,kind,item,data_type,data_block\r\n";
+    for (const BlockCode& b : code.blocks) {
+        const std::string number = b.hasNumber ? b.type + std::to_string(b.number) : b.type;
+        if (b.isProtected) {
+            csvRow(out, {b.plc, number, b.name, "", "", "", "not read", unreadReason(b), "", ""});
+            continue;
+        }
+        struct Row {
+            size_t network;
+            std::string access, kind, item, dataType, container;
+        };
+        std::vector<Row> rows;
+        for (const CodeReference& r : b.references) {
+            if (!listedReference(r)) continue;
+            for (const CodeUse& u : r.uses) {
+                if (u.hidden) continue;
+                Row row{u.network, u.access, r.kind, r.text, r.dataType, r.container};
+                // one row per network and kind of access, however often
+                bool seen = false;
+                for (const Row& x : rows)
+                    if (x.network == row.network && x.access == row.access && x.kind == row.kind && x.item == row.item)
+                        seen = true;
+                if (!seen) rows.push_back(std::move(row));
+            }
+        }
+        std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& c) { return a.network < c.network; });
+        for (const Row& r : rows) {
+            std::string title;
+            if (r.network >= 1 && r.network <= b.networks.size()) title = b.networks[r.network - 1].title;
+            csvRow(out, {b.plc, number, b.name, r.network ? std::to_string(r.network) : "", title, r.access, r.kind,
+                         r.item, r.dataType, r.container});
+        }
+    }
+}
+
 void writeBlocksCsv(std::ostream& out, const ProgramData& prog) {
     out << "plc,block,block_name,kind,instance_of,access,section,member,data_type,offset,start_value,comment\r\n";
     for (const auto& b : prog.blocks) {
@@ -731,6 +782,23 @@ std::string writtenTypes(const HistorySave& s, size_t limit) {
 // The changes of one save as lines of text. Parts of something that was
 // added or removed as a whole are counted under it; what changed in one item
 // goes on one line; many items with the same change share a line.
+// Lines of code below a change, the first so many.
+void textCodeLines(std::ostream& out, const std::string& text, const std::string& in) {
+    if (text.empty()) return;
+    const size_t kMax = 20;
+    size_t from = 0, n = 0, total = 1;
+    for (char c : text)
+        if (c == '\n') ++total;
+    while (from <= text.size() && n < kMax) {
+        size_t nl = text.find('\n', from);
+        if (nl == std::string::npos) nl = text.size();
+        out << in << text.substr(from, nl - from) << "\n";
+        from = nl + 1;
+        ++n;
+    }
+    if (total > n) out << in << "... " << plural("more line", total - n) << "\n";
+}
+
 void textChanges(std::ostream& out, const HistorySave& s, const char* in) {
     const size_t kMaxLines = 12;  // per kind of change, the rest is counted
     const auto& ch = s.changes;
@@ -764,6 +832,7 @@ void textChanges(std::ostream& out, const HistorySave& s, const char* in) {
             out << in << sign << " " << c.kind << " " << c.item;
             if (!c.description.empty()) out << "  (" << c.description << ")";
             out << "\n";
+            if (c.kind == "network") textCodeLines(out, sign == '+' ? c.to : c.from, std::string(in) + "      ");
             // its parts: modules and interfaces by name, the rest counted
             std::vector<std::string> order;
             std::map<std::string, size_t> counts;
@@ -800,7 +869,9 @@ void textChanges(std::ostream& out, const HistorySave& s, const char* in) {
     struct Line {
         std::string kind, text;
         std::vector<std::string> items;
+        size_t code = static_cast<size_t>(-1);  // the change that holds the lines of code
     };
+    std::vector<size_t> codeChanges;
     std::vector<Line> linesOut;
     std::map<std::pair<std::string, std::string>, size_t> lineIndex;
     for (const auto& k : keys) {
@@ -827,12 +898,23 @@ void textChanges(std::ostream& out, const HistorySave& s, const char* in) {
                 part = c.to.empty() ? "no longer needs compiling" : "needs compiling";
             } else if (c.isResult && (compiled || c.to.empty())) {
                 continue;  // a block that needs compiling has no sizes
+            } else if (c.attribute == "code") {
+                // printed below the line, as lines taken out and put in
+                part = "code";
+                codeChanges.push_back(i);
             } else {
                 part = c.attribute + ": " + orNotSet(c.from) + " -> " + orNotSet(c.to);
             }
             text += (text.empty() ? "" : "; ") + part;
         }
         if (text.empty()) text = "compiled";
+        if (!codeChanges.empty()) {
+            // code is told per network, never summed up over several
+            const HistoryChange& first = ch[idx.front()];
+            linesOut.push_back({first.kind, text, {first.item}, codeChanges.back()});
+            codeChanges.clear();
+            continue;
+        }
         const HistoryChange& first = ch[idx.front()];
         auto id = std::make_pair(first.kind, text);
         auto it = lineIndex.find(id);
@@ -846,6 +928,10 @@ void textChanges(std::ostream& out, const HistorySave& s, const char* in) {
     for (const auto& l : linesOut) {
         if (l.items.size() < 4) {
             for (const auto& item : l.items) out << in << "~ " << l.kind << " " << item << ": " << l.text << "\n";
+            if (l.code != static_cast<size_t>(-1)) {
+                textCodeLines(out, ch[l.code].from, std::string(in) + "      - ");
+                textCodeLines(out, ch[l.code].to, std::string(in) + "      + ");
+            }
         } else {
             out << in << "~ " << plural(l.kind, l.items.size()) << ": " << l.text << "\n" << in << "    ";
             for (size_t i = 0; i < l.items.size() && i < 4; ++i) out << (i ? ", " : "") << l.items[i];
@@ -938,6 +1024,8 @@ void jsonHistory(std::ostream& out, const History& h) {
                     << qn(c.to);
             else
                 out << ", \"description\": " << qn(c.description) << ", \"part_of\": " << qn(c.partOf);
+            if (c.kind == "network" && c.change != "changed")
+                out << ", \"code\": " << qn(c.change == "added" ? c.to : c.from);
             out << "}";
         }
         out << (s.changes.empty() ? "]}" : "\n    ]}");
@@ -945,6 +1033,140 @@ void jsonHistory(std::ostream& out, const History& h) {
     out << (h.saves.empty() ? "]" : "\n  ]") << ", \"notes\": [";
     for (size_t i = 0; i < h.notes.size(); ++i) out << (i ? ", " : "") << q(h.notes[i]);
     out << "]},\n";
+}
+
+
+// ---- block code ----
+
+std::string blockLabel(const BlockCode& b) {
+    std::string out = b.plc.empty() ? b.name : b.plc + " / " + b.name;
+    if (b.hasNumber) out += " [" + b.type + std::to_string(b.number) + "]";
+    else out += " [" + b.type + "]";
+    return out;
+}
+
+void textCode(std::ostream& out, const CodeData& code) {
+    out << "\nBlock code:\n";
+    if (code.blocks.empty()) {
+        out << "  (no code blocks)\n";
+        return;
+    }
+    for (const BlockCode& b : code.blocks) {
+        out << "  " << blockLabel(b);
+        if (!b.language.empty()) out << "  " << b.language;
+        if (b.isProtected) {
+            out << ": " << unreadReason(b) << ", not read\n";
+            continue;
+        }
+        out << ", " << b.networks.size() << " network" << (b.networks.size() == 1 ? "" : "s") << "\n";
+        for (const auto& n : b.notes) out << "    (" << n << ")\n";
+        // a block written as text is one network without a title
+        const bool plain = b.networks.size() == 1 && b.networks[0].title.empty() && b.networks[0].comment.empty() &&
+                           b.networks[0].content == "scl";
+        for (const Network& n : b.networks) {
+            if (!plain) {
+                out << "    Network " << n.number;
+                if (!n.title.empty()) out << ": " << oneLine(n.title);
+                if (!n.language.empty() && n.language != b.language) out << "  (" << n.language << ")";
+                if (n.content == "empty") out << "  (empty)";
+                out << "\n";
+                if (!n.comment.empty()) out << "      // " << oneLine(n.comment) << "\n";
+            }
+            for (const auto& note : n.notes) out << "      (" << note << ")\n";
+            for (const auto& l : n.lines) out << "      " << l << "\n";
+        }
+    }
+    // who calls whom
+    bool any = false;
+    for (const BlockCode& b : code.blocks) {
+        std::vector<std::string> calls;
+        for (const CodeReference& r : b.references) {
+            if (r.kind != "block") continue;
+            std::vector<size_t> where;
+            for (const CodeUse& u : r.uses)
+                if (u.access == "call" && !u.hidden && std::find(where.begin(), where.end(), u.network) == where.end())
+                    where.push_back(u.network);
+            if (where.empty()) continue;
+            std::sort(where.begin(), where.end());
+            std::string s = r.text + " (network";
+            if (where.size() > 1) s += "s";
+            for (size_t i = 0; i < where.size(); ++i) s += (i ? ", " : " ") + std::to_string(where[i]);
+            calls.push_back(s + ")");
+        }
+        if (calls.empty()) continue;
+        if (!any) out << "\nCalls:\n";
+        any = true;
+        out << "  " << blockLabel(b) << " calls " << joined(calls) << "\n";
+    }
+}
+
+void jsonStrings(std::ostream& out, const std::vector<std::string>& v) {
+    out << "[";
+    for (size_t i = 0; i < v.size(); ++i) out << (i ? ", " : "") << q(v[i]);
+    out << "]";
+}
+
+void jsonCode(std::ostream& out, const CodeData& code) {
+    out << "  \"code\": [";
+    for (size_t bi = 0; bi < code.blocks.size(); ++bi) {
+        const BlockCode& b = code.blocks[bi];
+        out << (bi ? ",\n" : "\n") << "    {\"plc\": " << qn(b.plc) << ", \"type\": " << q(b.type) << ", \"number\": ";
+        if (b.hasNumber) out << b.number;
+        else out << "null";
+        out << ", \"name\": " << q(b.name) << ", \"language\": " << qn(b.language) << ", \"protected\": "
+            << tf(b.isProtected) << ", \"protection\": " << qn(b.protection) << ", \"protected_later\": "
+            << tf(b.protectedLater) << ", \"notes\": ";
+        jsonStrings(out, b.notes);
+        out << ", \"networks\": [";
+        for (size_t ni = 0; ni < b.networks.size(); ++ni) {
+            const Network& n = b.networks[ni];
+            out << (ni ? ",\n" : "\n") << "      {\"number\": " << n.number << ", \"network_id\": " << n.networkId
+                << ", \"title\": " << qn(n.title) << ", \"comment\": " << qn(n.comment) << ", \"language\": "
+                << qn(n.language) << ", \"language_stored\": " << qn(n.languageStored) << ", \"content\": "
+                << q(n.content) << ", \"notes\": ";
+            jsonStrings(out, n.notes);
+            out << ", \"lines\": ";
+            jsonStrings(out, n.lines);
+            out << ", \"elements\": [";
+            for (size_t ei = 0; ei < n.elements.size(); ++ei) {
+                const NetworkElement& e = n.elements[ei];
+                out << (ei ? ", " : "") << "{\"uid\": " << e.uid << ", \"kind\": " << q(e.kind) << ", \"name\": "
+                    << q(e.name) << ", \"instance\": " << qn(e.instance) << ", \"options\": [";
+                for (size_t oi = 0; oi < e.options.size(); ++oi)
+                    out << (oi ? ", " : "") << "{\"name\": " << q(e.options[oi].first) << ", \"value\": "
+                        << q(e.options[oi].second) << "}";
+                out << "], \"pins\": [";
+                for (size_t pi = 0; pi < e.pins.size(); ++pi) {
+                    out << (pi ? ", " : "") << "{\"name\": " << q(e.pins[pi].name) << ", \"direction\": "
+                        << (e.pins[pi].output ? "\"out\"" : "\"in\"") << ", \"connected\": ";
+                    jsonStrings(out, e.pins[pi].connected);
+                    out << "}";
+                }
+                out << "]}";
+            }
+            out << "]}";
+        }
+        out << (b.networks.empty() ? "]" : "\n    ]") << ", \"references\": [";
+        bool first = true;
+        for (const CodeReference& r : b.references) {
+            if (r.kind == "call interface" || r.kind == "expression") continue;
+            out << (first ? "\n" : ",\n") << "      {\"kind\": " << q(r.kind) << ", \"kind_stored\": " << q(r.kindStored)
+                << ", \"text\": " << q(r.text) << ", \"data_type\": " << qn(r.dataType) << ", \"data_block\": "
+                << qn(r.container) << ", \"uses\": [";
+            first = false;
+            for (size_t ui = 0; ui < r.uses.size(); ++ui) {
+                const CodeUse& u = r.uses[ui];
+                out << (ui ? ", " : "") << "{\"network\": ";
+                if (u.network) out << u.network;
+                else out << "null";
+                out << ", \"access\": " << qn(u.access) << ", \"access_stored\": " << qn(u.accessStored)
+                    << ", \"uid\": " << u.uid << ", \"hidden\": " << tf(u.hidden) << "}";
+            }
+            out << "]}";
+        }
+        out << (first ? "]}" : "\n    ]}");
+    }
+    out << (code.blocks.empty() ? "],\n" : "\n  ],\n");
 }
 
 }  // namespace
@@ -1078,6 +1300,7 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
         }
     }
     textProgram(out, prog, ctx);
+    if (ctx.code) textCode(out, *ctx.code);
     if (ctx.history) textHistory(out, *ctx.history);
     out << "\n" << inv.stats.liveObjects << " objects in " << inv.stats.blocks << " blocks";
     if (inv.stats.deletedObjects) out << ", " << inv.stats.deletedObjects << " deleted";
@@ -1230,6 +1453,7 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
     }
     out << (inv.connections.empty() ? "],\n" : "\n  ],\n");
     jsonProgram(out, prog);
+    if (ctx.code) jsonCode(out, *ctx.code);
     if (ctx.history) jsonHistory(out, *ctx.history);
     out << "  \"stats\": {\"decoded_hardware_objects\": " << inv.stats.decodedObjects
         << ", \"objects_with_problems\": " << inv.stats.objectsWithProblems << ", \"unattached_items\": "

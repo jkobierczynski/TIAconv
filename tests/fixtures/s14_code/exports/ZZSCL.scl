@@ -1,0 +1,14 @@
+﻿FUNCTION "ZZSCL" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+
+BEGIN
+	IF "ZZA" AND NOT "ZZB" THEN
+	    "ZZN3" := "ZZN1" + 2 * "ZZN2";
+	ELSE
+	    "ZZDATA".speed := 0;
+	END_IF;
+	(* ZZ note *)
+	// done
+END_FUNCTION
+

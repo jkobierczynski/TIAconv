@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tiaconv VERSION 0.10.0 LANGUAGES C CXX)
+project(tiaconv VERSION 0.11.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,6 +29,7 @@ add_library(tiacore STATIC
   src/meta.cpp
   src/output.cpp
   src/program.cpp
+  src/code.cpp
   src/project.cpp
   src/sha256.cpp
   src/source.cpp

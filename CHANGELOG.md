@@ -1,5 +1,29 @@
 # Changes
 
+## 0.11.0
+
+- Block code: `--code` adds the networks of every OB, FB and FC to the text
+  report and the JSON (`code`), with title, comment and language. SCL and
+  STL come out as source text; LAD and FBD as a listing in text form, in a
+  notation of tiaconv's own (see the README), with the parts and their pins
+  in the JSON; a list of who calls whom follows.
+- `--xref-csv` writes the cross-reference: which block reads, writes or
+  calls which tag, data block member, data block or block, per network.
+- The save history lists networks: added and removed ones with their code,
+  changed ones with the lines taken out and put in.
+- Know-how protected blocks and the protected blocks of Siemens libraries
+  are not read, and neither is an earlier, unprotected version of a block
+  that the file still holds from before it was protected (`--save`,
+  `--history`).
+- Names in code are the current ones: a tag or block renamed since the
+  block was last compiled shows its new name, as in TIA Portal's editor.
+- Checked against a new V21 test project with code in LAD, FBD, SCL and STL
+  (`s14_code`): screenshots of every network, the generated sources, the
+  cross-references of a tag and the call structure.
+- Found: know-how protection makes TIA Portal write the project file anew,
+  without its earlier saves; it keeps the old file in `<project>.backup`.
+- The XML reader keeps the text inside elements.
+
 ## 0.10.0
 
 - HMI tags: the tags of every HMI device with tag table, data type,

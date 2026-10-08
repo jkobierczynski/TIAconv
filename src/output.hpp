@@ -6,6 +6,7 @@
 #include <ostream>
 #include <string>
 
+#include "code.hpp"
 #include "history.hpp"
 #include "inventory.hpp"
 #include "program.hpp"
@@ -23,6 +24,7 @@ struct ReportContext {
     bool members = false;     // text: print the members of every data block
     size_t shownSave = 0;     // the project is shown as it was after this save; 0: as it is now
     const History* history = nullptr;  // text and JSON: add the save history
+    const CodeData* code = nullptr;    // text and JSON: add the code of the blocks
 };
 
 void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog, const ReportContext& ctx);
@@ -31,6 +33,9 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
 
 // One row per tag.
 void writeTagsCsv(std::ostream& out, const ProgramData& prog);
+// One row per use of a tag, data block member or block in the code of a
+// block: the cross-reference.
+void writeCrossReferenceCsv(std::ostream& out, const CodeData& code);
 // One row per tag of an HMI device.
 void writeHmiTagsCsv(std::ostream& out, const ProgramData& prog);
 // One row per constant of a PLC: hardware identifiers, user constants and

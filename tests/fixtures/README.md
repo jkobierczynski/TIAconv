@@ -229,6 +229,62 @@ what they show:
 OB1 `Main` of ZZCHARLIE has one network, an empty one, as counted in TIA
 Portal.
 
+`s14_code` is a new project for the code of blocks: one S7-1500 CPU
+(CPU 1511-1 PN, `ZZPLC`) and blocks in LAD, FBD, SCL and STL, one action per
+save, in TIA Portal V21 (STEP 7 Professional trial licence).
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 3 | S7-1500 station with CPU 1511-1 PN, named `ZZPLC` |
+| 4 | PLC tags `ZZA` Bool %M10.0, `ZZB` Bool %M10.1, `ZZC` Bool %M10.2, `ZZOUT` Bool %M11.0, `ZZN1` Int %MW20, `ZZN2` Int %MW22, `ZZN3` Int %MW24 |
+| 5 | global data block `ZZDATA` with `run` Bool and `speed` Int |
+| 6 | Main, network 1, title `ZZ series`: contact `ZZA`, normally closed contact `ZZB`, coil `ZZOUT` |
+| 7 | Main, network 2, title `ZZ parallel`, comment `two branches`: `ZZA` parallel to `ZZC`, set coil on `"ZZDATA".run` |
+| 8 | Main, network 3: compare `ZZN1` > 100 (Int), then MOVE `ZZN2` to `"ZZDATA".speed` |
+| 9 | Main, network 4: ADD `ZZN1` + 5 to `ZZN3` |
+| 10 | Main, network 5: contact `ZZA`, TON with the proposed instance `IEC_Timer_0_DB`, PT `T#5S`, Q to coil `ZZC`; ET was given `"IEC_Timer_0_DB".ET` (not intended) |
+| 11 | new FC `ZZFBD` in FBD: AND of `ZZA` and negated `ZZB`, assigned to `"ZZDATA".run` |
+| 12 | new FC `ZZSCL` in SCL, empty |
+| 13 | `ZZSCL`: the code (see `exports/ZZSCL.scl`) |
+| 14 | new FC `ZZSTL` in STL, network 1: `A "ZZA"`, `AN "ZZB"`, `= "ZZOUT"` |
+| 15 | `ZZSTL`, network 2: `L "ZZN1"`, `L 5`, `+I`, `T "ZZN3"` |
+| 16 | new FB `ZZFB` in LAD, input `in1`, output `out1`: contact `#in1`, coil `#out1` |
+| 17 | Main, network 6: call of `ZZFB` with instance `ZZFB_DB`, `in1` `ZZA`, `out1` `ZZC` |
+| 18 | Main, network 7: `ZZFBD`, `ZZSCL` and `ZZSTL` in one rung, ENO to EN |
+| 19 | compiled; it failed on the ET of the timer (read-only), which was then removed and compiled again |
+| 20 | Main, network 1: `ZZB` replaced by `ZZC` |
+| 21 | tag `ZZA` renamed to `ZZALPHA`, not compiled |
+| 22 | compiled, and network 2 of Main (`ZZ parallel`) deleted |
+| 23 | `ZZSCL` know-how protected (throwaway password) |
+
+References from TIA Portal, taken after save 19 (before the edits of saves
+20 to 23):
+
+- `s14_code/exports/ZZSCL.scl` and `ZZSTL.awl`: "Generate source from blocks"
+  of the two blocks.
+- Screenshots of the eight networks of Main, of the networks of `ZZFBD`,
+  `ZZFB`, `ZZSCL` and `ZZSTL` (the STL editor shows instruction and operand
+  in two columns, whatever blanks were typed).
+- Cross-references of `ZZA`: Main networks 1, 2 (ZZ parallel), 5 and 6,
+  `ZZFBD` network 1, `ZZSCL` program code, `ZZSTL` network 1.
+- Program info > Call structure: Main calls `ZZFB` with `ZZFB_DB` (network 6),
+  `ZZFBD`, `ZZSCL` and `ZZSTL` (network 7); data blocks accessed:
+  `IEC_Timer_0_DB` (Main network 5), `ZZDATA` (Main networks 2 and 3, `ZZFBD`
+  network 1, `ZZSCL`).
+- After save 21: a screenshot of Main with `"ZZALPHA"` in networks 1 and 2.
+
+With the know-how protection (save 23) TIA Portal wrote the project file
+anew, without the earlier saves, and kept the old file in
+`s14_code.backup/2026-10-08.031839.005/2026-10-08.031839.005.zip`.
+`s14_code/System/PEData.plf` is the file from that backup.
+`s14_code_rewritten` is the project file after that: its first save holds the
+whole project, then
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 2 | the rewritten file closed by the next save: a new network inserted after network 1 of Main, title `ZZ inserted` |
+| 3 | that network: contact `ZZC`, coil `ZZOUT` |
+
 The tables above are also the reference for the save history
 (`tiaconv --history`): for every save listed in them, the test expects the
 history to show that action and what TIA Portal changed along with it, and

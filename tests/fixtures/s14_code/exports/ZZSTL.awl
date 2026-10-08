@@ -1,0 +1,19 @@
+﻿FUNCTION "ZZSTL" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE = 
+      A "ZZA";
+      AN "ZZB";
+      = "ZZOUT";
+NETWORK
+TITLE = 
+      L "ZZN1";
+      L 5;
+      +I;
+      T "ZZN3";
+
+END_FUNCTION
+

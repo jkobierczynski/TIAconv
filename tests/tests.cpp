@@ -8,11 +8,13 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "bytes.hpp"
+#include "code.hpp"
 #include "container.hpp"
 #include "history.hpp"
 #include "inventory.hpp"
@@ -754,6 +756,33 @@ Bytes object(uint32_t type, uint64_t id, const std::vector<Bytes>& sets, const s
             put64(body, r.id);
         }
     }
+    return block(type, id, 0, static_cast<uint8_t>(slots), body);
+}
+
+// An object with a third relation slot: a list without relation ids.
+Bytes typedListObject(uint32_t type, uint64_t id, const std::vector<Bytes>& sets, const std::vector<Rel>& multi,
+                      const Bytes& typedList) {
+    const size_t slots = sets.size() + 3;
+    Bytes body(slots * 4, 0);
+    size_t n = 0;
+    for (const auto& seg : sets) {
+        if (!seg.empty()) set32(body, 4 * n, static_cast<uint32_t>(44 + body.size()));
+        ++n;
+        append(body, seg);
+    }
+    const std::vector<Rel> none;
+    for (const auto* list : {&none, &multi}) {
+        set32(body, 4 * n++, static_cast<uint32_t>(44 + body.size()));
+        put16(body, static_cast<uint16_t>(4 + 16 * list->size()));
+        put16(body, static_cast<uint16_t>(list->size()));
+        for (const auto& r : *list) {
+            put32(body, r.relation);
+            put32(body, r.type);
+            put64(body, r.id);
+        }
+    }
+    set32(body, 4 * n++, static_cast<uint32_t>(44 + body.size()));
+    append(body, typedList);
     return block(type, id, 0, static_cast<uint8_t>(slots), body);
 }
 
@@ -1700,6 +1729,917 @@ void testAccessLevels() {
     CHECK(tia::accessProtection(current) == "none");
 }
 
+// ---- block code ----
+
+#define CHECK_EQ(actual, expected)                                               \
+    do {                                                                         \
+        ++checks;                                                                \
+        const std::string a_ = (actual), e_ = (expected);                        \
+        if (a_ != e_) {                                                          \
+            ++failures;                                                          \
+            std::printf("FAIL %s:%d  %s\n    got:      %s\n    expected: %s\n", __FILE__, __LINE__, #actual, a_.c_str(), \
+                        e_.c_str());                                             \
+        }                                                                        \
+    } while (0)
+
+std::string joinLines(const std::vector<std::string>& lines) {
+    std::string out;
+    for (const auto& l : lines) out += l + "\n";
+    return out;
+}
+
+// The reference table of a block as TIA Portal V14 and later store it.
+const char kReferences[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<IdentXmlPart xmlns=\"http://schemas.siemens.com/Simatic/ES/14/IdentManager/IdentXmlPart.xsd\">"
+    // a data block and three of its members; one is an array element, one has a name that needs quotes
+    "<DepDBBlock><ID N=\"Data\" S=\"Global\" RID=\"10\" IS=\"1\" ID=\"11,12\"><CS><C NID=\"7\" UID=\"30\" OID=\"1\" />"
+    "<C NID=\"7\" UID=\"31\" AK=\"Write\" /></CS></ID><OD S=\"16\"><TD TDF=\"OST\" T=\"Block_DB:-1845493756:OldName\" /></OD></DepDBBlock>"
+    "<GlobalAccess><ID N=\"\" S=\"Global\" RID=\"11\" IS=\"1\"><CS><C NID=\"7\" UID=\"30\" OID=\"1\" /></CS></ID>"
+    "<OD S=\"1\"><TD TDF=\"OST\" T=\"Bool:33554433:Bool\" /></OD><SD /><SSD S=\"S\" AO=\"1\" MID=\"52\"><AOS>"
+    "<AO N=\"Data\" RIDI=\"\" BO=\"0\" BS=\"16\"><TD TDF=\"OST\" T=\"Block_DB:-1845493756:OldName\" /></AO>"
+    "<AO N=\"Run\" RIDI=\"\" BO=\"1\" BS=\"1\"><TD TDF=\"OST\" T=\"Bool:33554433:Bool\" /></AO></AOS></SSD><BAD BIRID=\"10\" /></GlobalAccess>"
+    "<GlobalAccess><ID N=\"\" S=\"Global\" RID=\"12\" IS=\"1\"><CS><C NID=\"7\" UID=\"31\" AK=\"Write\" />"
+    "<C NID=\"9\" UID=\"40\" AK=\"RW\" XH=\"1\" /></CS></ID>"
+    "<OD S=\"8\"><TD TDF=\"OST\" T=\"Byte:33554434:Byte\" /></OD><SD /><SSD S=\"S\" AO=\"16\" MID=\"53\"><AOS>"
+    "<AO N=\"Data\" RIDI=\"\" BO=\"0\" BS=\"16\" /><AO N=\"my buffer\" RIDI=\"20, 21\" BO=\"16\" BS=\"8\" /></AOS></SSD></GlobalAccess>"
+    // constants: a number, a time, a text
+    "<LiteralConstant><ID N=\"\" S=\"Constant\" RID=\"20\" IS=\"1\"><CS><C NID=\"7\" UID=\"31\" /></CS></ID><OD S=\"32\"></OD>"
+    "<CD CF=\"Dec_signed\"><CB ST=\"Number\" T=\"DInt\" SV=\"_x0032_\" V=\"2\" /></CD></LiteralConstant>"
+    "<LiteralConstant><ID N=\"\" S=\"Constant\" RID=\"22\" IS=\"1\"><CS><C NID=\"9\" UID=\"41\" /></CS></ID><OD S=\"32\"></OD>"
+    "<CD CF=\"Time\"><CB ST=\"Number\" T=\"Time\" SV=\"T_x0023_5s\" V=\"5000\" /></CD></LiteralConstant>"
+    "<LiteralConstant><ID N=\"\" S=\"Constant\" RID=\"23\" IS=\"1\"><CS /></ID><OD S=\"56\"></OD>"
+    "<CD CF=\"String\"><CB ST=\"String\" T=\"String\" SV=\"_x0027_hello_x0027_\" V=\"x\" /></CD></LiteralConstant>"
+    // a local variable (also the second array index), a part of it, and a local constant
+    "<InterfaceAccess><ID N=\"\" S=\"Local\" RID=\"21\" IS=\"1\"><CS><C NID=\"7\" UID=\"31\" /><C NID=\"0\" UID=\"3\" AK=\"ArrayBoundary\" /></CS></ID>"
+    "<OD S=\"16\"><TD TDF=\"OST\" T=\"Int:33554437:Int\" /></OD><SSD S=\"D\" AO=\"0\" MID=\"52\"><AOS>"
+    "<AO N=\"index\" RIDI=\"\" BO=\"0\" BS=\"16\" /></AOS></SSD><IAD PN=\"0\" RO=\"0\" /></InterfaceAccess>"
+    "<InterfaceAccess><ID N=\"\" S=\"Local\" RID=\"24\" IS=\"1\"><CS /></ID>"
+    "<OD S=\"8\"><TD TDF=\"OST\" T=\"Byte:33554434:Byte\" /></OD><SSD S=\"D\" AM=\"b0\" AO=\"0\" MID=\"52\"><AOS>"
+    "<AO N=\"cfg\" RIDI=\"\" /><AO N=\"word\" RIDI=\"\" /></AOS></SSD></InterfaceAccess>"
+    "<LocalConstant><ID N=\"MAX\" S=\"Local\" RID=\"25\" IS=\"1\"><CS /></ID><OD S=\"8\"><TD TDF=\"OST\" T=\"USInt:33554484:USInt\" /></OD>"
+    "<CD CF=\"Dec_unsigned\"><CB ST=\"Number\" T=\"USInt\" SV=\"_x0032_50\" V=\"250\" /></CD></LocalConstant>"
+    // a tag
+    "<SimpleAccess><ID N=\"Start\" S=\"Global\" RID=\"30\" IS=\"1\"><CS><C NID=\"9\" UID=\"42\" OID=\"11\" AK=\"RW\" /></CS></ID>"
+    "<OD S=\"1\"><TD TDF=\"OST\" T=\"Bool:33554433:Bool\" /></OD><SD /><SSD S=\"U\" AA=\"C\" AO=\"0\" MID=\"\"><AOS /></SSD>"
+    "<SAD R=\"Memory\" SAM=\"None\" /></SimpleAccess>"
+    // a called block with its instance, the interface of the call, an instruction, a multi-instance
+    "<FBBlock><ID N=\"Motor\" S=\"Global\" RID=\"40\" IS=\"1\" ID=\"41,42\"><CS><C NID=\"9\" UID=\"50\" AK=\"Call\" /></CS></ID>"
+    "<OD S=\"16\"><TD TDF=\"OST\" T=\"Block_FB:-1828716543:Motor\" /></OD></FBBlock>"
+    "<AufDBBlock><ID N=\"Motor_DB\" S=\"Global\" RID=\"41\" IS=\"1\"><CS><C NID=\"9\" UID=\"52\" AK=\"InstanceDB\" /></CS></ID>"
+    "<OD S=\"16\"><TD TDF=\"OST\" T=\"Block_FB:-1828716543:Motor\" /></OD></AufDBBlock>"
+    "<BlockInterfaceInfo><ID N=\"\" S=\"BlockInterfaceInfo\" RID=\"42\" IS=\"1\"><CS><C NID=\"9\" UID=\"51\" AK=\"None\" XH=\"1\" /></CS></ID>"
+    "<BIID TORID=\"40\" BT=\"FB\"><BPIL><BPI N=\"go\" S=\"Input\" /></BPIL></BIID></BlockInterfaceInfo>"
+    "<Instruction><ID N=\"TON\" S=\"Instruction\" RID=\"43\" IS=\"1\"><CS><C NID=\"9\" UID=\"60\" AK=\"Call\" /></CS></ID>"
+    "<INSTD DN=\"IEC_Timer_0\" /></Instruction>"
+    "<MultInstAccess><ID N=\"statTimer\" S=\"Local\" RID=\"44\" IS=\"1\"><CS><C NID=\"9\" UID=\"61\" AK=\"Multiinstance\" /></CS></ID>"
+    "<OD S=\"128\"><TD TDF=\"OST\" T=\"Multi_FB:1:IEC_TIMER\" /></OD><SSD S=\"S\"><AOS><AO N=\"statTimer\" RIDI=\"\" /></AOS></SSD></MultInstAccess>"
+    // something this version of tiaconv has no name for
+    "<FutureThing><ID N=\"Odd\" S=\"Global\" RID=\"50\" IS=\"1\"><CS><C NID=\"9\" UID=\"70\" AK=\"Sideways\" /></CS></ID></FutureThing>"
+    "<NoIdHere />"
+    "</IdentXmlPart>";
+
+std::vector<tia::CodeReference> testReferences() {
+    std::vector<tia::CodeReference> refs;
+    tia::parseReferencePart(kReferences, refs);
+    std::vector<tia::Network> networks(2);
+    networks[0].number = 1;
+    networks[0].networkId = 9;
+    networks[1].number = 2;
+    networks[1].networkId = 7;
+    tia::finishReferences(refs, networks);
+    return refs;
+}
+
+const tia::CodeReference* refById(const std::vector<tia::CodeReference>& refs, int64_t id) {
+    for (const auto& r : refs)
+        if (r.refId == id) return &r;
+    return nullptr;
+}
+
+void testCodeReferences() {
+    CHECK_EQ(tia::decodeXmlName("_x0031_0"), "10");
+    CHECK_EQ(tia::decodeXmlName("T_x0023_5s"), "T#5s");
+    CHECK_EQ(tia::decodeXmlName("_x0027_h_x00e9__x20AC__x0027_"), "'h\xc3\xa9\xe2\x82\xac'");
+    CHECK_EQ(tia::decodeXmlName("plain_name"), "plain_name");
+    CHECK_EQ(tia::decodeXmlName("_x00zz_ _x41_ _x0041"), "_x00zz_ _x41_ _x0041");  // not such a sequence
+    CHECK_EQ(tia::decodeXmlName(""), "");
+
+    const std::vector<tia::CodeReference> refs = testReferences();
+    CHECK(refs.size() == 16);
+    auto text = [&](int64_t id) {
+        const tia::CodeReference* r = refById(refs, id);
+        return r ? r->text : std::string("(missing)");
+    };
+    auto kind = [&](int64_t id) {
+        const tia::CodeReference* r = refById(refs, id);
+        return r ? r->kind : std::string("(missing)");
+    };
+    CHECK_EQ(text(10), "\"Data\"");
+    CHECK_EQ(kind(10), "data block");
+    CHECK_EQ(text(11), "\"Data\".Run");
+    CHECK_EQ(kind(11), "data block member");
+    // a name that is not a plain one is quoted; the indices are other entries
+    CHECK_EQ(text(12), "\"Data\".\"my buffer\"[2, #index]");
+    CHECK_EQ(text(20), "2");
+    CHECK_EQ(kind(20), "constant");
+    CHECK_EQ(text(22), "T#5s");
+    CHECK_EQ(text(23), "'hello'");
+    CHECK_EQ(text(21), "#index");
+    CHECK_EQ(kind(21), "local");
+    CHECK_EQ(text(24), "#cfg.word.%B0");
+    CHECK_EQ(text(25), "#MAX");
+    CHECK_EQ(kind(25), "local constant");
+    CHECK_EQ(text(30), "\"Start\"");
+    CHECK_EQ(kind(30), "tag");
+    CHECK_EQ(text(40), "\"Motor\"");
+    CHECK_EQ(kind(40), "block");
+    CHECK_EQ(text(41), "\"Motor_DB\"");
+    CHECK_EQ(kind(41), "instance data block");
+    CHECK_EQ(kind(42), "call interface");
+    CHECK_EQ(text(43), "TON");
+    CHECK_EQ(kind(43), "instruction");
+    CHECK_EQ(text(44), "#statTimer");
+    CHECK_EQ(kind(44), "multi-instance");
+    CHECK_EQ(text(50), "\"Odd\"");
+    CHECK_EQ(kind(50), "FutureThing");  // as stored
+
+    if (const tia::CodeReference* r = refById(refs, 11)) {
+        CHECK(r->dataType == "Bool" && r->container == "Data" && r->kindStored == "GlobalAccess");
+        // no kind of access stated: a reading one
+        CHECK(r->uses.size() == 1 && r->uses[0].access == "read" && r->uses[0].accessStored.empty());
+        CHECK(r->uses.size() == 1 && r->uses[0].network == 2 && r->uses[0].networkId == 7 && r->uses[0].uid == 30);
+    }
+    if (const tia::CodeReference* r = refById(refs, 12)) {
+        CHECK(r->uses.size() == 2);
+        if (r->uses.size() == 2) {
+            CHECK(r->uses[0].access == "write" && !r->uses[0].hidden && r->uses[0].network == 2);
+            CHECK(r->uses[1].access == "read/write" && r->uses[1].hidden && r->uses[1].network == 1);
+        }
+    }
+    if (const tia::CodeReference* r = refById(refs, 10)) {
+        // the type name is the one the block had when the entry was made; the name is current
+        CHECK(r->dataType == "OldName" && r->uses.size() == 2 && r->uses[0].access == "read");
+    }
+    if (const tia::CodeReference* r = refById(refs, 21)) {
+        // the block interface is no network
+        CHECK(r->uses.size() == 2 && r->uses[1].network == 0 && r->uses[1].access == "array limit");
+    }
+    if (const tia::CodeReference* r = refById(refs, 40)) CHECK(r->uses.size() == 1 && r->uses[0].access == "call");
+    if (const tia::CodeReference* r = refById(refs, 41)) CHECK(r->uses.size() == 1 && r->uses[0].access == "instance");
+    if (const tia::CodeReference* r = refById(refs, 42)) CHECK(r->uses.size() == 1 && r->uses[0].access.empty());
+    if (const tia::CodeReference* r = refById(refs, 44)) CHECK(r->uses.size() == 1 && r->uses[0].access == "multi-instance");
+    if (const tia::CodeReference* r = refById(refs, 50)) CHECK(r->uses.size() == 1 && r->uses[0].access == "Sideways");
+
+    // not a reference table, broken documents, an index that names itself
+    std::vector<tia::CodeReference> none;
+    tia::parseReferencePart("<Other><GlobalAccess><ID RID=\"1\"/></GlobalAccess></Other>", none);
+    CHECK(none.empty());
+    CHECK_THROWS(tia::parseReferencePart("<IdentXmlPart><GlobalAccess>", none));
+    std::vector<tia::CodeReference> loop;
+    tia::parseReferencePart("<IdentXmlPart><GlobalAccess><ID N=\"\" S=\"Global\" RID=\"1\"/><SSD><AOS><AO N=\"A\" RIDI=\"\"/>"
+                            "<AO N=\"b\" RIDI=\"1,99\"/></AOS></SSD></GlobalAccess></IdentXmlPart>",
+                            loop);
+    tia::finishReferences(loop, {});
+    CHECK(loop.size() == 1 && loop[0].text.find("\"A\".b[") == 0 && loop[0].text.size() < 400);
+    CHECK(loop.size() == 1 && loop[0].text.find(", ?]") != std::string::npos);  // entry 99 is not there
+}
+
+void testScl() {
+    const std::vector<tia::CodeReference> refs = testReferences();
+    std::vector<std::string> comments = {"first", "", "line 1\r\nline 2"};
+    tia::SclContext ctx;
+    ctx.references = &refs;
+    ctx.comments = &comments;
+    std::vector<std::string> lines, notes;
+
+    // V15 and later: every name is kept as it was written
+    const char modern[] =
+        "\xef\xbb\xbf<SCLSource Version=\"3.3.0.0\"><Symbols><LocalTag SymID=\"13\" RefId=\"21\" />"
+        "<Instruction SymID=\"4\" Name=\"ABS\" RefCount=\"1\" /></Symbols>"
+        "<RootStatements Version=\"3.3.0.0\">"
+        "<Statement TE=\"REGION\" UId=\"1\" SI=\"STRegion\"><Fold UId=\"2\"><BL /><Const TE=\"Setup\" UId=\"3\" SI=\"ConstRegion\" />"
+        "<NL UId=\"4\" /><BL NumBLs=\"4\" /><LC TE=\" a &lt;comment&gt;\" /><NL UId=\"5\" /><KwEndRegion UId=\"6\" /></Fold></Statement>"
+        "<NL UId=\"7\" /><NL UId=\"8\" />"
+        "<Statement TE=\"IF\" UId=\"9\" SI=\"IFE\"><Fold UId=\"10\"><BL />"
+        "<Expression Result=\"Bool\" UId=\"11\" SI=\"ExprAnd\"><Expression SI=\"ExprPrimD\"><SymVa UId=\"12\" SI=\"Var\" SyId=\"13\" ODN=\"#in1\" /></Expression>"
+        "<BL /><OpAND UId=\"13\" /><BL /><Expression SI=\"ExprUnaryN\"><OpNOT UId=\"14\" /><BL />"
+        "<Expression SI=\"ExprPrimD\"><SymVa UId=\"15\" SI=\"Var\" SyId=\"99\" ODN=\"&quot;Start&quot;\" /></Expression></Expression></Expression>"
+        "<BL /><KwTHEN UId=\"16\" /><NL UId=\"17\" /><BL NumBLs=\"4\" /><Statements>"
+        "<Statement UId=\"18\" SI=\"STAss\"><Expression SI=\"ExprInd\"><SymVa UId=\"19\" SI=\"VarArray\" SyId=\"1\" ODN=\"#buf\" />"
+        "<BoxO UId=\"20\" /><Expression SI=\"ExprPrimC\"><Const TE=\"2\" UId=\"21\" SI=\"ConstDInt\" SyId=\"2\" /></Expression><BoxC UId=\"22\" />"
+        "<SymVa UId=\"23\" SI=\"VarElem\" SyId=\"3\" ODN=\"\" /></Expression>"
+        "<BL /><OpAs UId=\"24\" /><BL />"
+        "<Expression SI=\"ExprPrimD\"><FctCa UId=\"25\"><Sub UId=\"26\" SI=\"Instruction\" SyId=\"4\" ODN=\"ABS\" /><BracO UId=\"27\" /><Fold UId=\"28\">"
+        "<Param UId=\"29\" SI=\"ParaIn\"><SymPa V=\"0\" UId=\"30\" SyId=\"5\" ODN=\"\" FormalName=\"IN\" />"
+        "<Expression SI=\"ExprSub\"><Expression SI=\"ExprPrimD\"><SymVa UId=\"31\" SI=\"Var\" SyId=\"6\" ODN=\"#a\" /></Expression><BL /><OpMi UId=\"32\" /><BL />"
+        "<Expression SI=\"ExprPrimD\"><SymVa UId=\"33\" SI=\"Var\" SyId=\"7\" ODN=\"#b\" /></Expression></Expression></Param>"
+        "<BracC UId=\"34\" /></Fold></FctCa></Expression><FiSt UId=\"35\" /></Statement></Statements>"
+        "<NL UId=\"36\" /><KwELSE UId=\"37\" /><NL UId=\"38\" /><BL NumBLs=\"4\" /><Statements>"
+        "<Statement UId=\"39\" SI=\"STSub\"><InstCa UId=\"40\"><Sub UId=\"41\" SI=\"FB\" SyId=\"8\" ODN=\"&quot;Motor_DB&quot;\" /><BracO UId=\"42\" /><Fold UId=\"43\">"
+        "<Param UId=\"44\" SI=\"ParaIn\"><SymPa UId=\"45\" SyId=\"9\" ODN=\"go\" FormalName=\"go\" /><BL /><OpAs UId=\"46\" /><BL />"
+        "<Expression SI=\"ExprPrimC\"><Const TE=\"TRUE\" UId=\"47\" SI=\"ConstBool\" /></Expression></Param><Comma UId=\"48\" /><BL />"
+        "<Param UId=\"49\" SI=\"ParaOut\"><SymPa UId=\"50\" SyId=\"10\" ODN=\"done\" FormalName=\"done\" /><BL /><OpPa UId=\"51\" /><BL />"
+        "<Expression SI=\"ExprDot\"><Expression SI=\"ExprPrimD\"><SymDB UId=\"52\" SI=\"DB\" SyId=\"11\" ODN=\"&quot;Data&quot;\" /></Expression>"
+        "<Dot UId=\"53\" /><SymVa UId=\"54\" SI=\"Var\" SyId=\"12\" ODN=\"Run\" /></Expression></Param>"
+        "<BracC UId=\"55\" /></Fold></InstCa><FiSt UId=\"56\" /></Statement></Statements>"
+        "<NL UId=\"57\" /><KwENDIF UId=\"58\" /><FiSt UId=\"59\" /></Fold></Statement><NL UId=\"60\" />"
+        "<BC><Fold UId=\"61\"><NL UId=\"62\" /><BCL TE=\"* two\" /><NL UId=\"63\" /><BCE /></Fold></BC><NL UId=\"64\" />"
+        "<MLC DictId=\"3\" FoldUId=\"65\" UId=\"66\" /><NL UId=\"67\" /><MLC DictId=\"2\" UId=\"68\" /><NL UId=\"69\" /><NL UId=\"70\" />"
+        "</RootStatements></SCLSource>";
+    CHECK(tia::sclText(modern, ctx, lines, notes));
+    CHECK_EQ(joinLines(lines), "REGION Setup\n"
+                               "    // a <comment>\n"
+                               "END_REGION\n"
+                               "\n"
+                               "IF #in1 AND NOT \"Start\" THEN\n"
+                               "    #buf[2] := ABS(#a - #b);\n"
+                               "ELSE\n"
+                               "    \"Motor_DB\"(go := TRUE, done => \"Data\".Run);\n"
+                               "END_IF;\n"
+                               "(*\n"
+                               "* two\n"
+                               "*)\n"
+                               "(/*line 1\n"
+                               "line 2*/)\n"
+                               "(/**/)\n");
+    CHECK(notes.empty());
+
+    // FOR, CASE, comparison and arithmetic signs
+    lines.clear();
+    const char more[] =
+        "<SCLSource Version=\"3.4.0.0\"><Symbols /><RootStatements>"
+        "<Statement TE=\"FOR\" SI=\"STFOR\"><Fold><BL /><SymVa ODN=\"#i\" /><BL /><OpAs /><BL /><Const TE=\"0\" /><BL /><KwTO /><BL />"
+        "<Const TE=\"9\" /><BL /><KwBY /><BL /><Const TE=\"2\" /><BL /><KwDO /><NL /><BL NumBLs=\"2\" /><Statements>"
+        "<Statement SI=\"STAss\"><SymVa ODN=\"#x\" /><BL /><OpAs /><BL /><BracO /><SymVa ODN=\"#x\" /><BL /><OpPl /><BL /><Const TE=\"1\" /><BracC />"
+        "<BL /><OpMu /><BL /><Const TE=\"2\" /><BL /><OpDi /><BL /><Const TE=\"3\" /><FiSt /></Statement></Statements><NL /><KwENDFOR /><FiSt /></Fold></Statement><NL />"
+        "<Statement TE=\"CASE\" SI=\"STCAS\"><Fold><BL /><SymVa ODN=\"#x\" /><BL /><KwOF /><NL /><BL NumBLs=\"2\" />"
+        "<CaseElem><CaseRange><Const TE=\"1\" /></CaseRange><Colon /><BL /><Statements><Statement SI=\"STSim\"><FiSt /></Statement></Statements></CaseElem><NL />"
+        "<BL NumBLs=\"2\" /><KwELSE /><NL /><BL NumBLs=\"4\" /><Statements><Statement TE=\"RETURN\" SI=\"STRET\"><FiSt /></Statement></Statements><NL />"
+        "<KwENDC /><FiSt /></Fold></Statement><NL />"
+        "<Statement TE=\"IF\"><Fold><BL /><SymVa ODN=\"#a\" /><OpG /><SymVa ODN=\"#b\" /><BL /><OpOR /><BL /><SymVa ODN=\"#a\" /><OpL /><SymVa ODN=\"#b\" />"
+        "<BL /><OpOR /><BL /><SymVa ODN=\"#a\" /><OpE /><SymVa ODN=\"#b\" /><BL /><OpOR /><BL /><SymVa ODN=\"#a\" /><OpU /><SymVa ODN=\"#b\" />"
+        "<BL /><OpOR /><BL /><SymVa ODN=\"#a\" /><OpLE /><SymVa ODN=\"#b\" /><BL /><OpOR /><BL /><SymVa ODN=\"#a\" /><OpGE /><SymVa ODN=\"#b\" />"
+        "<BL /><KwTHEN /><NL /><KwELSIF /><BL /><SymVa ODN=\"#c\" /><BL /><KwTHEN /><NL /><KwENDIF /><FiSt /></Fold></Statement>"
+        "</RootStatements></SCLSource>";
+    CHECK(tia::sclText(more, ctx, lines, notes));
+    CHECK_EQ(joinLines(lines), "FOR #i := 0 TO 9 BY 2 DO\n"
+                               "  #x := (#x + 1) * 2 / 3;\n"
+                               "END_FOR;\n"
+                               "CASE #x OF\n"
+                               "  1: ;\n"
+                               "  ELSE\n"
+                               "    RETURN;\n"
+                               "END_CASE;\n"
+                               "IF #a>#b OR #a<#b OR #a=#b OR #a<>#b OR #a<=#b OR #a>=#b THEN\n"
+                               "ELSIF #c THEN\n"
+                               "END_IF;\n");
+    CHECK(notes.empty());
+
+    // V13: no names in the tokens, they come from the reference table; the
+    // line end is inside the comment; an array element has a token of its own
+    lines.clear();
+    const char old[] =
+        "<SCLSource Version=\"1.4\"><Symbols>"
+        "<Symbol ClID=\"LinkedSymbol\" SymID=\"2\" RefId=\"10\" /><Symbol ClID=\"LinkedSymbol\" SymID=\"3\" RefId=\"11\" />"
+        "<Symbol ClID=\"LinkedSymbol\" SymID=\"4\" RefId=\"12\" /><Symbol ClID=\"LinkedSymbol\" SymID=\"5\" RefId=\"21\" />"
+        "<Symbol ClID=\"InstanceDB\" SymID=\"6\" TypeSymID=\"7\" RefId=\"41\" />"
+        "<Symbol ClID=\"PseudoSymbol\" SymID=\"8\" ParentSymID=\"6\" SubClassID=\"InstructionParameter\" ONr=\"0\" Name=\"go\" />"
+        "<Symbol ClID=\"TempConstSymbol\" SymID=\"9\" Name=\"true\" Typ=\"Bool\" />"
+        "<Symbol ClID=\"Instruction\" SymID=\"10\" BILibName=\"CONVERT\" /><Symbol ClID=\"Instruction\" SymID=\"11\" BILibName=\"POKE\" />"
+        "<Symbol ClID=\"LinkedSymbol\" SymID=\"12\" RefId=\"777\" />"
+        "</Symbols><RootStatements Version=\"1.4\">"
+        "<LC TE=\"HEAD\"><NL UId=\"1\" /></LC>"
+        "<Statement SI=\"STAss\"><Expression SI=\"ExprDot\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"VarDB\" SyId=\"2\" /></Expression><Dot />"
+        "<SymVa SI=\"Var\" SyId=\"3\" /></Expression><BL /><OpAs /><BL />"
+        "<Expression SI=\"ExprInd\"><Expression SI=\"ExprDot\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"VarDB\" SyId=\"2\" /></Expression><Dot />"
+        "<SymVa SI=\"VarArray\" SyId=\"4\" /></Expression><BoxO /><Const TE=\"2\" /><Comma /><BL /><SymVa SI=\"Var\" SyId=\"5\" /><BoxC />"
+        "<SymVa SI=\"VarElem\" SyId=\"4\" /></Expression><FiSt /></Statement><NL />"
+        "<Statement SI=\"STSub\"><InstCa><Sub SI=\"Instruction\" SyId=\"6\" /><BracO /><Param SI=\"ParaIn\">"
+        "<SymPa ONr=\"0\" SyId=\"8\" Id=\"\" FormalName=\"go\" /><OpAs /><Const TE=\"true\" SyId=\"9\" /></Param><BracC /></InstCa><FiSt /></Statement><NL />"
+        "<Statement SI=\"STAss\"><SymVa SI=\"Var\" SyId=\"5\" /><BL /><OpAs /><BL /><FctCa>"
+        "<Sub SI=\"Instruction\" SyId=\"10\" Auto=\"True\" Template0=\"src_type Char\" Template1=\"dest_type Word\" /><BracO />"
+        "<SymVa SI=\"Var\" SyId=\"5\" /><BracC /></FctCa><FiSt /></Statement><NL />"
+        "<Statement SI=\"STSub\"><FctCa><Sub SI=\"Instruction\" SyId=\"11\" /><BracO /><BracC /></FctCa><FiSt /></Statement><NL />"
+        "<Statement SI=\"STAss\"><SymVa SI=\"Var\" SyId=\"12\" /><BL /><OpAs /><BL /><SymVa SI=\"Var\" SyId=\"555\" /><Whatsit /><FiSt /></Statement>"
+        "</RootStatements></SCLSource>";
+    CHECK(tia::sclText(old, ctx, lines, notes));
+    CHECK_EQ(joinLines(lines), "//HEAD\n"
+                               "\"Data\".Run := \"Data\".\"my buffer\"[2, #index];\n"
+                               "\"Motor_DB\"(go:=true);\n"
+                               "#index := CHAR_TO_WORD(#index);\n"
+                               "POKE();\n"
+                               "{?} := {?}{?Whatsit};\n");
+    CHECK(notes.size() == 2);  // a name that leads nowhere (said once), a token of unknown kind
+
+    // not SCL, not XML
+    lines.clear();
+    notes.clear();
+    CHECK(!tia::sclText("<FlgNet><Parts /></FlgNet>", ctx, lines, notes));
+    CHECK(!tia::sclText("<SCLSource><Symbols />", ctx, lines, notes));
+    CHECK(!tia::sclText("<SCLSource><Symbols /></SCLSource>", ctx, lines, notes));
+    CHECK(!tia::sclText("", ctx, lines, notes));
+    // without a reference table and without comments
+    tia::SclContext bare;
+    CHECK(tia::sclText("<SCLSource><Symbols><X SymID=\"1\" RefId=\"11\"/></Symbols><RootStatements><SymVa SyId=\"1\"/>"
+                       "<MLC DictId=\"1\"/></RootStatements></SCLSource>",
+                       bare, lines, notes));
+    CHECK_EQ(joinLines(lines), "{?}(/**/)\n");
+    CHECK(notes.size() == 2);
+    // statements nested deeper than anything real
+    std::string deep = "<SCLSource><RootStatements>";
+    for (int i = 0; i < 230; ++i) deep += "<Statement>";
+    deep += "<FiSt />";
+    for (int i = 0; i < 230; ++i) deep += "</Statement>";
+    deep += "</RootStatements></SCLSource>";
+    lines.clear();
+    notes.clear();
+    CHECK(tia::sclText(deep, bare, lines, notes));
+    CHECK(lines.empty() && notes.size() == 1);
+}
+
+void testStl() {
+    const std::vector<tia::CodeReference> refs = testReferences();
+    std::vector<std::string> lines, notes;
+    // as TIA Portal V21 stores two networks typed in by hand: a statement is
+    // an instruction and, for most, an operand; the blanks that were typed
+    // are stored and left out; an empty statement at the end
+    const char stored[] =
+        "\xef\xbb\xbf<Statements Version=\"14.0.0.0\">"
+        "<Statement UId=\"21\" TokenProperty=\"1\"><Token Kw=\"1\" DispName=\"A\" /><OpdAccess NumBLs=\"1\" RefId=\"30\" UId=\"23\" /></Statement>"
+        "<Statement UId=\"22\" TokenProperty=\"1\"><Token NumBLs=\"6\" Kw=\"2\" DispName=\"AN\" /><OpdAccess NumBLs=\"4\" RefId=\"11\" UId=\"24\" /></Statement>"
+        "<Statement UId=\"25\" TokenProperty=\"1\"><Token NumBLs=\"6\" Kw=\"9\" DispName=\"=\" /><OpdAccess NumBLs=\"5\" RefId=\"12\" UId=\"26\" /></Statement>"
+        "<Statement UId=\"27\" TokenProperty=\"1\" />"
+        "<Statement UId=\"28\" TokenProperty=\"1\"><Token Kw=\"16\" DispName=\"L\" /><OpdAccess NumBLs=\"1\" RefId=\"20\" UId=\"29\" /></Statement>"
+        "<Statement UId=\"30\" TokenProperty=\"1\"><Token Kw=\"210\" DispName=\"+I\" /></Statement>"
+        "<Statement UId=\"31\" TokenProperty=\"1\" /><Statement UId=\"32\" />"
+        "</Statements>";
+    CHECK(tia::stlText(stored, refs, lines, notes));
+    CHECK_EQ(joinLines(lines), "A     \"Start\"\n"
+                               "AN    \"Data\".Run\n"
+                               "=     \"Data\".\"my buffer\"[2, #index]\n"
+                               "\n"
+                               "L     2\n"
+                               "+I\n");
+    CHECK(notes.empty());
+    // an operand the table does not have, a piece of a kind not seen
+    lines.clear();
+    CHECK(tia::stlText("<Statements><Statement><Token DispName=\"L\" /><OpdAccess NumBLs=\"1\" RefId=\"999\" /></Statement>"
+                       "<Statement><Token DispName=\"T\" /><OpdAccess NumBLs=\"1\" RefId=\"x\" /></Statement>"
+                       "<Statement><Jump NumBLs=\"2\" /><Jump /><Note NumBLs=\"-3\" TE=\"// why\" /></Statement></Statements>",
+                       refs, lines, notes));
+    CHECK_EQ(joinLines(lines), "L     {?}\nT     {?}\n{?Jump} {?Jump} // why\n");
+    CHECK(notes.size() == 2);
+    lines.clear();
+    notes.clear();
+    CHECK(tia::stlText("<Statements />", refs, lines, notes) && lines.empty());
+    CHECK(!tia::stlText("<SCLSource />", refs, lines, notes));
+    CHECK(!tia::stlText("<Statements><Statement>", refs, lines, notes));
+}
+
+void testGraphicNetworks() {
+    const std::vector<tia::CodeReference> refs = testReferences();
+    std::vector<tia::NetworkElement> elements;
+    std::vector<std::string> lines, notes;
+    auto run = [&](const std::string& xml) {
+        elements.clear();
+        lines.clear();
+        notes.clear();
+        return tia::graphicNetwork(xml, refs, elements, lines, notes);
+    };
+    const std::string head = "\xef\xbb\xbf<FlgNet xmlns=\"http://www.siemens.com/automation/2015/FunctionLadderDiagram\" "
+                             "Version=\"14.0.0.2\" Lang=\"LAD_CLASSIC\" Routed=\"true\">";
+
+    // two contacts in series, the second negated, and a coil
+    CHECK(run(head + "<Parts><Part UId=\"21\" Gate=\"Contact\" /><Part UId=\"22\" Gate=\"Contact\"><Negated PinName=\"operand\" /></Part>"
+                     "<Part UId=\"23\" Gate=\"Coil\" /><ORef UId=\"31\" RefId=\"30\" /><ORef UId=\"32\" RefId=\"11\" /><ORef UId=\"33\" RefId=\"12\" /></Parts>"
+                     "<Wires><Wire UId=\"1\"><Powerrail /><PCon UId=\"21\" PinName=\"in\" /></Wire>"
+                     "<Wire UId=\"2\"><OCon UId=\"31\" /><PCon UId=\"21\" PinName=\"operand\" /></Wire>"
+                     "<Wire UId=\"3\"><PCon UId=\"21\" PinName=\"out\" /><PCon UId=\"22\" PinName=\"in\" /></Wire>"
+                     "<Wire UId=\"4\"><OCon UId=\"32\" /><PCon UId=\"22\" PinName=\"operand\" /></Wire>"
+                     "<Wire UId=\"5\"><PCon UId=\"22\" PinName=\"out\" /><PCon UId=\"23\" PinName=\"in\" /></Wire>"
+                     "<Wire UId=\"6\"><OCon UId=\"33\" /><PCon UId=\"23\" PinName=\"operand\" /></Wire></Wires></FlgNet>"));
+    CHECK_EQ(joinLines(lines), "1: \"Data\".\"my buffer\"[2, #index] := \"Start\" AND NOT \"Data\".Run\n");
+    CHECK(notes.empty() && elements.size() == 3);
+    if (elements.size() == 3) {
+        CHECK(elements[0].uid == 21 && elements[0].kind == "gate" && elements[0].name == "Contact");
+        CHECK(elements[0].pins.size() == 3);
+        if (elements[0].pins.size() == 3) {
+            CHECK(elements[0].pins[0].name == "in" && !elements[0].pins[0].output);
+            CHECK(elements[0].pins[0].connected == std::vector<std::string>{"power rail"});
+            CHECK(elements[0].pins[1].name == "operand" && elements[0].pins[1].connected == std::vector<std::string>{"\"Start\""});
+            CHECK(elements[0].pins[2].name == "out" && elements[0].pins[2].output);
+            CHECK(elements[0].pins[2].connected == std::vector<std::string>{"22.in"});
+        }
+        CHECK(elements[1].options.size() == 1 && elements[1].options[0].first == "negated" &&
+              elements[1].options[0].second == "operand");
+        CHECK(elements[2].name == "Coil");
+    }
+
+    // two branches joined, a comparison in front of them, set and reset coils one after the other
+    CHECK(run(head + "<Parts><Part UId=\"20\" Gate=\"Gt\"><TemplateValue Name=\"SrcType\" Type=\"Type\">Int</TemplateValue></Part>"
+                     "<Part UId=\"21\" Gate=\"Contact\" /><Part UId=\"22\" Gate=\"Contact\" />"
+                     "<Part UId=\"23\" Gate=\"O\"><TemplateValue Name=\"Card\" Type=\"Cardinality\">2</TemplateValue></Part>"
+                     "<Part UId=\"24\" Gate=\"SCoil\" /><Part UId=\"25\" Gate=\"RCoil\" /><Part UId=\"26\" Gate=\"PCoil\" />"
+                     "<ORef UId=\"30\" RefId=\"21\" /><ORef UId=\"31\" RefId=\"20\" /><ORef UId=\"32\" RefId=\"30\" /><ORef UId=\"33\" RefId=\"11\" />"
+                     "<ORef UId=\"34\" RefId=\"11\" /><ORef UId=\"35\" RefId=\"30\" /><ORef UId=\"36\" RefId=\"30\" /></Parts>"
+                     "<Wires><Wire><Powerrail /><PCon UId=\"20\" PinName=\"pre\" /></Wire>"
+                     "<Wire><OCon UId=\"30\" /><PCon UId=\"20\" PinName=\"in1\" /></Wire><Wire><OCon UId=\"31\" /><PCon UId=\"20\" PinName=\"in2\" /></Wire>"
+                     "<Wire><PCon UId=\"20\" PinName=\"out\" /><PCon UId=\"21\" PinName=\"in\" /><PCon UId=\"22\" PinName=\"in\" /></Wire>"
+                     "<Wire><OCon UId=\"32\" /><PCon UId=\"21\" PinName=\"operand\" /></Wire><Wire><OCon UId=\"33\" /><PCon UId=\"22\" PinName=\"operand\" /></Wire>"
+                     "<Wire><PCon UId=\"21\" PinName=\"out\" /><PCon UId=\"23\" PinName=\"in1\" /></Wire>"
+                     "<Wire><PCon UId=\"22\" PinName=\"out\" /><PCon UId=\"23\" PinName=\"in2\" /></Wire>"
+                     "<Wire><PCon UId=\"23\" PinName=\"out\" /><PCon UId=\"24\" PinName=\"in\" /></Wire>"
+                     "<Wire><OCon UId=\"34\" /><PCon UId=\"24\" PinName=\"operand\" /></Wire>"
+                     "<Wire><PCon UId=\"24\" PinName=\"out\" /><PCon UId=\"25\" PinName=\"in\" /></Wire>"
+                     "<Wire><OCon UId=\"35\" /><PCon UId=\"25\" PinName=\"operand\" /></Wire>"
+                     "<Wire><PCon UId=\"25\" PinName=\"out\" /><PCon UId=\"26\" PinName=\"in\" /></Wire>"
+                     "<Wire><OCon UId=\"36\" /><PCon UId=\"26\" PinName=\"operand\" /></Wire></Wires></FlgNet>"));
+    CHECK_EQ(joinLines(lines),
+             "1: S(\"Data\".Run) := #index > 2 AND \"Start\" OR #index > 2 AND \"Data\".Run\n"
+             "2: R(\"Start\") := #index > 2 AND \"Start\" OR #index > 2 AND \"Data\".Run\n"
+             "3: PCoil(\"Start\") := #index > 2 AND \"Start\" OR #index > 2 AND \"Data\".Run\n");
+    CHECK(notes.empty());
+
+    // a coil on the power rail, and boxes: with a data type, enabled by logic,
+    // one enabled by the one before it; an input that was left empty
+    CHECK(run(head + "<Parts><Part UId=\"20\" Gate=\"Coil\" /><Part UId=\"21\" Gate=\"Contact\" />"
+                     "<Part UId=\"22\" Gate=\"Add\"><TemplateValue Name=\"Card\" Type=\"Cardinality\">2</TemplateValue>"
+                     "<TemplateValue Name=\"SrcType\" Type=\"Type\">Int</TemplateValue></Part>"
+                     "<Part UId=\"23\" Gate=\"Move\" DisableENO=\"true\" /><Part UId=\"24\" Gate=\"Coil\"><Negated Name=\"operand\" /></Part>"
+                     "<ORef UId=\"30\" RefId=\"11\" /><ORef UId=\"31\" RefId=\"30\" /><ORef UId=\"32\" RefId=\"21\" /><ORef UId=\"33\" RefId=\"20\" />"
+                     "<ORef UId=\"34\" RefId=\"21\" /><ORef UId=\"35\" /><ORef UId=\"36\" RefId=\"21\" /><ORef UId=\"37\" RefId=\"11\" /></Parts>"
+                     "<Wires><Wire><Powerrail /><PCon UId=\"20\" PinName=\"in\" /><PCon UId=\"21\" PinName=\"in\" /></Wire>"
+                     "<Wire><OCon UId=\"30\" /><PCon UId=\"20\" PinName=\"operand\" /></Wire>"
+                     "<Wire><OCon UId=\"31\" /><PCon UId=\"21\" PinName=\"operand\" /></Wire>"
+                     "<Wire><PCon UId=\"21\" PinName=\"out\" /><PCon UId=\"22\" PinName=\"en\" /></Wire>"
+                     "<Wire><OCon UId=\"32\" /><PCon UId=\"22\" PinName=\"in1\" /></Wire><Wire><OCon UId=\"33\" /><PCon UId=\"22\" PinName=\"in2\" /></Wire>"
+                     "<Wire><PCon UId=\"22\" PinName=\"out\" /><OCon UId=\"34\" /></Wire>"
+                     "<Wire><PCon UId=\"22\" PinName=\"eno\" /><PCon UId=\"23\" PinName=\"en\" /></Wire>"
+                     "<Wire><OCon UId=\"35\" /><PCon UId=\"23\" PinName=\"in\" /></Wire>"
+                     "<Wire><PCon UId=\"23\" PinName=\"out1\" /><OCon UId=\"36\" /></Wire>"
+                     "<Wire><PCon UId=\"23\" PinName=\"eno\" /><PCon UId=\"24\" PinName=\"in\" /></Wire>"
+                     "<Wire><OCon UId=\"37\" /><PCon UId=\"24\" PinName=\"operand\" /></Wire></Wires></FlgNet>"));
+    CHECK_EQ(joinLines(lines), "1: \"Data\".Run := TRUE\n"
+                               "2: Add[Int](en := \"Start\", in1 := #index, in2 := 2, out => #index)\n"
+                               "3: Move(en := [2].eno, out1 => #index)\n"
+                               "4: \"Data\".Run := NOT [3].eno\n");
+    CHECK(elements.size() == 5);
+    if (elements.size() == 5) {
+        CHECK(elements[3].name == "Move" && elements[3].options.size() == 1 && elements[3].options[0].first == "DisableENO");
+        CHECK(elements[2].options.size() == 2 && elements[2].options[1].second == "Int");
+    }
+
+    // FBD: an AND box with a negated input feeds an assignment; a call of a
+    // block with its instance and a timer; the power rail does not exist there
+    CHECK(run("<FlgNet Lang=\"FBD_CLASSIC\"><Parts><Part UId=\"20\" Gate=\"A\"><Negated Name=\"in2\" /></Part><Part UId=\"21\" Gate=\"Coil\" />"
+              "<CRef UId=\"22\" RefId=\"42\"><CodeBlock UId=\"23\" RefId=\"40\" /><Instance UId=\"24\" RefId=\"41\" /></CRef>"
+              "<LRef UId=\"25\" RefId=\"43\" EN=\"false\" ENO=\"false\"><Instance UId=\"26\" RefId=\"44\" /></LRef>"
+              "<Part UId=\"27\" Gate=\"Not\" /><Part UId=\"28\" Gate=\"X\" /><Part UId=\"29\" Gate=\"Coil\" />"
+              "<ORef UId=\"30\" RefId=\"30\" /><ORef UId=\"31\" RefId=\"11\" /><ORef UId=\"32\" RefId=\"11\" /><ORef UId=\"33\" />"
+              "<ORef UId=\"34\" RefId=\"22\" /><ORef UId=\"35\" RefId=\"30\" /><ORef UId=\"36\" RefId=\"12\" /><ORef UId=\"37\" RefId=\"11\" /></Parts>"
+              "<Wires><Wire><OCon UId=\"30\" /><PCon UId=\"20\" PinName=\"in1\" /></Wire><Wire><OCon UId=\"31\" /><PCon UId=\"20\" PinName=\"in2\" /></Wire>"
+              "<Wire><PCon UId=\"20\" PinName=\"out\" /><PCon UId=\"21\" PinName=\"in\" /><PCon UId=\"22\" PinName=\"go\" /></Wire>"
+              "<Wire><OCon UId=\"32\" /><PCon UId=\"21\" PinName=\"operand\" /></Wire>"
+              "<Wire><OCon UId=\"33\" /><PCon UId=\"22\" PinName=\"en\" /></Wire>"
+              "<Wire><PCon UId=\"22\" PinName=\"done\" /><PCon UId=\"25\" PinName=\"IN\" /></Wire>"
+              "<Wire><OCon UId=\"34\" /><PCon UId=\"25\" PinName=\"PT\" /></Wire>"
+              "<Wire><PCon UId=\"25\" PinName=\"Q\" /><PCon UId=\"27\" PinName=\"in\" /></Wire>"
+              "<Wire><PCon UId=\"25\" PinName=\"ET\" /><OCon UId=\"36\" /></Wire>"
+              "<Wire><PCon UId=\"27\" PinName=\"out\" /><PCon UId=\"28\" PinName=\"in1\" /></Wire>"
+              "<Wire><OCon UId=\"35\" /><PCon UId=\"28\" PinName=\"in2\" /></Wire>"
+              "<Wire><PCon UId=\"28\" PinName=\"out\" /><PCon UId=\"29\" PinName=\"in\" /></Wire>"
+              "<Wire><OCon UId=\"37\" /><PCon UId=\"29\" PinName=\"operand\" /></Wire></Wires></FlgNet>"));
+    CHECK_EQ(joinLines(lines), "1: \"Data\".Run := \"Start\" AND NOT \"Data\".Run\n"
+                               "2: \"Motor\", \"Motor_DB\"(go := \"Start\" AND NOT \"Data\".Run)\n"
+                               "3: TON, #statTimer(IN := [2].done, PT := T#5s, ET => \"Data\".\"my buffer\"[2, #index])\n"
+                               "4: \"Data\".Run := NOT [3].Q XOR \"Start\"\n");
+    CHECK(elements.size() == 7);
+    if (elements.size() == 7) {
+        CHECK(elements[2].kind == "call" && elements[2].name == "\"Motor\"" && elements[2].instance == "\"Motor_DB\"");
+        CHECK(elements[3].kind == "instruction" && elements[3].name == "TON" && elements[3].instance == "#statTimer");
+        CHECK(elements[3].options.size() == 2 && elements[3].options[0].first == "EN");
+    }
+
+    // a statement too long for a line goes one pin per line
+    {
+        std::string parts = "<CRef UId=\"22\" RefId=\"42\"><CodeBlock UId=\"23\" RefId=\"40\" /><Instance UId=\"24\" RefId=\"41\" /></CRef>";
+        std::string wires = "<Wire><Powerrail /><PCon UId=\"22\" PinName=\"en\" /></Wire>";
+        for (int i = 0; i < 6; ++i) {
+            const std::string uid = std::to_string(100 + i);
+            parts += "<ORef UId=\"" + uid + "\" RefId=\"12\" />";
+            wires += "<Wire><OCon UId=\"" + uid + "\" /><PCon UId=\"22\" PinName=\"p" + std::to_string(i) + "\" /></Wire>";
+        }
+        CHECK(run(head + "<Parts>" + parts + "</Parts><Wires>" + wires + "</Wires></FlgNet>"));
+        CHECK(lines.size() == 7);
+        if (lines.size() == 7) {
+            CHECK_EQ(lines[0], "1: \"Motor\", \"Motor_DB\"(");
+            CHECK_EQ(lines[1], "       p0 := \"Data\".\"my buffer\"[2, #index],");
+            CHECK_EQ(lines[6], "       p5 := \"Data\".\"my buffer\"[2, #index])");
+        }
+    }
+
+    // a contact that leads nowhere, an operand the table does not have, a
+    // part of a kind not known, wires that run in a circle
+    CHECK(run(head + "<Parts><Part UId=\"21\" Gate=\"Contact\" /><ORef UId=\"31\" RefId=\"999\" /><Strange UId=\"22\" Mode=\"7\" /></Parts>"
+                     "<Wires><Wire><Powerrail /><PCon UId=\"21\" PinName=\"in\" /></Wire>"
+                     "<Wire><OCon UId=\"31\" /><PCon UId=\"21\" PinName=\"operand\" /></Wire>"
+                     "<Wire><PCon UId=\"21\" PinName=\"out\" /><Openbranch /></Wire></Wires></FlgNet>"));
+    CHECK_EQ(joinLines(lines), "1: Strange()\nopen: {?999}\n");
+    CHECK(notes.size() == 1 && elements.size() == 2);
+    CHECK(run(head + "<Parts><Part UId=\"21\" Gate=\"Contact\" /><Part UId=\"22\" Gate=\"Contact\" /><Part UId=\"23\" Gate=\"Coil\" /></Parts>"
+                     "<Wires><Wire><PCon UId=\"21\" PinName=\"out\" /><PCon UId=\"22\" PinName=\"in\" /><PCon UId=\"23\" PinName=\"in\" /></Wire>"
+                     "<Wire><PCon UId=\"22\" PinName=\"out\" /><PCon UId=\"21\" PinName=\"in\" /></Wire></Wires></FlgNet>"));
+    CHECK(lines.size() == 1 && lines[0].size() < 3000 && notes.size() == 1);
+
+    // an empty network, and what is no network at all
+    CHECK(run("<FlgNet Version=\"12.0.0.0\" Lang=\"LAD_CLASSIC\"><Labels /><Parts /><Wires><Wire UId=\"21\"><Powerrail /><Openbranch />"
+              "<ViewInfo Start=\"true\" /></Wire></Wires></FlgNet>"));
+    CHECK(lines.empty() && elements.empty() && notes.empty());
+    CHECK(run("<FlgNet />") && lines.empty());
+    CHECK(!run("<SCLSource />"));
+    CHECK(!run("<FlgNet><Parts>"));
+    CHECK(!run("not xml"));
+}
+
+
+// A project with code blocks: the type model, and the objects of a block
+// with its networks, their comments and its reference table.
+const char kCodeMeta[] =
+    "<MetaInfo><Package name=\"P\" id=\"0x1\"><Namespace name=\"M\">"
+    "<AttributeSet name=\"ICoreAttributes\" id=\"0x3001\" persistent=\"true\">"
+    "<Attribute name=\"Name\" id=\"0\" type=\"xs:string\"/><Attribute name=\"Comment\" id=\"1\" type=\"pe:CoreTextAttributeT\"/>"
+    "<Attribute name=\"Protection\" id=\"2\" type=\"xs:string\"/><Attribute name=\"Subtype\" id=\"3\" type=\"xs:string\"/></AttributeSet>"
+    "<AttributeSet name=\"IGeneralBlockSourceData\" id=\"0x3002\" persistent=\"true\">"
+    "<Attribute name=\"Number\" id=\"0\" type=\"xs:int\"/><Attribute name=\"BlockLanguage\" id=\"1\" type=\"xs:string\"/></AttributeSet>"
+    "<AttributeSet name=\"ICompileUnitData\" id=\"0x3003\" persistent=\"true\">"
+    "<Attribute name=\"Data\" id=\"0\" type=\"pe:BlobT\"/><Attribute name=\"ProgrammingLanguage\" id=\"1\" type=\"xs:string\"/>"
+    "<Attribute name=\"RefID\" id=\"2\" type=\"xs:int\"/></AttributeSet>"
+    "<AttributeSet name=\"IIdentPartData\" id=\"0x3004\" persistent=\"true\">"
+    "<Attribute name=\"PayLoad\" id=\"0\" type=\"pe:BlobT\"/></AttributeSet>"
+    "<AttributeSet name=\"ICoreTextRepository\" id=\"0x3005\" persistent=\"true\">"
+    "<Attribute name=\"Text\" id=\"0\" type=\"pe:CoreTextAttributeT\"/></AttributeSet>"
+    "<AttributeSet name=\"IIdentContainerData\" id=\"0x3006\" persistent=\"true\">"
+    "<Attribute name=\"FilcMetaPayload\" id=\"0\" type=\"pe:BlobT\"/></AttributeSet>"
+    "<ObjectType name=\"CoreObject\" id=\"0x1000\"><Implements ref=\"ICoreAttributes\"/>"
+    "<Relation name=\"Target\" id=\"0x2101\" cardinality=\"1\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "<Relation name=\"Environment\" id=\"0x2102\" cardinality=\"1\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "</ObjectType>"
+    "<ObjectType name=\"ProjectData\" id=\"0x1001\"><Base ref=\"M.CoreObject\" primary=\"true\"/></ObjectType>"
+    "<ObjectType name=\"PlcData\" id=\"0x1002\"><Base ref=\"M.CoreObject\" primary=\"true\"/></ObjectType>"
+    "<ObjectType name=\"CodeBlockData\" id=\"0x1003\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Implements ref=\"IGeneralBlockSourceData\"/>"
+    "<Relation name=\"Sources\" id=\"0x2103\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "<Relation name=\"CoreObject2IdentContainer\" id=\"0x2104\" cardinality=\"1\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "</ObjectType>"
+    "<ObjectType name=\"CompileUnitData\" id=\"0x1004\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Implements ref=\"ICompileUnitData\"/>"
+    "<Relation name=\"ElementComments\" id=\"0x2105\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "<Relation name=\"CompileUnitComment\" id=\"0x2106\" cardinality=\"1\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "</ObjectType>"
+    "<ObjectType name=\"IdentContainerData\" id=\"0x1005\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Implements ref=\"IIdentContainerData\"/>"
+    "<Relation name=\"IdentParts\" id=\"0x2107\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "<Relation name=\"SimpleAccessDataToTagData\" id=\"0x2108\" cardinality=\"*\" behaviourType=\"x.ref\"><Target ref=\"M.CoreObject\"/></Relation>"
+    "</ObjectType>"
+    "<ObjectType name=\"TagTableContentData\" id=\"0x1008\"><Base ref=\"M.CoreObject\" primary=\"true\"/></ObjectType>"
+    "<ObjectType name=\"DataBlockData\" id=\"0x1009\"><Base ref=\"M.CoreObject\" primary=\"true\"/></ObjectType>"
+    "<ObjectType name=\"IdentPartData\" id=\"0x1006\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Implements ref=\"IIdentPartData\"/></ObjectType>"
+    "<ObjectType name=\"CoreText\" id=\"0x1007\"><Base ref=\"M.CoreObject\" primary=\"true\"/>"
+    "<Implements ref=\"ICoreTextRepository\"/></ObjectType>"
+    "</Namespace></Package></MetaInfo>";
+
+enum : uint32_t { CProject = 0x1001, CPlc, CBlock, CUnit, CContainer, CPart, CText, CTag, CDb };
+enum : uint32_t { CTarget = 0x2101, CEnvironment, CSources, CToContainer, CElementComments, CUnitComment, CIdentParts, CToTags };
+
+Bytes codeFileStart() {
+    Bytes f(98, 0);
+    f[0] = 0x40;
+    f[4] = 1;
+    auto hh = tia::sha256(f.data(), 65);
+    std::memcpy(f.data() + 65, hh.data(), 32);
+    f[97] = 0xff;
+    size_t from = f.size();
+    append(f, block(0x70000, 1, 0, 0, systemBody(deflated(kCodeMeta))));
+    appendHash(f, from);
+    return f;
+}
+
+void addBlock(Bytes& f, const Bytes& blk) {
+    size_t from = f.size();
+    append(f, blk);
+    appendHash(f, from);
+}
+
+Bytes codeBlockObject(uint64_t id, const std::string& name, const std::string& subtype, uint32_t number,
+                      const std::string& language, const std::string& protection, const std::vector<Rel>& many) {
+    return object(CBlock, id, {segment({fs(name), fnone(), fs(protection), fs(subtype)}), segment({fi(number), fs(language)})},
+                  {{CEnvironment, CProject, 1}, {CTarget, CPlc, 2}}, many);
+}
+
+Bytes unitObject(uint64_t id, const std::string& title, const std::string& protection, const std::string& data,
+                 const std::string& language, uint32_t refId, const std::vector<Rel>& single, const std::vector<Rel>& many) {
+    // attribute sets come in the order of their names
+    return object(CUnit, id,
+                  {segment({data.empty() ? fnone() : fb(blobPlain(data)), fs(language), fi(refId)}),
+                   segment({fs(""), title.empty() ? fnone() : ft({{0x0409, title}}), fs(protection), fs("Visible")})},
+                  single, many);
+}
+
+const char kLadNetwork[] =
+    "\xef\xbb\xbf<FlgNet Lang=\"LAD_CLASSIC\"><Parts><Part UId=\"21\" Gate=\"Contact\" /><Part UId=\"23\" Gate=\"Coil\" />"
+    "<ORef UId=\"31\" RefId=\"30\" /><ORef UId=\"33\" RefId=\"11\" /></Parts>"
+    "<Wires><Wire UId=\"1\"><Powerrail /><PCon UId=\"21\" PinName=\"in\" /></Wire>"
+    "<Wire UId=\"2\"><OCon UId=\"31\" /><PCon UId=\"21\" PinName=\"operand\" /></Wire>"
+    "<Wire UId=\"5\"><PCon UId=\"21\" PinName=\"out\" /><PCon UId=\"23\" PinName=\"in\" /></Wire>"
+    "<Wire UId=\"6\"><OCon UId=\"33\" /><PCon UId=\"23\" PinName=\"operand\" /></Wire></Wires></FlgNet>";
+const char kSclNetwork[] =
+    "\xef\xbb\xbf<SCLSource Version=\"3.4.0.0\"><Symbols><GlobalTag SymID=\"1\" RefId=\"30\" /></Symbols><RootStatements><MLC DictId=\"2\" /><NL />"
+    "<Statement SI=\"STAss\"><SymVa SyId=\"1\" ODN=\"&quot;Start&quot;\" /><BL /><OpAs /><BL /><Const TE=\"TRUE\" /><FiSt /></Statement>"
+    "</RootStatements></SCLSource>";
+
+// `linked`: the reference table links its entries to the tag and the data
+// block, which have been renamed since the table was written.
+Bytes codeProject(bool linked = false) {
+    Bytes f = codeFileStart();
+    auto name = [](const std::string& n) { return segment({fs(n), fnone(), fs(""), fs("")}); };
+    addBlock(f, object(CProject, 1, {name("Demo")}, {}, {}));
+    addBlock(f, object(CPlc, 2, {name("PLC_1")}, {{CEnvironment, CProject, 1}}, {}));
+    // FB5: a ladder network with title and comment, an SCL network, an empty
+    // one, one in a language that is not read, one that is protected by itself
+    addBlock(f, codeBlockObject(10, "Pump", "FB", 5, "LAD_CLASSIC", "NoProtection",
+                                {{CSources, CUnit, 20}, {CSources, 0, 0}, {CSources, CUnit, 21}, {CSources, CUnit, 22},
+                                 {CSources, CUnit, 23}, {CSources, CUnit, 24}, {CToContainer, CContainer, 30}}));
+    addBlock(f, unitObject(20, "Start the pump", "NoProtection", kLadNetwork, "LAD_CLASSIC", 9, {{CUnitComment, CText, 40}}, {}));
+    addBlock(f, unitObject(21, "", "NoProtection", kSclNetwork, "SCL", 7, {},
+                           {{CElementComments, CText, 41}, {CElementComments, 0, 0}, {CElementComments, CText, 42}}));
+    addBlock(f, unitObject(22, "", "NoProtection", "", "LAD_CLASSIC", 3, {}, {}));
+    addBlock(f, unitObject(23, "", "NoProtection", "<Graph7><Step/></Graph7>", "GRAPH", 4, {}, {}));
+    addBlock(f, unitObject(24, "", "KnowHowProtection", kLadNetwork, "LAD_CLASSIC", 5, {}, {}));
+    addBlock(f, object(CText, 40, {name(""), segment({ft({{0x0409, "runs when asked"}, {0xffff, ""}})})}, {}, {}));
+    addBlock(f, object(CText, 41, {name(""), segment({ft({{0x0409, "one"}})})}, {}, {}));
+    addBlock(f, object(CText, 42, {name(""), segment({ft({{0x0409, "the second, at place three"}})})}, {}, {}));
+    // the reference table in two parts; the list of parts has a gap
+    const char links[] =
+        "<FILCMetaInfo xmlns=\"http://schemas.siemens.com/Simatic/ES/14/IdentManager/ICFilcMetaPayload.xsd\">"
+        "<FILC RelId=\"2\"><Idx Value=\"1\"><Id RefId=\"30\" Type=\"17\" /></Idx><Idx Value=\"0\"><Id RefId=\"40\" Type=\"17\" /></Idx></FILC>"
+        "<FILC RelId=\"3\"><Idx Value=\"1\"><Id RefId=\"10\" Type=\"9\" /></Idx><Idx Value=\"5\"><Id RefId=\"41\" Type=\"8\" /></Idx></FILC>"
+        "<FILC RelId=\"4\"><Idx Value=\"0\"><Id RefId=\"43\" Type=\"4\" /></Idx></FILC></FILCMetaInfo>";
+    std::vector<Rel> tableLists = {{CIdentParts, CPart, 31}, {CIdentParts, 0, 0}, {CIdentParts, CPart, 32}, {CIdentParts, CPart, 33}};
+    if (linked) {
+        // the tags in a keyed list with an empty place; the data blocks in a
+        // list without relation ids
+        tableLists.push_back({CToTags, 0, 0});
+        tableLists.push_back({CToTags, CTag, 60});
+        addBlock(f, object(CTag, 60, {name("Begin")}, {}, {}));
+        addBlock(f, object(CDb, 61, {name("Values")}, {}, {}));
+    }
+    Bytes container = object(CContainer, 30, {name(""), segment({linked ? fb(blobPlain(links)) : fnone()})}, {}, tableLists);
+    if (linked) {
+        // a list without relation ids after the keyed ones: 0x7FFFFFFF, count, {type, id}
+        Bytes typed;
+        put32(typed, 0);
+        put32(typed, 0x7fffffffu);
+        put32(typed, 2);
+        put32(typed, 0);
+        put64(typed, 0);
+        put32(typed, CDb);
+        put64(typed, 61);
+        set32(typed, 0, static_cast<uint32_t>(typed.size()));
+        container = typedListObject(CContainer, 30, {name(""), segment({fb(blobPlain(links))})}, tableLists, typed);
+    }
+    addBlock(f, container);
+    const std::string all = kReferences;
+    const size_t cut = all.find("<LiteralConstant>");
+    const std::string open = all.substr(0, all.find("<DepDBBlock>"));
+    addBlock(f, object(CPart, 31, {name(""), segment({fb(blobPlain("\xef\xbb\xbf" + all.substr(0, cut) + "</IdentXmlPart>"))})}, {}, {}));
+    addBlock(f, object(CPart, 32, {name(""), segment({fb(blobPaged(open + all.substr(cut), 256, true))})}, {}, {}));
+    addBlock(f, object(CPart, 33, {name(""), segment({fb(blobPlain("<IdentXmlPart><GlobalAccess>"))})}, {}, {}));
+    // FC2 is know-how protected, OB1 has no networks, FB1100 comes from a Siemens library
+    addBlock(f, codeBlockObject(11, "Recipe", "FC", 2, "SCL", "KnowHowProtection", {{CSources, CUnit, 25}}));
+    addBlock(f, unitObject(25, "secret", "NoProtection", kSclNetwork, "SCL", 1, {}, {}));
+    addBlock(f, codeBlockObject(12, "Main", "OB.ProgramCycle", 1, "LAD_CLASSIC", "NoProtection", {}));
+    addBlock(f, codeBlockObject(13, "TON_X", "FB", 1100, "SCL", "SystemKnowHowProtection", {{CSources, CUnit, 25}}));
+    return f;
+}
+
+void testCodeProject() {
+    Bytes file = codeProject();
+    tia::Project p(tia::Container::parse(file, {}));
+    tia::ProgramData prog = tia::buildProgramData(p);
+    CHECK(prog.blockList.size() == 4);
+    const std::set<uint64_t> locked = tia::protectedBlockIds(prog);
+    CHECK(locked == (std::set<uint64_t>{11, 13}));
+
+    tia::CodeData code = tia::buildCode(p, prog);
+    CHECK(code.blocks.size() == 4);
+    CHECK(code.stats.blocks == 4 && code.stats.protectedBlocks == 2 && code.stats.networks == 5 &&
+          code.stats.unreadNetworks == 2 && code.stats.references == 16);
+    const tia::BlockCode* pump = nullptr;
+    const tia::BlockCode* recipe = nullptr;
+    const tia::BlockCode* mainOb = nullptr;
+    const tia::BlockCode* library = nullptr;
+    for (const auto& b : code.blocks) {
+        if (b.name == "Pump") pump = &b;
+        if (b.name == "Recipe") recipe = &b;
+        if (b.name == "Main") mainOb = &b;
+        if (b.name == "TON_X") library = &b;
+    }
+    CHECK(pump && recipe && mainOb && library);
+    if (!pump || !recipe || !mainOb || !library) return;
+
+    CHECK(pump->plc == "PLC_1" && pump->type == "FB" && pump->hasNumber && pump->number == 5 && pump->language == "LAD");
+    CHECK(!pump->isProtected && pump->networks.size() == 5 && pump->references.size() == 16);
+    CHECK(pump->notes.size() == 1);  // the part of the reference table that is not readable
+    if (pump->networks.size() == 5) {
+        const tia::Network& lad = pump->networks[0];
+        CHECK(lad.id == 20 && lad.number == 1 && lad.networkId == 9 && lad.title == "Start the pump");
+        CHECK(lad.comment == "runs when asked" && lad.language == "LAD" && lad.content == "graphic");
+        CHECK_EQ(joinLines(lad.lines), "1: \"Data\".Run := \"Start\"\n");
+        CHECK(lad.elements.size() == 2 && lad.notes.empty());
+        // the empty place in the list of networks is no network
+        const tia::Network& scl = pump->networks[1];
+        CHECK(scl.id == 21 && scl.number == 2 && scl.networkId == 7 && scl.language == "SCL" && scl.content == "scl");
+        // the second comment is the one at the third place of the list
+        CHECK_EQ(joinLines(scl.lines), "(/**/)\n\"Start\" := TRUE;\n");
+        CHECK(pump->networks[2].content == "empty" && pump->networks[2].lines.empty() && pump->networks[2].number == 3);
+        CHECK(pump->networks[3].content == "unread" && pump->networks[3].notes.size() == 1 &&
+              pump->networks[3].notes[0] == "content of the form 'Graph7' is not read");
+        CHECK(pump->networks[4].content == "unread" && pump->networks[4].lines.empty() && pump->networks[4].elements.empty() &&
+              pump->networks[4].notes.size() == 1 && pump->networks[4].notes[0] == "protected, not read");
+    }
+    // where the block uses what: network 9 of the project is the first, 7 the second
+    if (const tia::CodeReference* r = refById(pump->references, 11))
+        CHECK(r->uses.size() == 1 && r->uses[0].network == 2 && r->text == "\"Data\".Run");
+    if (const tia::CodeReference* r = refById(pump->references, 30)) CHECK(r->uses.size() == 1 && r->uses[0].network == 1);
+
+    // protected blocks: named, nothing of their code
+    CHECK(recipe->isProtected && !recipe->protectedLater && recipe->protection == "know-how");
+    CHECK(recipe->networks.empty() && recipe->references.empty() && recipe->notes.empty());
+    CHECK(library->isProtected && library->protection == "system" && library->networks.empty());
+    CHECK(!mainOb->isProtected && mainOb->networks.empty() && mainOb->type == "OB");
+
+    // The outputs. Nothing of the protected block's network may appear.
+    tia::Inventory inv = tia::buildInventory(p);
+    tia::ReportContext ctx;
+    ctx.code = &code;
+    std::ostringstream text, json, csv;
+    tia::writeText(text, inv, prog, ctx);
+    tia::writeJson(json, inv, prog, ctx);
+    tia::writeCrossReferenceCsv(csv, code);
+    const std::string t = text.str(), j = json.str(), c = csv.str();
+    CHECK(t.find("Block code:\n  PLC_1 / Main [OB1]  LAD, 0 networks\n") != std::string::npos);
+    CHECK(t.find("  PLC_1 / Pump [FB5]  LAD, 5 networks\n"
+                 "    (a part of the reference table is not readable)\n"
+                 "    Network 1: Start the pump\n"
+                 "      // runs when asked\n"
+                 "      1: \"Data\".Run := \"Start\"\n"
+                 "    Network 2  (SCL)\n"
+                 "      (/**/)\n"
+                 "      \"Start\" := TRUE;\n"
+                 "    Network 3  (empty)\n"
+                 "    Network 4  (GRAPH)\n"
+                 "      (content of the form 'Graph7' is not read)\n"
+                 "    Network 5\n"
+                 "      (protected, not read)\n") != std::string::npos);
+    CHECK(t.find("  PLC_1 / Recipe [FC2]  SCL: know-how protected, not read\n") != std::string::npos);
+    CHECK(t.find("  PLC_1 / TON_X [FB1100]  SCL: system protected, not read\n") != std::string::npos);
+    CHECK(t.find("\nCalls:\n  PLC_1 / Pump [FB5] calls \"Motor\" (network 1)\n") != std::string::npos);
+    CHECK(t.find("secret") == std::string::npos && j.find("secret") == std::string::npos);
+    CHECK(j.find("\"code\": [") != std::string::npos);
+    CHECK(j.find("{\"plc\": \"PLC_1\", \"type\": \"FC\", \"number\": 2, \"name\": \"Recipe\", \"language\": \"SCL\", \"protected\": true, "
+                 "\"protection\": \"know-how\", \"protected_later\": false, \"notes\": [], \"networks\": [], \"references\": []}") !=
+          std::string::npos);
+    CHECK(j.find("{\"number\": 1, \"network_id\": 9, \"title\": \"Start the pump\", \"comment\": \"runs when asked\", \"language\": \"LAD\", "
+                 "\"language_stored\": \"LAD_CLASSIC\", \"content\": \"graphic\", \"notes\": [], \"lines\": [\"1: \\\"Data\\\".Run := \\\"Start\\\"\"], "
+                 "\"elements\": [{\"uid\": 21, \"kind\": \"gate\", \"name\": \"Contact\", \"instance\": null, \"options\": [], \"pins\": ["
+                 "{\"name\": \"in\", \"direction\": \"in\", \"connected\": [\"power rail\"]}") != std::string::npos);
+    CHECK(j.find("{\"kind\": \"tag\", \"kind_stored\": \"SimpleAccess\", \"text\": \"\\\"Start\\\"\", \"data_type\": \"Bool\", \"data_block\": null, "
+                 "\"uses\": [{\"network\": 1, \"access\": \"read/write\", \"access_stored\": \"RW\", \"uid\": 42, \"hidden\": false}]}") !=
+          std::string::npos);
+    // the entries TIA Portal keeps for itself are not listed
+    CHECK(j.find("call interface") == std::string::npos && c.find("call interface") == std::string::npos);
+    CHECK(c.find("plc,block,block_name,network,network_title,access,kind,item,data_type,data_block\r\n") == 0);
+    CHECK(c.find("PLC_1,FB5,Pump,1,Start the pump,read/write,tag,\"\"\"Start\"\"\",Bool,\r\n") != std::string::npos);
+    CHECK(c.find("PLC_1,FB5,Pump,2,,write,data block member,\"\"\"Data\"\".\"\"my buffer\"\"[2, #index]\",Byte,Data\r\n") != std::string::npos);
+    CHECK(c.find("PLC_1,FB5,Pump,1,Start the pump,call,block,\"\"\"Motor\"\"\",Motor,\r\n") != std::string::npos);
+    CHECK(c.find("PLC_1,FB5,Pump,,,array limit,local,#index,Int,\r\n") != std::string::npos);
+    CHECK(c.find("PLC_1,FC2,Recipe,,,,not read,know-how protected,,\r\n") != std::string::npos);
+    CHECK(c.find(",constant,") == std::string::npos);  // plain numbers are not listed
+    // the use TIA Portal hides is not a row: "my buffer" in network 1
+    CHECK(c.find("PLC_1,FB5,Pump,1,Start the pump,read/write,data block member") == std::string::npos);
+
+    // without --code the report says nothing about code
+    tia::ReportContext plain;
+    std::ostringstream text2, json2;
+    tia::writeText(text2, inv, prog, plain);
+    tia::writeJson(json2, inv, prog, plain);
+    CHECK(text2.str().find("Block code") == std::string::npos && json2.str().find("\"code\"") == std::string::npos);
+}
+
+// The names the reference table stores are older than the objects': a tag
+// and a data block were renamed. The links of the table give the current ones.
+void testCodeCurrentNames() {
+    const std::vector<tia::ReferenceLink> links = tia::parseReferenceLinks(
+        "<FILCMetaInfo><FILC RelId=\"2\"><Idx Value=\"3\"><Id RefId=\"7\" Type=\"17\" /></Idx><Idx Value=\"-1\"><Id RefId=\"8\" Type=\"17\" /></Idx>"
+        "</FILC><Other /><FILC><Idx Value=\"0\"><Id RefId=\"9\" Type=\"9\" /><Odd /></Idx></FILC></FILCMetaInfo>");
+    CHECK(links.size() == 2);
+    if (links.size() == 2) {
+        CHECK(links[0].refId == 7 && links[0].type == 17 && links[0].position == 3);
+        CHECK(links[1].refId == 9 && links[1].type == 9 && links[1].position == 0);
+    }
+    CHECK(tia::parseReferenceLinks("<Something />").empty());
+    CHECK_THROWS(tia::parseReferenceLinks("<FILCMetaInfo>"));
+
+    Bytes file = codeProject(true);
+    tia::Project p(tia::Container::parse(file, {}));
+    tia::ProgramData prog = tia::buildProgramData(p);
+    tia::CodeData code = tia::buildCode(p, prog);
+    const tia::BlockCode* pump = nullptr;
+    for (const auto& b : code.blocks)
+        if (b.name == "Pump") pump = &b;
+    CHECK(pump && pump->networks.size() == 5);
+    if (!pump || pump->networks.size() != 5) return;
+    // the tag "Start" is now "Begin", the data block "Data" now "Values"
+    CHECK_EQ(joinLines(pump->networks[0].lines), "1: \"Values\".Run := \"Begin\"\n");
+    // SCL keeps the name as it was typed; the current one is shown
+    CHECK_EQ(joinLines(pump->networks[1].lines), "(/**/)\n\"Begin\" := TRUE;\n");
+    if (const tia::CodeReference* r = refById(pump->references, 30)) CHECK(r->renamed && r->text == "\"Begin\"");
+    if (const tia::CodeReference* r = refById(pump->references, 10)) CHECK(r->renamed && r->text == "\"Values\"");
+    if (const tia::CodeReference* r = refById(pump->references, 11))
+        CHECK(r->renamed && r->text == "\"Values\".Run" && r->container == "Values");
+    // a link to the wrong kind of object is not followed: entry 40 is a
+    // block, the link names a tag place that is empty; entry 41 names a
+    // place beyond the list
+    if (const tia::CodeReference* r = refById(pump->references, 40)) CHECK(!r->renamed && r->text == "\"Motor\"");
+    if (const tia::CodeReference* r = refById(pump->references, 41)) CHECK(!r->renamed && r->text == "\"Motor_DB\"");
+    // a member without the data block's entry keeps its stored path
+    if (const tia::CodeReference* r = refById(pump->references, 12)) CHECK(r->text == "\"Data\".\"my buffer\"[2, #index]");
+}
+
+// A block that was protected later is not read from the version the file
+// still holds from before; once the protection is gone again it is.
+void testCodeProtectionOverTime() {
+    Bytes f = codeFileStart();
+    auto name = [](const std::string& n) { return segment({fs(n), fnone(), fs(""), fs("")}); };
+    addBlock(f, object(CProject, 1, {name("Demo")}, {}, {}));
+    addBlock(f, object(CPlc, 2, {name("PLC_1")}, {{CEnvironment, CProject, 1}}, {}));
+    addBlock(f, unitObject(25, "recipe", "NoProtection", kSclNetwork, "SCL", 1, {}, {}));
+    addBlock(f, codeBlockObject(11, "Recipe", "FC", 2, "SCL", "NoProtection", {{CSources, CUnit, 25}}));
+    addBlock(f, codeBlockObject(12, "Other", "FC", 3, "SCL", "NoProtection", {{CSources, CUnit, 25}}));
+    const Bytes open = f;
+    addBlock(f, codeBlockObject(11, "Recipe", "FC", 2, "SCL", "KnowHowProtection", {{CSources, CUnit, 25}}));
+    const Bytes locked = f;
+    addBlock(f, codeBlockObject(11, "Recipe", "FC", 2, "SCL", "NoProtection", {{CSources, CUnit, 25}}));
+    const Bytes reopened = f;
+
+    auto recipe = [](const Bytes& state, const tia::ProtectedVersions* upTo, tia::BlockCode& out) {
+        tia::Project p(tia::Container::parse(state, {}));
+        tia::ProgramData prog = tia::buildProgramData(p);
+        tia::CodeData code = tia::buildCode(p, prog, upTo);
+        for (const auto& b : code.blocks)
+            if (b.name == "Recipe") {
+                out = b;
+                return code.blocks.size() == 2;
+            }
+        return false;
+    };
+    tia::BlockCode b;
+    // each state on its own
+    CHECK(recipe(open, nullptr, b) && !b.isProtected && b.networks.size() == 1);
+    CHECK(recipe(locked, nullptr, b) && b.isProtected && !b.protectedLater && b.networks.empty());
+    CHECK(recipe(reopened, nullptr, b) && !b.isProtected && b.networks.size() == 1);
+
+    // the earlier state, seen from the file that has the protected version
+    tia::Project whole(tia::Container::parse(locked, {}));
+    const tia::ProtectedVersions upTo = tia::protectedVersions(whole);
+    CHECK(upTo.size() == 1 && upTo.count(11) == 1);
+    CHECK(recipe(open, &upTo, b) && b.isProtected && b.protectedLater && b.networks.empty() && b.references.empty());
+    CHECK(recipe(locked, &upTo, b) && b.isProtected && !b.protectedLater && b.networks.empty());
+    {
+        // the other block is read as before
+        tia::Project p(tia::Container::parse(open, {}));
+        tia::ProgramData prog = tia::buildProgramData(p);
+        tia::CodeData code = tia::buildCode(p, prog, &upTo);
+        for (const auto& x : code.blocks)
+            if (x.name == "Other") CHECK(!x.isProtected && x.networks.size() == 1);
+        std::ostringstream text;
+        tia::ReportContext ctx;
+        ctx.code = &code;
+        tia::writeText(text, tia::buildInventory(p), prog, ctx);
+        CHECK(text.str().find("  PLC_1 / Recipe [FC2]  SCL: know-how protected in a later save, not read\n") != std::string::npos);
+    }
+    // and from the file in which the protection was removed again: the
+    // versions up to the protected one stay unread, the one after it is read
+    tia::Project all(tia::Container::parse(reopened, {}));
+    const tia::ProtectedVersions upTo2 = tia::protectedVersions(all);
+    CHECK(upTo2 == upTo);
+    CHECK(recipe(open, &upTo2, b) && b.isProtected && b.protectedLater);
+    CHECK(recipe(locked, &upTo2, b) && b.isProtected);
+    CHECK(recipe(reopened, &upTo2, b) && !b.isProtected && !b.protectedLater && b.networks.size() == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -1718,6 +2658,13 @@ int main() {
     testStructures();
     testHmiTags();
     testHistory();
+    testCodeReferences();
+    testScl();
+    testStl();
+    testGraphicNetworks();
+    testCodeProject();
+    testCodeProtectionOverTime();
+    testCodeCurrentNames();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
