@@ -1465,6 +1465,87 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
     out << "]\n}\n";
 }
 
+// ---- tiaconv diff ----
+
+namespace {
+
+std::string sideText(const DiffSide& s) {
+    std::string out = s.project.empty() ? std::string("(no project in the file)") : "project " + s.project;
+    if (s.shownSave) out += ", as after save " + std::to_string(s.shownSave) + " of " + std::to_string(s.saves);
+    else if (s.saves) out += ", " + std::to_string(s.saves) + " save" + (s.saves == 1 ? "" : "s") + " recorded";
+    if (!s.modified.empty()) out += "; modified " + s.modified + (s.by.empty() ? "" : " by " + s.by);
+    return out;
+}
+
+void jsonSide(std::ostream& out, const DiffSide& s) {
+    out << "{\"source\": " << q(s.source) << ", \"project\": " << qn(s.project) << ", \"modified\": " << qn(s.modified)
+        << ", \"modified_by\": " << qn(s.by) << ", \"saves\": " << s.saves << ", \"shown_save\": ";
+    if (s.shownSave) out << s.shownSave;
+    else out << "null";
+    out << "}";
+}
+
+}  // namespace
+
+void writeDiffText(std::ostream& out, const ProjectDiff& d, const DiffSide& oldSide, const DiffSide& newSide) {
+    out << "Old: " << oldSide.source << "\n     " << sideText(oldSide) << "\n";
+    out << "New: " << newSide.source << "\n     " << sideText(newSide) << "\n";
+    if (!d.sameLineage)
+        out << "\nThe two do not share the identities of their objects (one was not saved from the other, or the\n"
+               "project was made anew): items are paired by kind and name, "
+            << d.matchedByName << " of them.\n";
+    size_t substantial = 0;
+    for (const auto& c : d.changes)
+        if (substantialChange(c)) ++substantial;
+    if (d.changes.empty()) {
+        out << "\nNo differences in what tiaconv reports.\n";
+    } else {
+        out << "\nDifferences:\n";
+        HistorySave s;
+        s.changes = d.changes;
+        textChanges(out, s, "  ");
+        if (!substantial) out << "  Only time stamps and compiling differ.\n";
+    }
+    if (d.unreadBlocks)
+        out << "\nThe code of " << plural("block", d.unreadBlocks)
+            << " is not compared: know-how protected in one of the two, or both.\n";
+    out << "Times are UTC.\n";
+}
+
+void writeDiffJson(std::ostream& out, const ProjectDiff& d, const DiffSide& oldSide, const DiffSide& newSide,
+                   const std::string& toolVersion) {
+    out << "{\n  \"tool\": {\"name\": \"tiaconv\", \"version\": " << q(toolVersion) << "},\n  \"old\": ";
+    jsonSide(out, oldSide);
+    out << ",\n  \"new\": ";
+    jsonSide(out, newSide);
+    size_t substantial = 0;
+    for (const auto& c : d.changes)
+        if (substantialChange(c)) ++substantial;
+    out << ",\n  \"same_lineage\": " << tf(d.sameLineage) << ", \"matched_by_name\": " << d.matchedByName
+        << ", \"blocks_not_compared\": " << d.unreadBlocks << ", \"substantial_changes\": " << substantial
+        << ",\n  \"changes\": [";
+    for (size_t i = 0; i < d.changes.size(); ++i) {
+        const HistoryChange& c = d.changes[i];
+        out << (i ? ",\n" : "\n") << "    {\"change\": " << q(c.change) << ", \"kind\": " << q(c.kind) << ", \"item\": "
+            << q(c.item);
+        if (c.change == "changed")
+            out << ", \"attribute\": " << q(c.attribute) << ", \"from\": " << qn(c.from) << ", \"to\": " << qn(c.to)
+                << ", \"time_stamp\": " << tf(c.isTime || c.isMarker) << ", \"follows_from_compiling\": " << tf(c.isResult);
+        else
+            out << ", \"description\": " << qn(c.description) << ", \"part_of\": " << qn(c.partOf);
+        if (c.kind == "network" && c.change != "changed") out << ", \"code\": " << qn(c.change == "added" ? c.to : c.from);
+        out << "}";
+    }
+    out << (d.changes.empty() ? "]\n}\n" : "\n  ]\n}\n");
+}
+
+void writeDiffCsv(std::ostream& out, const ProjectDiff& d) {
+    csvRow(out, {"change", "kind", "item", "part_of", "attribute", "from", "to", "description", "time_stamp"});
+    for (const auto& c : d.changes)
+        csvRow(out, {c.change, c.kind, c.item, c.partOf, c.attribute, c.from, c.to, c.description,
+                     c.change == "changed" && !substantialChange(c) ? "yes" : ""});
+}
+
 void writeHistoryCsv(std::ostream& out, const History& h) {
     csvRow(out, {"save", "time", "by", "objects_written", "objects_deleted", "change", "kind", "item", "part_of",
                  "attribute", "from", "to", "description"});

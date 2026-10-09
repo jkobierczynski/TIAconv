@@ -582,6 +582,90 @@ void testHmi() {
 }
 
 
+// ---- tiaconv diff ----
+
+struct DiffSideLoaded {
+    std::unique_ptr<tia::Project> project;
+    tia::ProtectedVersions upTo;
+};
+
+DiffSideLoaded diffSide(const std::string& name, size_t save = 0) {
+    tia::LoadedSource src = tia::loadProjectData(std::string(TIACONV_FIXTURES) + "/" + name);
+    auto data = std::make_shared<const std::vector<uint8_t>>(std::move(src.data));
+    tia::ContainerOptions opt;
+    opt.throughSave = save;
+    DiffSideLoaded s;
+    s.project.reset(new tia::Project(tia::Container::parse(data, opt)));
+    const tia::Project whole(tia::Container::parse(data, tia::ContainerOptions()));
+    s.upTo = tia::protectedVersions(whole);
+    return s;
+}
+
+// What the comparison says, without time stamps and what compiling sets.
+std::multiset<std::string> diffSteps(const std::string& a, size_t saveA, const std::string& b, size_t saveB,
+                                     tia::ProjectDiff* out = nullptr) {
+    current = "diff " + a + (saveA ? "@" + std::to_string(saveA) : "") + " " + b + (saveB ? "@" + std::to_string(saveB) : "");
+    const DiffSideLoaded x = diffSide(a, saveA), y = diffSide(b, saveB);
+    tia::ProjectDiff d = tia::diffProjects(*x.project, x.upTo, *y.project, y.upTo);
+    std::multiset<std::string> found;
+    for (const auto& c : d.changes)
+        if (!followsFromSomethingElse(c)) found.insert(stepText(c));
+    if (out) *out = std::move(d);
+    return found;
+}
+
+void testDiff() {
+    tia::ProjectDiff d;
+    // a file with itself, and one save with itself
+    CHECK(diffSteps("s14_code", 0, "s14_code", 0, &d).empty() && d.changes.empty() && d.sameLineage);
+    CHECK(d.unreadBlocks == 1);
+    CHECK(diffSteps("s14_code", 22, "s14_code", 22, &d).empty() && d.changes.empty());
+    // two saves of one file: what the history lists for the saves between them
+    CHECK(diffSteps("s14_code", 19, "s14_code", 20) ==
+          (std::multiset<std::string>{"~|network|ZZPLC / Main [OB1] / network 1|code|1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\"|"
+                                      "1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZC\""}));
+    // a rename: the tag, and nothing in the networks that use it
+    CHECK(diffSteps("s14_code", 20, "s14_code", 21) ==
+          (std::multiset<std::string>{"~|tag|ZZPLC / Default tag table / ZZALPHA|name|ZZA|ZZALPHA"}));
+    // before the protection, and the file TIA Portal wrote anew after it
+    // plus one more network: several saves at once; nothing of the protected
+    // block's code, though the old side has it unprotected
+    CHECK(diffSteps("s14_code", 19, "s14_code_rewritten", 0, &d) ==
+          (std::multiset<std::string>{
+              "~|network|ZZPLC / Main [OB1] / network 1|code|1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\"|"
+              "1: \"ZZOUT\" := \"ZZALPHA\" AND NOT \"ZZC\"",
+              "+|network|ZZPLC / Main [OB1] / network 2|ZZ inserted, LAD",
+              "-|network|ZZPLC / Main [OB1] / network 2|ZZ parallel, LAD",
+              "~|tag|ZZPLC / Default tag table / ZZALPHA|name|ZZA|ZZALPHA",
+              "~|block|ZZPLC / ZZSCL [FC2]|protection||know-how"}));
+    CHECK(d.sameLineage && d.unreadBlocks == 1);
+    for (const auto& c : d.changes) {
+        CHECK(c.item.find("ZZSCL [FC2] / network") == std::string::npos);
+        CHECK(c.from.find("\"ZZN1\" + 2") == std::string::npos && c.to.find("\"ZZN1\" + 2") == std::string::npos);
+        if (c.change == "added" && c.kind == "network") CHECK(c.to == "1: \"ZZOUT\" := \"ZZC\"");
+        if (c.change == "removed" && c.kind == "network") CHECK(c.from == "1: S(\"ZZDATA\".run) := \"ZZA\" OR \"ZZC\"");
+    }
+    size_t substantial = 0;
+    for (const auto& c : d.changes)
+        if (tia::substantialChange(c)) ++substantial;
+    CHECK(substantial == 5);
+    // s13_hmi continues s12_constants: up to its save 18 they are the same
+    // project; "Save as" then gave it another name, the identities stayed
+    CHECK(diffSteps("s12_constants", 0, "s13_hmi", 18, &d).empty() && d.changes.empty());
+    CHECK(diffSteps("s12_constants", 0, "s13_hmi", 19, &d) ==
+          (std::multiset<std::string>{"~|project|s13_hmi|name|s12_constants|s13_hmi"}));
+    CHECK(d.sameLineage);
+    // two projects made apart: their objects are numbered alike, which says
+    // nothing; items are paired by name. The two PLC stations differ, the
+    // project is the project.
+    const std::multiset<std::string> apart = diffSteps("s01_cpu", 0, "s14_code", 0, &d);
+    CHECK(!d.sameLineage);
+    CHECK(apart.count("~|project|s14_code|name|s01_cpu|s14_code") == 1);
+    CHECK(apart.count("+|device|S7-1500/ET200MP station_1|S71500.Device") == 1);
+    CHECK(apart.count("-|device|S7-1200 station_1|S71200.Device") == 1);
+    for (const auto& line : apart) CHECK(line.compare(0, 9, "~|device|") != 0);
+}
+
 // ---- block code: s14_code ----
 
 // s14_code, one action per save (tests/fixtures/README.md). Save 22 holds two
@@ -1784,6 +1868,7 @@ int main() {
     testHmi();
     testHistory();
     testCode();
+    testDiff();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

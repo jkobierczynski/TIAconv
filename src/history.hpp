@@ -17,7 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include "code.hpp"
 #include "inventory.hpp"
+#include "project.hpp"
 
 namespace tia {
 
@@ -85,6 +87,28 @@ struct History {
     std::vector<HistorySave> saves;
     std::vector<std::string> notes;
 };
+
+// The difference between two projects, or two states of one: what the
+// second has that the first has not, what it lacks, what changed.
+struct ProjectDiff {
+    std::vector<HistoryChange> changes;
+    // The two share the identities of their objects (one is a later version
+    // of the other). Otherwise items are paired by kind and name.
+    bool sameLineage = true;
+    size_t matchedByName = 0;   // items paired by name although their identities differ
+    size_t itemsOld = 0, itemsNew = 0;
+    size_t unreadBlocks = 0;  // blocks whose code was not compared: protected on either side
+};
+
+// A change that says more than that something was compiled or touched:
+// not a time stamp, not a bare "modified", not a size that compiling sets.
+bool substantialChange(const HistoryChange& c);
+
+// Compares the two projects as tiaconv reports them. `oldProtected` and
+// `newProtected`: from protectedVersions() of each whole file. A block that
+// is know-how protected on either side is compared without its code.
+ProjectDiff diffProjects(const Project& oldProject, const ProtectedVersions& oldProtected, const Project& newProject,
+                         const ProtectedVersions& newProtected);
 
 // Reads the file once per save. `throughSave` limits the history to the
 // first so many saves; 0 = all of them.

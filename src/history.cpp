@@ -38,7 +38,7 @@ struct Entity {
 
 struct Snapshot {
     bool hasProject = false;
-    std::string modified, by;
+    std::string created, modified, by;
     std::vector<Entity> list;
     std::map<std::string, size_t> index;
     std::vector<ProjectEvent> events;
@@ -141,6 +141,7 @@ Snapshot takeSnapshot(const Project& project, const ProtectedVersions& protected
     const CodeData code = buildCode(project, prog, &protectedUpTo);
 
     snap.hasProject = inv.project.found;
+    snap.created = inv.project.created;
     snap.modified = inv.project.modified;
     snap.by = inv.project.lastModifiedBy;
     snap.events = inv.events;
@@ -645,7 +646,85 @@ void diff(const Snapshot& original, const Snapshot& after, std::vector<HistoryCh
     }
 }
 
+// For two files that do not share the identities of their objects: an id
+// in one says nothing about the other (new projects number their objects
+// alike), so items are paired by kind and name alone, where each side has
+// one item of that kind and name. The others get keys of their own.
+Snapshot matchByName(const Snapshot& before, const Snapshot& after, size_t& matched) {
+    using Name = std::pair<std::string, std::string>;
+    std::map<Name, std::vector<const Entity*>> mine, theirs;
+    for (const auto& e : before.list) mine[{e.kind, e.label}].push_back(&e);
+    for (const auto& e : after.list) theirs[{e.kind, e.label}].push_back(&e);
+    std::map<std::string, std::string> to;
+    for (const auto& e : before.list) {
+        if (e.kind == "project") {  // there is one on each side
+            to[e.key] = e.key;
+            continue;
+        }
+        const Name n{e.kind, e.label};
+        auto it = theirs.find(n);
+        if (mine[n].size() == 1 && it != theirs.end() && it->second.size() == 1) to[e.key] = it->second[0]->key;
+        else to[e.key] = "old:" + e.key;
+    }
+    matched = 0;
+    for (const auto& kv : to)
+        if (kv.second.compare(0, 4, "old:") != 0 && kv.first != "project") ++matched;
+    Snapshot out;
+    out.hasProject = before.hasProject;
+    out.created = before.created;
+    out.modified = before.modified;
+    out.by = before.by;
+    out.events = before.events;
+    for (Entity e : before.list) {
+        e.key = to[e.key];
+        auto parent = to.find(e.parent);
+        if (parent != to.end()) e.parent = parent->second;
+        out.add(std::move(e));
+    }
+    return out;
+}
+
 }  // namespace
+
+ProjectDiff diffProjects(const Project& oldProject, const ProtectedVersions& oldProtected, const Project& newProject,
+                         const ProtectedVersions& newProtected) {
+    ProjectDiff d;
+    const Snapshot before = takeSnapshot(oldProject, oldProtected);
+    const Snapshot after = takeSnapshot(newProject, newProtected);
+    d.itemsOld = before.list.size();
+    d.itemsNew = after.list.size();
+    // Versions of one project, "Save as" included, keep the time the
+    // project was created, and the ids of their objects. Without that time,
+    // most keys in common say the same.
+    if (!before.created.empty() && !after.created.empty()) {
+        d.sameLineage = before.created == after.created;
+    } else {
+        size_t shared = 0, counted = 0;
+        for (const auto& e : before.list) {
+            if (e.kind == "project" || e.kind == "project event") continue;
+            ++counted;
+            if (after.index.count(e.key)) ++shared;
+        }
+        d.sameLineage = counted == 0 || shared * 2 >= counted;
+    }
+    std::set<std::string> unread;
+    for (const Snapshot* snap : {&before, &after})
+        for (const auto& e : snap->list)
+            if (e.codeUnread) unread.insert(e.label);
+    d.unreadBlocks = unread.size();
+    if (d.sameLineage) {
+        diff(before, after, d.changes);
+    } else {
+        const Snapshot paired = matchByName(before, after, d.matchedByName);
+        diff(paired, after, d.changes);
+    }
+    return d;
+}
+
+bool substantialChange(const HistoryChange& c) {
+    if (c.change != "changed") return true;
+    return !c.isTime && !c.isMarker && !c.isResult && c.attribute != "needs compiling";
+}
 
 History buildHistory(std::shared_ptr<const std::vector<uint8_t>> data, size_t throughSave,
                      const std::function<void(size_t, size_t)>& progress) {

@@ -1,5 +1,17 @@
 # Changes
 
+## 0.12.0
+
+- `tiaconv diff OLD NEW`: what differs between two projects, or two
+  versions of one, in the terms of the save history: hardware, addresses,
+  security settings, connections, blocks and their code, data block
+  members, tags, HMI tags, constants. `--old-save` / `--new-save` take a side
+  as it was after one of its saves; `-j` and `--csv` write the differences;
+  `--exit-code` gives 1 when the two differ in more than time stamps and
+  compiling. Versions of one project are paired by the identities of their
+  objects, projects made apart by name. Know-how protected blocks are
+  compared without their code, on both sides.
+
 ## 0.11.0
 
 - Block code: `--code` adds the networks of every OB, FB and FC to the text

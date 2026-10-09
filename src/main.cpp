@@ -73,6 +73,20 @@ const char kUsage[] =
     "  -h, --help          show this help\n"
     "  -V, --version       show the version\n"
     "\n"
+    "\n"
+    "       tiaconv diff [options] <old project> <new project>\n"
+    "\n"
+    "  compares two projects, or two versions of one, and lists what was added,\n"
+    "  removed or changed: hardware, network, security settings, connections,\n"
+    "  blocks and their code, data block members, tags, HMI tags, constants.\n"
+    "  -j, --json FILE     write the differences as JSON\n"
+    "      --csv FILE      write the differences as CSV, one row per change\n"
+    "      --old-save N    take the old project as it was after its N-th save\n"
+    "      --new-save N    the same for the new project\n"
+    "      --exit-code     exit with 1 when the two differ in more than time\n"
+    "                      stamps and compiling, 0 when they do not\n"
+    "      --no-bom, -q    as above\n"
+    "\n"
     "The project is only read, never modified. TIA Portal does not need to be\n"
     "installed.\n";
 
@@ -109,7 +123,94 @@ void emitCsv(const std::string& target, bool bom, Fn fn) {
     });
 }
 
+size_t saveNumber(const std::string& option, const std::string& v) {
+    if (v.empty() || v.size() > 9 || v.find_first_not_of("0123456789") != std::string::npos || std::stoul(v) == 0)
+        throw std::invalid_argument(option + " needs the number of a save, 1 or higher");
+    return std::stoul(v);
+}
+
+// One side of a comparison: the project as it was after `save` (0: as it is),
+// and which versions of its blocks are older than a know-how protection.
+struct Side {
+    std::unique_ptr<tia::Project> project;
+    tia::ProtectedVersions protectedUpTo;
+    tia::DiffSide info;
+};
+
+Side loadSide(const std::string& path, size_t save, std::vector<std::string>& warnings) {
+    Side side;
+    tia::LoadedSource src = tia::loadProjectData(path);
+    for (auto& w : src.warnings) warnings.push_back(path + ": " + w);
+    auto data = std::make_shared<const std::vector<uint8_t>>(std::move(src.data));
+    tia::ContainerOptions opt;
+    opt.throughSave = save;
+    side.project.reset(new tia::Project(tia::Container::parse(data, opt)));
+    const size_t saves = side.project->container().saveCount();
+    if (save && save > saves)
+        throw std::invalid_argument(path + ": the file records " + std::to_string(saves) + " saves, not " +
+                                    std::to_string(save));
+    if (side.project->meta().empty())
+        throw tia::ParseError(path + ": no type model found in the file; it may be encrypted or of an unknown version");
+    const tia::Project whole(tia::Container::parse(data, tia::ContainerOptions()));
+    side.protectedUpTo = tia::protectedVersions(whole);
+    const tia::Inventory inv = tia::buildInventory(*side.project);
+    side.info.source = path;
+    side.info.project = inv.project.name;
+    side.info.modified = inv.project.modified;
+    side.info.by = inv.project.lastModifiedBy;
+    side.info.saves = whole.container().saveCount();
+    side.info.shownSave = save;
+    return side;
+}
+
+int runDiff(const std::vector<std::string>& argv) {
+    std::string json, csv;
+    std::vector<std::string> paths;
+    size_t oldSave = 0, newSave = 0;
+    bool exitCode = false, quiet = false, noBom = false;
+    for (size_t i = 2; i < argv.size(); ++i) {
+        const std::string& s = argv[i];
+        auto value = [&]() -> std::string {
+            if (i + 1 >= argv.size()) throw std::invalid_argument("option " + s + " needs a value");
+            return argv[++i];
+        };
+        if (s == "-h" || s == "--help") {
+            std::cout << kUsage;
+            return 0;
+        } else if (s == "-j" || s == "--json") json = value();
+        else if (s == "--csv") csv = value();
+        else if (s == "--old-save") oldSave = saveNumber(s, value());
+        else if (s == "--new-save") newSave = saveNumber(s, value());
+        else if (s == "--exit-code") exitCode = true;
+        else if (s == "-q" || s == "--quiet") quiet = true;
+        else if (s == "--no-bom") noBom = true;
+        else if (s.size() > 1 && s[0] == '-') throw std::invalid_argument("unknown option for diff: " + s);
+        else paths.push_back(s);
+    }
+    if (paths.size() != 2) throw std::invalid_argument("diff needs two projects: the old one and the new one");
+    std::vector<std::string> warnings;
+    const Side before = loadSide(paths[0], oldSave, warnings);
+    const Side after = loadSide(paths[1], newSave, warnings);
+    const tia::ProjectDiff d =
+        tia::diffProjects(*before.project, before.protectedUpTo, *after.project, after.protectedUpTo);
+
+    const bool stdoutTaken = json == "-" || csv == "-";
+    if (!quiet) {
+        std::ostream& o = stdoutTaken ? std::cerr : std::cout;
+        tia::writeDiffText(o, d, before.info, after.info);
+        for (const auto& w : warnings) o << "Warning: " << w << "\n";
+    }
+    if (!json.empty())
+        emit(json, [&](std::ostream& o) { tia::writeDiffJson(o, d, before.info, after.info, TIACONV_VERSION); });
+    if (!csv.empty()) emitCsv(csv, !noBom, [&](std::ostream& o) { tia::writeDiffCsv(o, d); });
+    if (exitCode)
+        for (const auto& c : d.changes)
+            if (tia::substantialChange(c)) return 1;
+    return 0;
+}
+
 int run(const std::vector<std::string>& argv) {
+    if (argv.size() > 1 && argv[1] == "diff") return runDiff(argv);
     Args a;
     for (size_t i = 1; i < argv.size(); ++i) {
         const std::string& s = argv[i];

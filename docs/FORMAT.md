@@ -25,7 +25,16 @@ relation lists, the older expando segment, the deleted flag in the older
 layout, the rule for which attributes are stored, the page format of large
 values, texts in several languages, attributes that carry their own names,
 how saves are delimited, and how hardware, network, security settings, tags,
-data blocks and comments map onto objects.
+data blocks and comments map onto objects. Also new: the code of blocks (the
+networks, SCL and STL as tokens, LAD and FBD as parts and wires, the
+reference table of each block with its links to the objects it names), and
+that know-how protection makes TIA Portal write the file anew.
+
+The stored LAD and FBD networks are close to the network format of TIA
+Portal's XML export (Openness), which Siemens documents publicly. The
+similarity was recognised from general knowledge of that format; nothing was
+taken from its documentation, and every element described here was read
+from the sample files.
 
 ## A project on disk
 
@@ -704,6 +713,17 @@ that:
 - Entering a password for an access level writes the CPU item and nothing
   that `tiaconv` reports; creating a role writes `CustomRole`,
   `UmacRootData` and a `SystemDeviceFunctionRightProxy`.
+
+### Two files of one project
+
+Object ids are numbers given out in order, so two projects made apart have
+many ids in common that mean different things (the first station of a new
+project gets the same id in both). Whether two files are versions of one
+project is told by the creation time of the project object
+(`ICoreAttributes.CreationTime` of `ProjectData`): "Save as" keeps it, as
+do all saves (V21: the chain `s01_cpu` ... `s13_hmi`, and `s14_code` before
+and after TIA Portal rewrote it). `tiaconv diff` pairs items by id when the
+times are equal, by kind and name when they differ.
 
 ## HMI tags
 

@@ -23,7 +23,9 @@ it:
   source text, LAD and FBD as a listing in text form, and a cross-reference of the
   tags, data block members and blocks each block reads, writes or calls,
 - the save history, as far as the file still holds it: what was added,
-  removed or changed with each save, when, and by which user.
+  removed or changed with each save, when, and by which user,
+- the differences between two projects or two versions of one
+  (`tiaconv diff`), in the same terms.
 
 It is meant for asset inventories and security assessments (NIS2, IEC 62443),
 where you are handed a project folder or archive and need the hardware list
@@ -53,6 +55,7 @@ engineering station.
     tiaconv -q --tags-csv tags.csv --blocks-csv blocks.csv MyProject/
     tiaconv --code MyProject/            # also print the code of the blocks
     tiaconv -q --xref-csv xref.csv MyProject/   # who reads and writes what
+    tiaconv diff Archive/MyProject.zap19 MyProject/   # what changed since the archive
 
 Example (a public V15.1 project):
 
@@ -122,6 +125,7 @@ Options:
 | `--history` | add the save history to the text report and the JSON: what changed with each save (see below) |
 | `--history-csv FILE` | the save history as CSV, one row per change |
 | `-q`, `--quiet` | no text report |
+| `diff OLD NEW` | compare two projects: see [Comparing two projects](#comparing-two-projects); options `-j`, `--csv`, `--old-save N`, `--new-save N`, `--exit-code`, `--no-bom`, `-q` |
 
 Exit status: 0 on success, 1 for a usage error, 2 when the project cannot be
 read.
@@ -161,10 +165,11 @@ later is there again; so is a setting before it was changed.
 A file starts with a save that holds nothing but the type model; in a new
 project, save 2 is the empty project and save 3 the first thing done in it.
 
-How far back this goes differs. "Save as" keeps the history. TIA Portal now
-and then writes the whole file anew by itself, dropping everything old: in a
-test this happened within a few saves in which blocks were compiled and
-protected. Such a file has the whole project in its second save. The one
+How far back this goes differs. "Save as" keeps the history. TIA Portal
+writes the whole file anew, dropping everything old, when a block is
+know-how protected (seen twice); it then keeps the old file as a zip in the
+folder `<project>.backup` next to the project. Such a file has the whole
+project in its second save. The one
 project archive (`.zap19`) among the samples and one other public sample
 project are different again: one save marker after the type model, and the
 whole project written after it without a marker of its own. The last line of the report then reads
@@ -277,6 +282,71 @@ A history is evidence of what the file holds, not an audit trail: TIA Portal
 drops it when it writes the file anew, anyone who can write the file can
 change it, and the time and the user name are whatever the engineering
 station said they were.
+
+### Comparing two projects
+
+`tiaconv diff OLD NEW` lists what differs between two projects, or two
+versions of one: what was added, removed or changed in the hardware, the
+addresses, the security settings, the connections, the blocks and their
+code, the data block members, the tags, HMI tags and constants. It is the
+comparison the save history makes between two saves, applied to any two
+files. Each side can be a folder, a project file, an archive or a
+`PEData.plf`, and `--old-save N` / `--new-save N` take either side as it was
+after one of its saves, so two saves of one file can be compared as well.
+
+```
+$ tiaconv diff --old-save 19 tests/fixtures/s14_code tests/fixtures/s14_code_rewritten
+Old: tests/fixtures/s14_code
+     project s14_code, as after save 19 of 23; modified 2026-10-08T02:58:57.390Z by PC
+New: tests/fixtures/s14_code_rewritten
+     project s14_code, 3 saves recorded; modified 2026-10-08T03:21:22.252Z by PC
+
+Differences:
+  + network ZZPLC / Main [OB1] / network 2  (ZZ inserted, LAD)
+        1: "ZZOUT" := "ZZC"
+  - network ZZPLC / Main [OB1] / network 2  (ZZ parallel, LAD)
+        1: S("ZZDATA".run) := "ZZA" OR "ZZC"
+  ~ block ZZPLC / Main [OB1]: code changed; compiled
+  ~ block ZZPLC / ZZFBD [FC1]: code changed; compiled
+  ~ block ZZPLC / ZZSTL [FC3]: code changed; compiled
+  ~ 4 blocks: compiled
+      ZZPLC / ZZFB [FB1], ZZPLC / ZZDATA [DB1], ZZPLC / IEC_Timer_0_DB [DB2], ZZPLC / ZZFB_DB [DB3]
+  ~ block ZZPLC / ZZSCL [FC2]: protection: (not set) -> know-how; code changed; compiled
+  ~ network ZZPLC / Main [OB1] / network 1: code
+        - 1: "ZZOUT" := "ZZA" AND NOT "ZZB"
+        + 1: "ZZOUT" := "ZZALPHA" AND NOT "ZZC"
+  ~ tag ZZPLC / Default tag table / ZZALPHA: name: ZZA -> ZZALPHA
+
+The code of 1 block is not compared: know-how protected in one of the two, or both.
+Times are UTC.
+```
+
+- **What is compared** is what tiaconv reports, item by item; the lines read
+  as in the save history (see there). Changed code is shown as the lines
+  taken out and put in. A renamed tag or block is one change, not a change
+  in every network that uses it.
+- **Which item is which.** Versions of one project, "Save as" copies
+  included, keep the identities of their objects and the time the project
+  was created; items are then paired by identity, so a renamed block is a
+  renamed block. Two projects that were made apart are paired by kind and
+  name instead (the report says so), and a renamed item is then a removed
+  and an added one.
+- **Know-how protected blocks** are compared without their code, when they
+  are protected on either side: an older, unprotected version on the other
+  side is not shown either. That a protection was set or removed is listed.
+- **Time stamps and compiling.** Compiling changes time stamps and memory
+  sizes of every block it touches; those lines are listed too, after
+  `code changed`, `compiled`, `modified`. With `--exit-code` the exit code is
+  1 when the two differ in anything else, 0 otherwise, for use in scripts.
+  In the JSON and CSV they are marked (`time_stamp`, `follows_from_compiling`).
+- `-j FILE` writes the differences as JSON (`changes`, with `same_lineage`,
+  `matched_by_name` and `substantial_changes`), `--csv FILE` as CSV, one row
+  per change: `change,kind,item,part_of,attribute,from,to,description,time_stamp`.
+  The code of an added or removed network is in `to` or `from`.
+- Not compared: what tiaconv does not read (users and roles, HMI screens and
+  alarms, the declarations of a code block's own parameters and variables,
+  members of a data block that was renamed when the projects were made
+  apart).
 
 ### Security settings
 
@@ -797,6 +867,7 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | Constants | V21: four user constants entered one per save (Int, Real, Time, String, in two tag tables, one with a comment) read back with name, type, value, comment and table; a changed value and a deleted constant show in their save. The three constants left at the end are identical to TIA Portal's own export of them (name, tag table, data type, value, comment). What TIA Portal showed at the end (the three constants left, and the number of entries it gives for each tag table, which counts tags, user constants and system constants: 63 and 10) is what tiaconv reports. V16 sample: the connection block its author wrote refers to interface 64, and 64 is the hardware identifier of the CPU's PROFINET interface. All 58 system constants of that PLC (23 hardware identifiers, among them those of two IO devices, the OB constant and 34 process image partitions) have the name, data type and value shown in TIA Portal's "System constants" tab. What a hardware identifier stands for is not shown there; it agrees with the constant's name in every case. **Not checked:** PLCs with PROFIBUS, central modules of an S7-1500 or technology objects, which bring further kinds of identifiers. |
 | HMI tags | V21: a test project with a KTP400 Basic panel, one action per save: an internal tag, tags on a data block member (standard and optimized access), on a PLC tag and on a PLC data type, two tags with absolute access on two connections to two PLCs, cycle, acquisition mode, comment and start value changed, a tag deleted, a PLC tag deleted under its HMI tag. Each appears in the save in which it was made. At the end all 7 tags agree with TIA Portal's own export of the tag table (name, tag table, connection, PLC tag, data type, access method, address, start value, comment, acquisition mode and cycle, in the export's order) and with screenshots of the tag table (PLC name per tag, the four members of the structured tag, the broken link shown in red). V19 sample: the 100 tags on a Comfort panel agree with TIA Portal V21's export of that project in every one of those columns, 100 of 100. On the PLC side, every tag with an intact link leads to a tag or member that tiaconv reads from the block interface, with the same data type; where the block has standard access the address stored with the HMI tag is the offset read there (V21 and V15.1). Not checked: limits and linear scaling (never changed from their defaults), multiplexed tags, acquisition mode "On demand", PC runtimes, WinCC Unified, HMI tags in V13 projects. |
 | Block code (`--code`, `--xref-csv`) | V21: a test project with one action per save (`s14_code`): LAD with contacts, a normally closed contact, parallel branches, set coil, comparison, MOVE, ADD, a timer, a block call and three calls chained ENO to EN; FBD with a negated input; SCL; STL; an FB with its own parameters. Every save shows that action in the history and nothing else. All eight networks of the OB, and the networks of the FBD, LAD and STL blocks, agree operand by operand with screenshots of the editor; the SCL text is identical to the source TIA Portal generated for the block, and the STL statements to the generated STL source. The cross-references of one tag (seven places in four blocks) and the call structure (the four calls and the five data block accesses) agree with TIA Portal's lists. A tag renamed without compiling shows its new name in all four blocks, as the editor does; an inserted network appears at its place. The block that was know-how protected is listed as protected and not read, also in earlier saves. V19 and V15.1 samples: the bodies of the eight SCL blocks published as source files next to them are identical, 852 lines; two networks of the V15.1 sample (a call with 22 parameters, a network of 17 parts) agree with screenshots in its repository. **Not checked:** the kinds of access (read, write) against TIA Portal's cross-reference list, whose column was not legible; STL beyond simple statements (jumps, labels, calls); SCL constructs not in the samples (WHILE, REPEAT, ...); comments in several languages in SCL; V13 code, which reads as plausible SCL but has no source to compare with; GRAPH and fail-safe blocks, which are not read. |
+| Comparing projects (`tiaconv diff`) | V21: two saves of one file give what the save history lists for the saves between them; a save with itself and a file with itself give no difference; the test project before its know-how protection against the file TIA Portal wrote anew after it (several saves apart) gives exactly the five changes made in between, without the protected block's code; a "Save as" copy is paired with its original; two projects made apart are recognised as such. **Not checked:** two projects made apart with largely the same contents (a project rebuilt by hand, or imported from a library), where pairing by name matters most. |
 | Anonymous structures | Checked on the V19 sample only. |
 | V11, V12, V14, V17, V18, V20 projects | **Not tested.** |
 | Large projects split over several data files | **Not supported**; a warning is printed. |

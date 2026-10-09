@@ -33,6 +33,21 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
 
 // One row per tag.
 void writeTagsCsv(std::ostream& out, const ProgramData& prog);
+// One side of `tiaconv diff`.
+struct DiffSide {
+    std::string source;   // as given on the command line
+    std::string project;  // its name
+    std::string modified, by;
+    size_t saves = 0;      // saves the file records
+    size_t shownSave = 0;  // compared as it was after this save; 0: as it is now
+};
+
+void writeDiffText(std::ostream& out, const ProjectDiff& d, const DiffSide& oldSide, const DiffSide& newSide);
+void writeDiffJson(std::ostream& out, const ProjectDiff& d, const DiffSide& oldSide, const DiffSide& newSide,
+                   const std::string& toolVersion);
+// One row per change.
+void writeDiffCsv(std::ostream& out, const ProjectDiff& d);
+
 // One row per use of a tag, data block member or block in the code of a
 // block: the cross-reference.
 void writeCrossReferenceCsv(std::ostream& out, const CodeData& code);
