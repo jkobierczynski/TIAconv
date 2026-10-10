@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "container.hpp"
 #include "history.hpp"
 #include "inventory.hpp"
+#include "output.hpp"
 #include "program.hpp"
 #include "project.hpp"
 #include "source.hpp"
@@ -630,7 +632,7 @@ void testDiff() {
     // before the protection, and the file TIA Portal wrote anew after it
     // plus one more network: several saves at once; nothing of the protected
     // block's code, though the old side has it unprotected
-    CHECK(diffSteps("s14_code", 19, "s14_code_rewritten", 0, &d) ==
+    CHECK(diffSteps("s14_code", 19, "s14_code_rewritten", 3, &d) ==
           (std::multiset<std::string>{
               "~|network|ZZPLC / Main [OB1] / network 1|code|1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\"|"
               "1: \"ZZOUT\" := \"ZZALPHA\" AND NOT \"ZZC\"",
@@ -649,6 +651,12 @@ void testDiff() {
     for (const auto& c : d.changes)
         if (tia::substantialChange(c)) ++substantial;
     CHECK(substantial == 5);
+    // the InOut parameter added to ZZFB and given ZZN2 in Main
+    CHECK(diffSteps("s14_code_rewritten", 3, "s14_code_rewritten", 4, &d) ==
+          (std::multiset<std::string>{
+              "+|member|ZZPLC / ZZFB_DB [DB3] / io1|Int",
+              "~|network|ZZPLC / Main [OB1] / network 6|code|1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZALPHA\", out1 => \"ZZC\")|"
+              "1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZALPHA\", io1 := \"ZZN2\", out1 => \"ZZC\")"}));
     // s13_hmi continues s12_constants: up to its save 18 they are the same
     // project; "Save as" then gave it another name, the identities stayed
     CHECK(diffSteps("s12_constants", 0, "s13_hmi", 18, &d).empty() && d.changes.empty());
@@ -900,22 +908,188 @@ void testCode() {
         CHECK(scl && scl->isProtected && !scl->protectedLater && scl->protection == "know-how" && scl->networks.empty() &&
               scl->references.empty());
         const tia::BlockCode* main = codeOf(l, "Main");
-        CHECK(main && main->networks.size() == 8);
-        if (main && main->networks.size() == 8) {
+        CHECK(main && main->networks.size() == 10);
+        if (main && main->networks.size() == 10) {
             // the network inserted after the first is the second, with the next free number
             CHECK(main->networks[1].title == "ZZ inserted" && main->networks[1].networkId == 9);
             CHECK(joined(main->networks[1].lines) == "1: \"ZZOUT\" := \"ZZC\"\n");
             CHECK(main->networks[0].networkId == 1 && main->networks[2].networkId == 3);
         }
+        // SCL, STL and LAD constructs as the editor shows them (screenshots)
+        CHECK(listing(codeOf(l, "ZZSCL2")) ==
+              "#1 \nWHILE \"ZZN1\" < 10 DO\n    \"ZZN1\" := \"ZZN1\" + 1;\nEND_WHILE;\nREPEAT\n    \"ZZN2\" := \"ZZN2\" + 1;\n"
+              "UNTIL \"ZZN2\" > 5 END_REPEAT;\nCASE \"ZZN3\" OF\n    1..5:\n        \"ZZOUT\" := TRUE;\n    6, 8:\n"
+              "        \"ZZOUT\" := FALSE;\n    ELSE\n        \"ZZC\" := TRUE;\nEND_CASE;\n(/* multi-language comment */)\n");
+        CHECK(listing(codeOf(l, "ZZSTL2")) ==
+              "#1 \n// line comment\nA     \"ZZALPHA\" //inline comment\nJC    M001\nL     1\nT     \"ZZN1\"\nM001: NOP 0\n"
+              "#2 \nCALL  \"ZZFBD\"\n"
+              "#3 \nCALL  \"ZZFB\", \"ZZFB_DB\"\n      in1  :=\"ZZB\"\n      out1 :=\"ZZC\"\n      io1  :=\"ZZN2\"\n");
+        CHECK(listing(codeOf(l, "ZZLAD2")) ==
+              "#1 \n1: \"ZZOUT\" := NOT \"ZZALPHA\"\n#2 \n1: \"ZZC\" := P(\"ZZB\", #memP)\n#3 \n1: \"ZZC\" := N(\"ZZB\", #memN)\n"
+              "#4 \n1: CTU, #IEC_Counter_0_Instance(CU := \"ZZALPHA\", R := \"ZZB\", PV := 10, CV => \"ZZN3\")\n2: \"ZZOUT\" := [1].Q\n"
+              "#5 \n1: TON, #IEC_Timer_0_Instance(IN := \"ZZALPHA\", PT := T#2S)\n2: \"ZZOUT\" := [1].Q\n#6 \n");
+        for (const char* name : {"ZZSCL2", "ZZSTL2", "ZZLAD2"})
+            if (const tia::BlockCode* b = codeOf(l, name))
+                for (const auto& n : b->networks) CHECK(n.notes.empty());
+        // the multi-instance: the call in ZZOUTER, and the member of its interface
+        CHECK(listing(codeOf(l, "ZZOUTER")) ==
+              "#1 \n1: \"ZZFB\", #inner(in1 := \"ZZB\", io1 := \"ZZN1\", out1 => \"ZZOUT\")\n#2 \n");
+        if (const tia::BlockCode* outer = codeOf(l, "ZZOUTER")) {
+            size_t declared = 0;
+            for (const auto& r : outer->references)
+                if (!r.declaredAs.empty()) {
+                    ++declared;
+                    CHECK(r.declaredAs == "inner" && r.kind == "block" && r.text == "\"ZZFB\"" && r.uses.size() == 1 &&
+                          r.uses[0].network == 0 && r.uses[0].access == "multiple instance");
+                }
+            CHECK(declared == 1);
+        }
         const tia::History hr = history("s14_code_rewritten");
-        CHECK(hr.saves.size() == 3 && hr.notes.size() == 1);
-        if (hr.saves.size() == 3) {
+        CHECK(hr.saves.size() == 30 && hr.notes.size() == 1);
+        if (hr.saves.size() == 30) {
             CHECK(hr.saves[1].firstState);
             std::multiset<std::string> found;
             for (const auto& c : hr.saves[2].changes)
                 if (!followsFromSomethingElse(c)) found.insert(stepText(c));
             CHECK(found == (std::multiset<std::string>{"~|network|ZZPLC / Main [OB1] / network 2|code||1: \"ZZOUT\" := \"ZZC\""}));
+            // then the InOut parameter io1 of ZZFB, given ZZN2 in network 6
+            found.clear();
+            for (const auto& c : hr.saves[3].changes)
+                if (!followsFromSomethingElse(c)) found.insert(stepText(c));
+            CHECK(found == (std::multiset<std::string>{
+                               "+|member|ZZPLC / ZZFB_DB [DB3] / io1|Int",
+                               "~|network|ZZPLC / Main [OB1] / network 6|code|1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZALPHA\", "
+                               "out1 => \"ZZC\")|1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZALPHA\", io1 := \"ZZN2\", out1 => \"ZZC\")"}));
+            // the FB ZZOUTER with ZZFB as multi-instance #inner (one save),
+            // its call in Main network 8 (one save), then two saves of compiling
+            std::vector<std::multiset<std::string>> steps(hr.saves.size());
+            for (size_t i = 4; i < hr.saves.size(); ++i)
+                for (const auto& c : hr.saves[i].changes)
+                    if (!followsFromSomethingElse(c)) steps[i].insert(stepText(c));
+            CHECK(steps[4] == (std::multiset<std::string>{"+|block|ZZPLC / ZZOUTER [FB2]|LAD"}));
+            CHECK(steps[5] == (std::multiset<std::string>{
+                                  "~|block|ZZPLC / Main [OB1]|networks|8|9", "+|block|ZZPLC / ZZOUTER_DB [DB4]|instance, DB",
+                                  "~|network|ZZPLC / Main [OB1] / network 8|code||1: \"ZZOUTER\", \"ZZOUTER_DB\"()",
+                                  "+|network|ZZPLC / Main [OB1] / network 9|LAD, empty"}));
+            CHECK(steps[6].empty() && steps[7].empty());
+            // the second series (more code constructs), one action per save:
+            // the save, and each change up to the end of its first line
+            std::multiset<std::string> later;
+            for (size_t i = 8; i < hr.saves.size(); ++i)
+                for (const auto& c : hr.saves[i].changes)
+                    if (!followsFromSomethingElse(c)) {
+                        const std::string t = stepText(c);
+                        later.insert(std::to_string(i + 1) + "|" + t.substr(0, t.find('\n')));
+                    }
+            CHECK(later == (std::multiset<std::string>{
+                "9|+|block|ZZPLC / Block_1 [FC4]|SCL",
+                "10|~|block|ZZPLC / ZZSCL2 [FC4]|name|Block_1|ZZSCL2",
+                "11|~|network|ZZPLC / ZZSCL2 [FC4] / network 1|code||WHILE \"ZZN1\" < 10 DO",
+                "12|~|network|ZZPLC / ZZSCL2 [FC4] / network 1|code||REPEAT",
+                "13|~|network|ZZPLC / ZZSCL2 [FC4] / network 1|code||CASE \"ZZN3\" OF",
+                "14|~|network|ZZPLC / ZZSCL2 [FC4] / network 1|code||(/* multi-language comment */)",
+                "15|+|block|ZZPLC / ZZSTL2 [FC5]|STL",
+                "16|~|network|ZZPLC / ZZSTL2 [FC5] / network 1|code||// line comment",
+                "17|~|network|ZZPLC / ZZSTL2 [FC5] / network 1|code||JC    M001",
+                "18|~|network|ZZPLC / ZZSTL2 [FC5] / network 1|code|A     \"ZZA\"|A     \"ZZA\" //inline comment",
+                "19|~|block|ZZPLC / ZZSTL2 [FC5]|networks|1|3",
+                "19|+|network|ZZPLC / ZZSTL2 [FC5] / network 2|STL",
+                "19|+|network|ZZPLC / ZZSTL2 [FC5] / network 3|STL",
+                "20|+|block|ZZPLC / ZZLAD2 [FB3]|LAD",
+                // "ZZA" no longer existed (renamed to ZZALPHA): typed, then corrected
+                "21|~|network|ZZPLC / ZZSTL2 [FC5] / network 1|code|A     \"ZZA\" //inline comment|A     \"ZZALPHA\" //inline comment",
+                "22|~|block|ZZPLC / ZZLAD2 [FB3]|networks|1|2",
+                "22|~|network|ZZPLC / ZZLAD2 [FB3] / network 1|code||1: {?} := NOT \"ZZALPHA\"",
+                "22|+|network|ZZPLC / ZZLAD2 [FB3] / network 2|LAD, empty",
+                "23|~|network|ZZPLC / ZZLAD2 [FB3] / network 1|code|1: {?} := NOT \"ZZALPHA\"|1: \"ZZOUT\" := NOT \"ZZALPHA\"",
+                "24|~|block|ZZPLC / ZZLAD2 [FB3]|networks|2|3",
+                "24|~|network|ZZPLC / ZZLAD2 [FB3] / network 2|code||1: \"ZZC\" := P(\"ZZB\", #memP)",
+                "24|+|network|ZZPLC / ZZLAD2 [FB3] / network 3|LAD, empty",
+                "25|~|block|ZZPLC / ZZLAD2 [FB3]|networks|3|4",
+                "25|~|network|ZZPLC / ZZLAD2 [FB3] / network 3|code||1: \"ZZC\" := N(\"ZZB\", #memN)",
+                "25|+|network|ZZPLC / ZZLAD2 [FB3] / network 4|LAD, empty",
+                "26|~|block|ZZPLC / ZZLAD2 [FB3]|networks|4|5",
+                "26|+|data type|ZZPLC / IEC_COUNTER [SDT30]|SDT",
+                "26|~|network|ZZPLC / ZZLAD2 [FB3] / network 4|code||1: CTU, #IEC_Counter_0_Instance(CU := \"ZZALPHA\", "
+                "R := \"ZZB\", PV := 10, CV => \"ZZN3\")",
+                "26|+|network|ZZPLC / ZZLAD2 [FB3] / network 5|LAD, empty",
+                "27|~|network|ZZPLC / ZZLAD2 [FB3] / network 4|code||2: \"ZZOUT\" := [1].Q",
+                "28|~|block|ZZPLC / ZZLAD2 [FB3]|networks|5|6",
+                "28|~|network|ZZPLC / ZZLAD2 [FB3] / network 5|code||1: TON, #IEC_Timer_0_Instance(IN := \"ZZALPHA\", PT := T#2S)",
+                "28|+|network|ZZPLC / ZZLAD2 [FB3] / network 6|LAD, empty",
+                "29|~|block|ZZPLC / Main [OB1]|networks|9|10",
+                "29|+|block|ZZPLC / ZZLAD2_DB [DB5]|instance, DB",
+                "29|~|network|ZZPLC / Main [OB1] / network 9|code||1: \"ZZSCL2\"()",
+                "29|+|network|ZZPLC / Main [OB1] / network 10|LAD, empty"}));
         }
+
+        // TIA Portal's full list of cross-references after save 3, the
+        // cross-references of ZZN2 after save 4 (the InOut) and of ZZOUTER
+        // after save 6 (the multi-instance, its declaration included) (Tools >
+        // Cross-references, all objects with references), its Access column
+        // in tiaconv's words. ZZSCL's uses it shows without a place.
+        current = "s14_code_rewritten cross-reference list";
+        std::ostringstream csv;
+        tia::writeCrossReferenceCsv(csv, l.code);
+        std::multiset<std::string> rows, expected;
+        std::istringstream in(csv.str());
+        std::string line;
+        std::getline(in, line);  // header
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            // block_name, network, access, kind, item: fields 3, 4, 6, 7, 8
+            std::vector<std::string> f;
+            std::string field;
+            bool quoted = false;
+            for (size_t i = 0; i < line.size(); ++i) {
+                const char c = line[i];
+                if (c == '"') {
+                    if (quoted && i + 1 < line.size() && line[i + 1] == '"') field += '"', ++i;
+                    else quoted = !quoted;
+                } else if (c == ',' && !quoted) f.push_back(field), field.clear();
+                else field += c;
+            }
+            f.push_back(field);
+            if (f.size() == 10) rows.insert(f[2] + " " + f[3] + " " + f[5] + " " + f[7]);
+            if (f.size() == 10 && f[3].empty() && f[2] == "ZZOUTER") CHECK(f[4] == "#inner (data type)");
+        }
+        for (const char* r : {"Main 1 read \"ZZALPHA\"", "Main 1 read \"ZZC\"", "Main 1 write \"ZZOUT\"",
+                              "Main 2 read \"ZZC\"", "Main 2 write \"ZZOUT\"",
+                              "Main 3 read \"ZZN1\"", "Main 3 read \"ZZN2\"", "Main 3 write \"ZZDATA\".speed",
+                              "Main 4 read \"ZZN1\"", "Main 4 write \"ZZN3\"",
+                              "Main 5 read \"ZZALPHA\"", "Main 5 write \"ZZC\"", "Main 5 call TON",
+                              "Main 5 single instance \"IEC_Timer_0_DB\"",
+                              "Main 6 read \"ZZALPHA\"", "Main 6 write \"ZZC\"", "Main 6 call \"ZZFB\"",
+                              "Main 6 single instance \"ZZFB_DB\"", "Main 6 read and write \"ZZN2\"",
+                              "Main 7 call \"ZZFBD\"", "Main 7 call \"ZZSCL\"", "Main 7 call \"ZZSTL\"",
+                              "Main 8 call \"ZZOUTER\"", "Main 8 single instance \"ZZOUTER_DB\"",
+                              "ZZOUTER  multiple instance \"ZZFB\"", "ZZOUTER 1 call \"ZZFB\"",
+                              "ZZOUTER 1 multiple instance #inner", "ZZOUTER 1 read \"ZZB\"",
+                              "ZZOUTER 1 read and write \"ZZN1\"", "ZZOUTER 1 write \"ZZOUT\"",
+                              // the second series: Main network 9 and the lists of ZZLAD2 and ZZSTL2
+                              "Main 9 call \"ZZSCL2\"", "Main 9 call \"ZZSTL2\"", "Main 9 call \"ZZLAD2\"",
+                              "Main 9 single instance \"ZZLAD2_DB\"",
+                              "ZZLAD2 1 read \"ZZALPHA\"", "ZZLAD2 1 write \"ZZOUT\"",
+                              "ZZLAD2 2 read \"ZZB\"", "ZZLAD2 2 write \"ZZC\"", "ZZLAD2 2 read and write #memP",
+                              "ZZLAD2 3 read \"ZZB\"", "ZZLAD2 3 write \"ZZC\"", "ZZLAD2 3 read and write #memN",
+                              "ZZLAD2 4 read \"ZZALPHA\"", "ZZLAD2 4 read \"ZZB\"", "ZZLAD2 4 write \"ZZN3\"",
+                              "ZZLAD2 4 write \"ZZOUT\"", "ZZLAD2 4 multiple instance #IEC_Counter_0_Instance", "ZZLAD2 4 call CTU",
+                              "ZZLAD2 5 read \"ZZALPHA\"", "ZZLAD2 5 write \"ZZOUT\"",
+                              "ZZLAD2 5 multiple instance #IEC_Timer_0_Instance", "ZZLAD2 5 call TON",
+                              "ZZSTL2 1 read \"ZZALPHA\"", "ZZSTL2 1 write \"ZZN1\"", "ZZSTL2 1 definition M001",
+                              "ZZSTL2 1 jump M001", "ZZSTL2 2 call \"ZZFBD\"", "ZZSTL2 3 call \"ZZFB\"",
+                              "ZZSTL2 3 single instance \"ZZFB_DB\"", "ZZSTL2 3 read \"ZZB\"", "ZZSTL2 3 write \"ZZC\"",
+                              "ZZSTL2 3 read and write \"ZZN2\"",
+                              "ZZSCL2 1 read \"ZZN1\"", "ZZSCL2 1 write \"ZZN1\"", "ZZSCL2 1 read \"ZZN2\"",
+                              "ZZSCL2 1 write \"ZZN2\"", "ZZSCL2 1 read \"ZZN3\"", "ZZSCL2 1 write \"ZZOUT\"",
+                              "ZZSCL2 1 write \"ZZC\"",
+                              "ZZFB 1 read #in1", "ZZFB 1 write #out1",
+                              "ZZFBD 1 read \"ZZALPHA\"", "ZZFBD 1 read \"ZZB\"", "ZZFBD 1 write \"ZZDATA\".run",
+                              "ZZSCL   know-how protected",
+                              "ZZSTL 1 read \"ZZALPHA\"", "ZZSTL 1 read \"ZZB\"", "ZZSTL 1 write \"ZZOUT\"",
+                              "ZZSTL 2 read \"ZZN1\"", "ZZSTL 2 write \"ZZN3\""})
+            expected.insert(r);
+        CHECK(rows == expected);
     }
 }
 

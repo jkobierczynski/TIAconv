@@ -295,11 +295,11 @@ files. Each side can be a folder, a project file, an archive or a
 after one of its saves, so two saves of one file can be compared as well.
 
 ```
-$ tiaconv diff --old-save 19 tests/fixtures/s14_code tests/fixtures/s14_code_rewritten
+$ tiaconv diff --old-save 19 --new-save 3 tests/fixtures/s14_code tests/fixtures/s14_code_rewritten
 Old: tests/fixtures/s14_code
      project s14_code, as after save 19 of 23; modified 2026-10-08T02:58:57.390Z by PC
 New: tests/fixtures/s14_code_rewritten
-     project s14_code, 3 saves recorded; modified 2026-10-08T03:21:22.252Z by PC
+     project s14_code, as after save 3 of 4; modified 2026-10-08T03:21:22.252Z by PC
 
 Differences:
   + network ZZPLC / Main [OB1] / network 2  (ZZ inserted, LAD)
@@ -593,7 +593,12 @@ Calls:
     samples is the order on the screen, top to bottom and left to right.
   - Contacts, the joining of branches and comparisons are written into the
     lines that follow from them, as `AND`, `OR`, `XOR`, `NOT`, `=`, `<>`,
-    `>`, `<`, `>=`, `<=`. A normally closed contact is `NOT`.
+    `>`, `<`, `>=`, `<=`. A normally closed contact is `NOT`. An edge
+    contact is `P(operand, edge bit)` or `N(operand, edge bit)`, joined with
+    `AND` to what comes before it.
+  - A negated coil writes `NOT` of its condition: `"Out" := NOT "In"`. The
+    listing shows the logic, so a normally closed contact in front of a
+    coil reads the same.
   - A coil is `operand := condition`; a set coil `S(operand) := condition`,
     a reset coil `R(operand) := condition`; any other kind of coil is
     written with its stored name the same way. A coil directly on the power
@@ -606,13 +611,20 @@ Calls:
   - `[3].eno` is the pin `eno` of the part on line 3.
   - Boxes are named as the project names them, which is not always what the
     editor shows: `PBox` is the box TIA Portal draws as `P_TRIG`, `Eq` the
-    comparison `==`. Names seen so far: `Contact`, `Coil`, `SCoil`, `RCoil`,
-    `O`, `A`, `Eq`, `Ne`, `PBox`, `Move`, `S_Move`.
+    comparison `==`. Names seen so far: `Contact`, `PContact`, `NContact`,
+    `Coil`, `SCoil`, `RCoil`, `O`, `A`, `Eq`, `Ne`, `PBox`, `Move`,
+    `S_Move`. Counters and timers are instructions (`CTU`, `TON`), with a
+    data block or a multi-instance (`#IEC_Counter_0_Instance`); the data
+    type the editor shows on the box (`Int`, `Time`) is not stored there.
   - The JSON also has the parts themselves (`elements`): every part with
     its pins and what each pin is connected to. Nothing of the stored
     network is left out there.
 - **STL** comes out as its statements, one per line, instruction and
-  operand in two columns as the editor shows them.
+  operand in two columns as the editor shows them: comments with `//`, a
+  label in front of its statement (`M001: NOP 0`), and the parameters of a
+  `CALL` on lines of their own (`in1  :="ZZB"`). An inline comment follows
+  the operand after one blank, where the editor puts it in a column of its
+  own.
 - **Title and comment** of a network are printed when it has them. Texts
   that exist in several languages are shown in one.
 - **Names are the current ones.** The project keeps, per block, a table of
@@ -648,15 +660,26 @@ PLC_4,OB1,Main,1,Keypad Function,write,data block member,"""lcd"".line1",String[
 PLC_4,OB1,Main,2,New ID flag reset,write,data block member,"""control"".Q_resetNewIdFlag",Bool,control
 ```
 
-- `access` is `read`, `write`, `read/write`, `call`, `instance` (the instance
-  data block of a call) or `multi-instance`. It is what the project recorded
-  when the block was last compiled or saved, the same data TIA Portal's own
-  cross-reference list is made from. A parameter of a called block that is
-  both input and output counts as `read/write`.
+- `access` is `read`, `write`, `read and write`, `call`, `single instance` (the
+  instance data block of a call) or `multiple instance`, the words of the Access
+  column in TIA Portal's cross-reference list (where `read` is "Read only").
+  It is what the project recorded when the block was last compiled or saved,
+  the same data TIA Portal's own list is made from. A parameter of a called
+  block that is both input and output (InOut) counts as `read and write`.
+- A data block has a row of its own only where it is used as a whole; where
+  a member is used, the row is the member's (`data_block` names the data
+  block), as in TIA Portal's list.
+- An FB that declares a multi-instance in its interface (a Static member
+  whose data type is an FB) has a row for that declaration, as TIA Portal's
+  list has: no network, `network_title` `#inner (data type)`, access
+  `multiple instance`, and the FB as item. Where the code calls it, the
+  member itself is a row of kind `multi-instance`.
 - `kind` is `tag`, `data block member`, `data block`, `instance data block`,
   `local` (a parameter or variable of the block itself), `local constant`,
-  `block`, `instruction` or `multi-instance`. Plain numbers and texts in the
-  code are not listed.
+  `block`, `instruction`, `multi-instance`, `label` (a jump label of STL,
+  with the accesses `definition` and `jump`) or `undefined name` (a name
+  typed in the code that the project does not know, shown as such in the
+  editor). Plain numbers and texts in the code are not listed.
 - The file answers questions like "which blocks write to this data block"
   (filter `data_block` and `access`) or "what does OB1 call".
 - The JSON has the same under `code[].references`, with every single use.
@@ -848,7 +871,7 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | | |
 |---|---|
 | File structure | Every byte of the twenty-one project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match. |
-| Object decoding | All 31 846 objects decode without an out-of-range read. |
+| Object decoding | All 31 960 objects decode without an out-of-range read. |
 | Device name, IP address, mask, router, PROFINET name, subnet | Read back exactly as entered in the V21 test projects, each at the step where it was entered. |
 | Order number, type, firmware | For the V16 sample all three match what its author documented; for the V19 sample the CPU type does. In the V21 test projects all three were confirmed by the person who configured them. |
 | Which attributes are stored | The rule reproduces, for all 2 629 object types listed there, the resolved layout table that the V13 sample carries; and with it every plain attribute segment of all samples is covered exactly, byte for byte, with two exceptions (one audit-trail object in each of two projects). `tools/check_storage_rule.py` repeats both checks. |
@@ -866,7 +889,7 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | `standard` / `optimized` | V21: of two global blocks made with the same members, the one with "optimized block access" switched off is reported as standard, the other as optimized; a block whose generated source says `S7_Optimized_Access := 'TRUE'` is reported as optimized. |
 | Constants | V21: four user constants entered one per save (Int, Real, Time, String, in two tag tables, one with a comment) read back with name, type, value, comment and table; a changed value and a deleted constant show in their save. The three constants left at the end are identical to TIA Portal's own export of them (name, tag table, data type, value, comment). What TIA Portal showed at the end (the three constants left, and the number of entries it gives for each tag table, which counts tags, user constants and system constants: 63 and 10) is what tiaconv reports. V16 sample: the connection block its author wrote refers to interface 64, and 64 is the hardware identifier of the CPU's PROFINET interface. All 58 system constants of that PLC (23 hardware identifiers, among them those of two IO devices, the OB constant and 34 process image partitions) have the name, data type and value shown in TIA Portal's "System constants" tab. What a hardware identifier stands for is not shown there; it agrees with the constant's name in every case. **Not checked:** PLCs with PROFIBUS, central modules of an S7-1500 or technology objects, which bring further kinds of identifiers. |
 | HMI tags | V21: a test project with a KTP400 Basic panel, one action per save: an internal tag, tags on a data block member (standard and optimized access), on a PLC tag and on a PLC data type, two tags with absolute access on two connections to two PLCs, cycle, acquisition mode, comment and start value changed, a tag deleted, a PLC tag deleted under its HMI tag. Each appears in the save in which it was made. At the end all 7 tags agree with TIA Portal's own export of the tag table (name, tag table, connection, PLC tag, data type, access method, address, start value, comment, acquisition mode and cycle, in the export's order) and with screenshots of the tag table (PLC name per tag, the four members of the structured tag, the broken link shown in red). V19 sample: the 100 tags on a Comfort panel agree with TIA Portal V21's export of that project in every one of those columns, 100 of 100. On the PLC side, every tag with an intact link leads to a tag or member that tiaconv reads from the block interface, with the same data type; where the block has standard access the address stored with the HMI tag is the offset read there (V21 and V15.1). Not checked: limits and linear scaling (never changed from their defaults), multiplexed tags, acquisition mode "On demand", PC runtimes, WinCC Unified, HMI tags in V13 projects. |
-| Block code (`--code`, `--xref-csv`) | V21: a test project with one action per save (`s14_code`): LAD with contacts, a normally closed contact, parallel branches, set coil, comparison, MOVE, ADD, a timer, a block call and three calls chained ENO to EN; FBD with a negated input; SCL; STL; an FB with its own parameters. Every save shows that action in the history and nothing else. All eight networks of the OB, and the networks of the FBD, LAD and STL blocks, agree operand by operand with screenshots of the editor; the SCL text is identical to the source TIA Portal generated for the block, and the STL statements to the generated STL source. The cross-references of one tag (seven places in four blocks) and the call structure (the four calls and the five data block accesses) agree with TIA Portal's lists. A tag renamed without compiling shows its new name in all four blocks, as the editor does; an inserted network appears at its place. The block that was know-how protected is listed as protected and not read, also in earlier saves. V19 and V15.1 samples: the bodies of the eight SCL blocks published as source files next to them are identical, 852 lines; two networks of the V15.1 sample (a call with 22 parameters, a network of 17 parts) agree with screenshots in its repository. **Not checked:** the kinds of access (read, write) against TIA Portal's cross-reference list, whose column was not legible; STL beyond simple statements (jumps, labels, calls); SCL constructs not in the samples (WHILE, REPEAT, ...); comments in several languages in SCL; V13 code, which reads as plausible SCL but has no source to compare with; GRAPH and fail-safe blocks, which are not read. |
+| Block code (`--code`, `--xref-csv`) | V21: a test project with one action per save (`s14_code`): LAD with contacts, a normally closed contact, parallel branches, set coil, comparison, MOVE, ADD, a timer, a block call and three calls chained ENO to EN; FBD with a negated input; SCL; STL; an FB with its own parameters. Every save shows that action in the history and nothing else. All eight networks of the OB, and the networks of the FBD, LAD and STL blocks, agree operand by operand with screenshots of the editor; the SCL text is identical to the source TIA Portal generated for the block, and the STL statements to the generated STL source. TIA Portal's full cross-reference list of the project (every tag, data block member, local, block and instruction with its access: read, write, read and write at an InOut parameter, call, single instance, multiple instance, also the declaration of a multi-instance) agrees with the CSV row by row, as does the call structure (the four calls and the five data block accesses). A tag renamed without compiling shows its new name in all four blocks, as the editor does; an inserted network appears at its place. The block that was know-how protected is listed as protected and not read, also in earlier saves. V19 and V15.1 samples: the bodies of the eight SCL blocks published as source files next to them are identical, 852 lines; two networks of the V15.1 sample (a call with 22 parameters, a network of 17 parts) agree with screenshots in its repository. A second series in the same project, one action per save: SCL `WHILE`, `REPEAT ... UNTIL`, `CASE` with a range and a list and a comment in several languages; STL with a line comment, an inline comment, a jump to a label, and `CALL` of an FC and of an FB with input, output and in-out parameters; LAD with a negated coil, positive and negative edge contacts, a counter and a timer as multi-instances. Each save shows that action; the SCL and STL text agrees with the editor line for line (an inline comment's column apart), the LAD networks with screenshots, and the cross-references of the new FB and of the STL block with TIA Portal's lists row by row (the label with Definition and Jump; the timer and counter instances, unlike an FB's, with no row for their declaration). **Not checked:** STL and SCL instructions and keywords beyond those in the test projects and samples (`EXIT`, `CONTINUE`, ...); LAD and FBD parts beyond those listed under Block code; V13 code, which reads as plausible SCL but has no source to compare with; GRAPH and fail-safe blocks, which are not read. |
 | Comparing projects (`tiaconv diff`) | V21: two saves of one file give what the save history lists for the saves between them; a save with itself and a file with itself give no difference; the test project before its know-how protection against the file TIA Portal wrote anew after it (several saves apart) gives exactly the five changes made in between, without the protected block's code; a "Save as" copy is paired with its original; two projects made apart are recognised as such. **Not checked:** two projects made apart with largely the same contents (a project rebuilt by hand, or imported from a library), where pairing by name matters most. |
 | Anonymous structures | Checked on the V19 sample only. |
 | V11, V12, V14, V17, V18, V20 projects | **Not tested.** |

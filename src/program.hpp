@@ -129,6 +129,11 @@ struct BlockInfo {
     Flag onlyInLoadMemory;        // "Only store in load memory"
     Flag accessibleFromOpcUa;     // "Data block accessible from OPC UA"
     Flag accessibleFromWebServer; // "Data block accessible via Web server"
+    // FB: the members of its interface (Input, Output, InOut, Static), read
+    // when the block is not know-how protected. Used for the multi-instances
+    // it declares; not listed in the outputs yet.
+    bool interfaceRead = false;
+    std::vector<BlockMember> interfaceMembers;
 };
 
 // What TIA Portal calls a programming language ("LAD" for LAD_CLASSIC);

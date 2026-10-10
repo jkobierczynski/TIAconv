@@ -32,9 +32,10 @@ struct CodeUse {
     size_t network = 0;
     int64_t networkId = 0;
     uint64_t uid = 0;  // the element of the network
-    // "read", "write", "read/write", "call", "instance" (the instance data
-    // block of a call), "multi-instance", "array limit", "" for none, or the
-    // stored name for anything else
+    // "read", "write", "read and write", "call", "single instance" (the instance
+    // data block of a call), "multiple instance", "array limit", "" for none, or
+    // the stored name for anything else (TIA Portal's words in its list of
+    // cross-references)
     std::string access;
     std::string accessStored;  // as the project names it; empty when it names none
     bool hidden = false;       // marked as not shown in TIA Portal's cross-references
@@ -71,6 +72,12 @@ struct CodeReference {
     std::string currentName;
     int64_t dataBlockRef = 0;  // a data block member: the entry of its data block
     bool renamed = false;      // `text` uses a current name that differs from the stored one
+    // Not from the code but from the block's interface: the member declared
+    // with this block as its data type (a multi-instance, "inner"). Its use
+    // has network 0.
+    std::string declaredAs;
+    // "call interface": the parameters of the called block, in order
+    std::vector<std::string> parameters;
 };
 
 // A part of a LAD or FBD network: a contact, a coil, a box, a call.

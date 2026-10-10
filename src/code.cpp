@@ -65,12 +65,14 @@ std::string accessName(const std::string& stored, bool statesKind) {
     if (stored.empty()) return statesKind ? "" : "read";
     if (stored == "Read") return "read";
     if (stored == "Write") return "write";
-    if (stored == "RW" || stored == "ReadWrite") return "read/write";
+    if (stored == "RW" || stored == "ReadWrite") return "read and write";
     if (stored == "Call") return "call";
-    if (stored == "InstanceDB") return "instance";
-    if (stored == "Multiinstance") return "multi-instance";
+    if (stored == "InstanceDB") return "single instance";
+    if (stored == "Multiinstance") return "multiple instance";
     if (stored == "ArrayBoundary") return "array limit";
     if (stored == "None") return "";
+    if (stored == "Jump") return "jump";
+    if (stored == "Definition") return "definition";
     return stored;
 }
 
@@ -87,6 +89,8 @@ std::string kindName(const std::string& stored) {
     if (stored == "Instruction") return "instruction";
     if (stored == "BlockInterfaceInfo") return "call interface";
     if (stored == "Expression") return "expression";
+    if (stored == "Label") return "label";
+    if (stored == "Ident") return "undefined name";  // a name typed in the code that the project does not know
     return stored;
 }
 
@@ -160,7 +164,7 @@ std::string refText(const std::map<int64_t, size_t>& index, const std::vector<Co
         out = r.name;
     } else if (k == "LocalConstant") {
         out = "#" + r.name;
-    } else if (k == "Instruction" || k == "Expression" || k == "BlockInterfaceInfo") {
+    } else if (k == "Instruction" || k == "Expression" || k == "BlockInterfaceInfo" || k == "Label") {
         out = r.name;
     } else if (!r.name.empty()) {
         // a tag, a block, anything else with a name of its own
@@ -201,6 +205,7 @@ const char* sclToken(const std::string& element) {
         {"KwELSE", "ELSE"}, {"KwELSIF", "ELSIF"}, {"KwENDIF", "END_IF"}, {"KwEndRegion", "END_REGION"},
         {"KwTO", "TO"},   {"KwDO", "DO"},      {"KwENDFOR", "END_FOR"}, {"KwOF", "OF"},
         {"KwENDC", "END_CASE"}, {"KwBY", "BY"}, {"BC", "(*"},          {"BCE", "*)"},
+        {"KwENDW", "END_WHILE"}, {"KwUNTIL", "UNTIL"}, {"KwENDR", "END_REPEAT"}, {"LDots", ".."},
     };
     for (const auto& t : table)
         if (element == t.first) return t.second;
@@ -210,7 +215,8 @@ const char* sclToken(const std::string& element) {
 // Elements that only group other elements.
 bool sclStructure(const std::string& element) {
     static const char* const names[] = {"RootStatements", "Statement", "Statements", "Expression", "Fold",
-                                        "FctCa",          "InstCa",    "Param",      "CaseElem",   "CaseRange"};
+                                        "FctCa",          "InstCa",    "Param",      "CaseElem",   "CaseRange",
+                                        "CaseSRange"};
     for (const char* n : names)
         if (element == n) return true;
     return false;
@@ -432,8 +438,8 @@ const char* compareOperator(const std::string& gate) {
 }
 
 bool isInlineGate(const std::string& gate) {
-    return gate == "Contact" || gate == "O" || gate == "A" || gate == "X" || gate == "Not" ||
-           compareOperator(gate) != nullptr;
+    return gate == "Contact" || gate == "PContact" || gate == "NContact" || gate == "O" || gate == "A" ||
+           gate == "X" || gate == "Not" || compareOperator(gate) != nullptr;
 }
 
 class Listing {
@@ -664,6 +670,12 @@ private:
             const std::string& g = p->name;
             if (g == "Contact") return combine({pinExpr(*p, "in", depth), pinExpr(*p, "operand", depth)}, kAnd, "AND");
             if (g == "Not") return negate(pinExpr(*p, "in", depth));
+            // an edge contact: the edge of the operand, with its edge memory bit
+            if (g == "PContact" || g == "NContact") {
+                Expr edge = atom(std::string(g == "PContact" ? "P(" : "N(") + shown(pinExpr(*p, "operand", depth)) + ", " +
+                                 shown(pinExpr(*p, "bit", depth)) + ")");
+                return combine({pinExpr(*p, "pre", depth), edge}, kAnd, "AND");
+            }
             if (const char* op = compareOperator(g)) {
                 Expr c;
                 c.prec = kCompare;
@@ -816,6 +828,7 @@ public:
             Object o;
             if (decodeKey(it->second, o)) read(o, code);
             else code.notes.push_back("block not readable");
+            if (info.interfaceRead) declaredInstances(info, code);
             out.stats.networks += code.networks.size();
             out.stats.references += code.references.size();
             for (const Network& n : code.networks)
@@ -826,6 +839,46 @@ public:
     }
 
 private:
+    // The multi-instances an FB declares: the Static members of its
+    // interface whose data type is an FB, alone or as an array. TIA Portal's
+    // cross-reference lists them as a use of that FB by the member ("Data
+    // type"), Multiple instance.
+    void declaredInstances(const BlockInfo& info, BlockCode& code) {
+        int64_t next = -1;
+        for (const BlockMember& m : info.interfaceMembers) {
+            if (m.section != "Static") continue;
+            // "ZZFB", a library block without quotes (Filter_PT1), or an
+            // array of either
+            std::string fb = m.dataType;
+            const size_t of = fb.rfind("] of ");
+            if (fb.compare(0, 6, "Array[") == 0 && of != std::string::npos) fb = fb.substr(of + 5);
+            if (fb.size() >= 2 && fb.front() == '"' && fb.back() == '"') fb = fb.substr(1, fb.size() - 2);
+            const BlockInfo* type = nullptr;
+            for (const BlockInfo& b : prog_.blockList)
+                if (b.plc == info.plc && b.type == "FB" && b.name == fb) type = &b;
+            if (!type) continue;
+            CodeReference r;
+            r.refId = next--;
+            r.name = fb;
+            r.currentName = fb;
+            r.declaredAs = m.name;
+            // as the calls are written: a block of the project in quotes, a
+            // block of a Siemens library as an instruction
+            if (type->system || type->protection == "system") {
+                r.kind = "instruction";
+                r.text = fb;
+            } else {
+                r.kind = "block";
+                r.text = "\"" + fb + "\"";
+                r.dataType = fb;
+            }
+            CodeUse u;
+            u.access = "multiple instance";
+            r.uses.push_back(u);
+            code.references.push_back(std::move(r));
+        }
+    }
+
     const Project& project_;
     const MetaModel& meta_;
     const ProgramData& prog_;
@@ -1222,6 +1275,11 @@ void parseReferencePart(const std::string& xml, std::vector<CodeReference>& out)
             }
         }
         if (const XmlNode* bad = e->child("BAD")) r.dataBlockRef = intAttr(*bad, "BIRID", 0);
+        // the interface of a called block: its parameters in order
+        if (const XmlNode* biid = e->child("BIID"))
+            if (const XmlNode* list = biid->child("BPIL"))
+                for (const auto& bpi : list->children)
+                    if (bpi->name == "BPI") r.parameters.push_back(bpi->attrOr("N", ""));
         if (const XmlNode* cd = e->child("CD")) {
             if (const XmlNode* cb = cd->child("CB")) {
                 const std::string value = decodeXmlName(cb->attrOr("SV", ""));
@@ -1317,6 +1375,14 @@ bool sclText(const std::string& xml, const SclContext& ctx, std::vector<std::str
     return true;
 }
 
+namespace {
+bool hasLabel(const XmlNode& statement) {
+    for (const auto& piece : statement.children)
+        if (piece->name == "Label") return true;
+    return false;
+}
+}  // namespace
+
 bool stlText(const std::string& xml, const std::vector<CodeReference>& references, std::vector<std::string>& lines,
              std::vector<std::string>& notes) {
     std::unique_ptr<XmlNode> root;
@@ -1333,34 +1399,84 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
     // One statement is one line: the instruction, then its operand in a
     // column of its own, as the editor shows them. The blanks the project
     // stores (NumBLs) are those that were typed; the editor ignores them.
+    // A label goes in front, a comment at the end; the parameters of a
+    // CALL follow on lines of their own.
+    auto operand = [&](const XmlNode& piece) -> std::string {
+        int64_t id = 0;
+        const std::string* ref = piece.attr("RefId");
+        const CodeReference* r = ref && parseInt(*ref, id) ? findRef(index, references, id) : nullptr;
+        if (r && !r->text.empty()) return r->text;
+        if (!unresolved) notes.push_back("a name could not be resolved, shown as {?}");
+        unresolved = true;
+        return "{?}";
+    };
+    auto unknownPiece = [&](const std::string& name) {
+        if (unknown.insert(name).second)
+            notes.push_back("piece of unknown kind '" + name + "', shown as {?" + name + "}");
+        return "{?" + name + "}";
+    };
     for (const auto& st : root->children) {
         if (st->name != "Statement") continue;
-        std::string line;
+        std::string label, line, comment;
+        std::vector<std::pair<std::string, std::string>> parameters;  // name, operand
         for (const auto& piece : st->children) {
-            if (!line.empty()) line.append(line.size() < 6 ? 6 - line.size() : 1, ' ');
+            if (piece->name == "Label") {
+                for (const auto& c : piece->children)
+                    if (c->name == "OpdAccess") label += operand(*c);
+                label += ":";
+                continue;
+            }
+            if (piece->name == "LC") {
+                comment = "//" + piece->attrOr("DispName", piece->attrOr("TE", ""));
+                continue;
+            }
+            if (piece->name == "CallInfo") {
+                int64_t id = 0;
+                const std::string* ref = piece->attr("RefId");
+                const CodeReference* callee = ref && parseInt(*ref, id) ? findRef(index, references, id) : nullptr;
+                for (const auto& pe : piece->children) {
+                    if (pe->name != "ParaExpression") continue;
+                    const int64_t n = intAttr(*pe, "FPNum", 0);
+                    std::string name = callee && n >= 1 && static_cast<size_t>(n) <= callee->parameters.size()
+                                           ? callee->parameters[static_cast<size_t>(n - 1)]
+                                           : "{?" + std::to_string(n) + "}";
+                    std::string value;
+                    for (const auto& c : pe->children) value += c->name == "OpdAccess" ? operand(*c) : unknownPiece(c->name);
+                    parameters.emplace_back(name, value);
+                }
+                continue;
+            }
+            const std::string* kw = piece->attr("Kw");
+            if (piece->name == "Token" && !piece->attr("DispName") && kw && *kw == ",") {
+                line += ",";  // between the block and its instance: CALL "FB", "DB"
+                continue;
+            }
+            // a labelled statement is written with single blanks: "M001: NOP 0"
+            if (!line.empty()) line.append(line.size() < 6 && !hasLabel(*st) ? 6 - line.size() : 1, ' ');
             if (const std::string* shown = piece->attr("DispName")) {
                 line += *shown;
-            } else if (const std::string* ref = piece->attr("RefId")) {
-                int64_t id = 0;
-                const CodeReference* r = parseInt(*ref, id) ? findRef(index, references, id) : nullptr;
-                if (r && !r->text.empty()) {
-                    line += r->text;
-                } else {
-                    line += "{?}";
-                    if (!unresolved) notes.push_back("a name could not be resolved, shown as {?}");
-                    unresolved = true;
-                }
+            } else if (piece->attr("RefId")) {
+                line += operand(*piece);
             } else if (const std::string* text = piece->attr("TE")) {
                 line += *text;
             } else if (const std::string* text2 = piece->attr("Text")) {
                 line += *text2;
+            } else if (piece->name == "Token" && kw && !kw->empty() &&
+                       kw->find_first_not_of("0123456789") != std::string::npos) {
+                line += *kw;
             } else {
-                line += "{?" + piece->name + "}";
-                if (unknown.insert(piece->name).second)
-                    notes.push_back("piece of unknown kind '" + piece->name + "', shown as {?" + piece->name + "}");
+                line += unknownPiece(piece->name);
             }
         }
+        if (!label.empty()) line = line.empty() ? label : label + " " + line;
+        if (!comment.empty()) line = line.empty() ? comment : line + " " + comment;
         lines.push_back(std::move(line));
+        // the parameters of a CALL as the editor lists them: the names padded
+        // to one width, then := and the operand ("in1  :=\"ZZB\"")
+        size_t width = 0;
+        for (const auto& p : parameters) width = std::max(width, p.first.size());
+        for (const auto& p : parameters)
+            lines.push_back("      " + p.first + std::string(width + 1 - p.first.size(), ' ') + ":=" + p.second);
     }
     while (!lines.empty() && lines.back().find_first_not_of(' ') == std::string::npos) lines.pop_back();
     return true;

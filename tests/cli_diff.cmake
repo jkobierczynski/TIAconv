@@ -26,13 +26,13 @@ if(NOT rc EQUAL 0 OR NOT quiet STREQUAL "")
 endif()
 
 # JSON and CSV on standard output, the text report then goes to standard error
-execute_process(COMMAND "${TIACONV}" diff -j - --old-save 19 "${PROJECT}" "${REWRITTEN}"
+execute_process(COMMAND "${TIACONV}" diff -j - --old-save 19 --new-save 3 "${PROJECT}" "${REWRITTEN}"
                 OUTPUT_VARIABLE json ERROR_VARIABLE text RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0 OR NOT json MATCHES "^\\{\n  \"tool\": \\{\"name\": \"tiaconv\"" OR NOT json MATCHES "\"same_lineage\": true"
    OR NOT json MATCHES "\"substantial_changes\": 5" OR NOT text MATCHES "^Old: ")
   message(FATAL_ERROR "diff JSON: ${rc} ${json}")
 endif()
-execute_process(COMMAND "${TIACONV}" diff -q --csv - --old-save 19 "${PROJECT}" "${REWRITTEN}"
+execute_process(COMMAND "${TIACONV}" diff -q --csv - --old-save 19 --new-save 3 "${PROJECT}" "${REWRITTEN}"
                 OUTPUT_VARIABLE csv RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0 OR NOT csv MATCHES "^change,kind,item,part_of,attribute,from,to,description,time_stamp\r?\n"
    OR NOT csv MATCHES "\nadded,network,ZZPLC / Main \\[OB1\\] / network 2,,,,\"1: \"\"ZZOUT\"\" := \"\"ZZC\"\"\",\"ZZ inserted, LAD\",\r?\n")

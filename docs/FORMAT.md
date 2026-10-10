@@ -941,10 +941,11 @@ included:
 | `SymPa ODN="..." FormalName="..."` | the name of a parameter in a call; `ODN=""` with `V="0"` where the source leaves the name out |
 | `OpAs` `:=`, `OpPa` `=>`, `FiSt` `;`, `BracO` `(`, `BracC` `)`, `BoxO` `[`, `BoxC` `]`, `Dot` `.`, `Comma` `,`, `Colon` `:` | |
 | `OpPl` `+`, `OpMi` `-`, `OpMu` `*`, `OpDi` `/`, `OpG` `>`, `OpL` `<`, `OpE` `=`, `OpU` `<>`, `OpLE` `<=`, `OpGE` `>=`, `OpAND` `AND`, `OpOR` `OR`, `OpNOT` `NOT` | |
-| `KwTHEN`, `KwELSE`, `KwELSIF`, `KwENDIF` `END_IF`, `KwTO`, `KwBY`, `KwDO`, `KwENDFOR` `END_FOR`, `KwOF`, `KwENDC` `END_CASE`, `KwEndRegion` `END_REGION` | |
-| `Expression`, `Statements`, `Fold`, `FctCa`, `InstCa`, `Param`, `CaseElem`, `CaseRange` | grouping only |
+| `KwTHEN`, `KwELSE`, `KwELSIF`, `KwENDIF` `END_IF`, `KwTO`, `KwBY`, `KwDO`, `KwENDFOR` `END_FOR`, `KwOF`, `KwENDC` `END_CASE`, `KwEndRegion` `END_REGION`, `KwENDW` `END_WHILE`, `KwUNTIL` `UNTIL`, `KwENDR` `END_REPEAT` | `WHILE` and `REPEAT` are the `TE` of their `Statement` |
+| `LDots` | `..` of a range in `CASE` (`1..5`) |
+| `Expression`, `Statements`, `Fold`, `FctCa`, `InstCa`, `Param`, `CaseElem`, `CaseRange`, `CaseSRange` (a range `a..b`) | grouping only |
 
-Other keywords and operators exist (`WHILE`, `REPEAT`, `XOR`, `MOD`, `**`,
+Other keywords and operators exist (`EXIT`, `CONTINUE`, `XOR`, `MOD`, `**`,
 ...): they are **not in the samples**, `tiaconv` writes `{?Name}` for an
 element it does not know.
 
@@ -970,10 +971,11 @@ front of every body line of a generated source. That covers `IF`/`ELSIF`/
 `ELSE`, `FOR` with `BY`, `CASE`, `REGION`, `RETURN`, calls of functions,
 function blocks and multi-instances with and without parameter names, array
 and structure access, slices (`.%B0`), line and block comments.
-**Not verified:** comments in several languages (`MLC`: the form `(/* */)` is
-from memory of TIA Portal's sources, the samples that have such comments
-have no source file), and the whole of V13, where the text reads as
-plausible SCL and no source exists to compare with.
+In V21 (`s14_code_rewritten`, second series) `WHILE`, `REPEAT ... UNTIL`,
+`CASE` with a range and a list (`1..5:`, `6, 8:`) and a comment in several
+languages `(/* */)` are identical to the editor, line for line.
+**Not verified:** the whole of V13, where the text reads as plausible SCL
+and no source exists to compare with.
 
 ### STL
 
@@ -996,10 +998,44 @@ One `Statement` per line. `Token` is the instruction: `DispName` as written,
 (`L 5`) is an entry too. `NumBLs` is the number of blanks typed in front of
 the piece; the editor does not show them, it puts instructions and operands
 in two columns (`tiaconv` does the same). A statement without children is an
-empty line. Seen in one V21 test project with seven statements, which
-agree with the editor and with the STL source TIA Portal generated for the
-block (`A "ZZA";`: one blank, and a `;`); labels, jumps, comments and
-everything else STL has are **not in the samples**.
+empty line.
+
+    <Statement><LC DispName=" line comment" /></Statement>
+    <Statement><Token Kw="1" DispName="A" /><OpdAccess RefId="6" /><LC DispName="inline comment" /></Statement>
+    <Statement><Token Kw="113" DispName="JC" /><OpdAccess RefId="2" /></Statement>
+    <Statement><Label><OpdAccess RefId="2" /><Token Kw=":" /></Label>
+               <Token Kw="239" DispName="NOP" /><UserToken Type="Constant" DispName="0" /></Statement>
+    <Statement><Token Kw="64" DispName="CALL" /><OpdAccess RefId="9" /><Token Kw="," /><OpdAccess RefId="10" />
+               <CallInfo RefId="11">
+                 <ParaExpression FPNum="1"><OpdAccess RefId="12" /></ParaExpression> ...
+               </CallInfo></Statement>
+
+`LC` is a comment, the text after `//` (on a line of its own, or at the end
+of a statement). A label is a `Label` before the instruction; the label is
+an entry of the reference table (`<Label><ID N="M001" S="Label">`, uses
+`AK="Definition"` and `AK="Jump"`), and a jump names the same entry. A
+`Token` with `Kw=","` and no `DispName` is the comma between a block and its
+instance data block. `CallInfo` names the call's `BlockInterfaceInfo` entry,
+whose `BIID/BPIL/BPI N="..."` list the called block's parameters in order;
+`ParaExpression FPNum="n"` is the `n`-th of them, with the operand given to
+it. TIA Portal's editor shows such a call as
+
+    CALL  "ZZFB", "ZZFB_DB"
+          in1  :="ZZB"
+          out1 :="ZZC"
+
+and `tiaconv` writes it the same way. A name typed in the code that the
+project does not know is an entry `<Ident><ID N="ZZA" S="Global">` with no
+kind of access.
+
+Seen in V21 test projects: the first with seven statements, which agree with
+the editor and with the STL source TIA Portal generated for the block (`A
+"ZZA";`: one blank, and a `;`); the second (`ZZSTL2`) with a line comment,
+an inline comment, a conditional jump to a label, a CALL of an FC and a
+CALL of an FB with an input, an output and an in-out parameter, which agree
+with the editor line for line, the inline comment's column apart. Other
+instructions are stored the same way and should read the same; the
+instruction words themselves come from `DispName`.
 
 ### LAD and FBD
 
@@ -1040,6 +1076,8 @@ is written the first way.
 Gates and their pins seen: `Contact` (`in`, `operand`, `out`), `Coil`,
 `SCoil`, `RCoil` (the same three), `O` and `A` (`in1`, `in2`, ..., `out`),
 `Eq`, `Ne` and the other comparisons (`pre` in LAD, `in1`, `in2`, `out`),
+`PContact` and `NContact` (`pre`, `operand`, `bit` the edge memory, `out`),
+a negated coil as `Coil` with `<Negated PinName="operand" />`,
 `PBox` (`in`, `bit`, `out`; drawn as P_TRIG), `Move` (`en`, `in`, `out1`,
 `eno`), `S_Move` (`en`, `in`, `out`). Calls and instructions have `en`,
 `eno` and the parameter names as pins. The parts are stored in the order
@@ -1077,11 +1115,11 @@ kind of entry. `IIdentPartData.PayLoad` is a blob with an XML document:
 
 | | |
 |---|---|
-| element name | the kind of entry: `GlobalAccess` (a data block member), `InterfaceAccess` (a parameter or variable of the block itself), `SimpleAccess` (a PLC tag), `LiteralConstant`, `LocalConstant`, `FBBlock`, `FCBlock`, `OBBlock` (a called block), `AufDBBlock` (an instance data block), `DepDBBlock` (a data block that is accessed), `MultInstAccess`, `Instruction` (of the library), `BlockInterfaceInfo` (the parameters of a called block as they were when the call was made), `Expression` |
+| element name | the kind of entry: `GlobalAccess` (a data block member), `InterfaceAccess` (a parameter or variable of the block itself), `SimpleAccess` (a PLC tag), `LiteralConstant`, `LocalConstant`, `FBBlock`, `FCBlock`, `OBBlock` (a called block), `AufDBBlock` (an instance data block), `DepDBBlock` (a data block that is accessed), `MultInstAccess`, `Instruction` (of the library), `BlockInterfaceInfo` (the parameters of a called block as they were when the call was made, `BIID/BPIL/BPI N="..."` in order), `Expression`, `Label` (a jump label of STL), `Ident` (a name typed in the code that the project does not know) |
 | `ID/@RID` | the reference number (`RefId` in the code) |
 | `ID/@N` | the name, for entries that have one: a tag, a block, a constant, an instruction. TIA Portal keeps it current: in the V19 sample a renamed data block has its new name here and the old one in the type (`OD/TD/@T`) |
 | `ID/@S` | `Global`, `Local`, `Constant`, `Instruction`, ... |
-| `ID/CS/C` | one use: `NID` the network (`RefID` of its `CompileUnitData`; 0 for the block interface), `UID` the element of the network, `AK` the kind of access (`Write`, `RW`, `Call`, `InstanceDB`, `Multiinstance`, `ArrayBoundary`, `None`; **absent for a reading access**), `XH="1"` for a use the cross-reference list does not show |
+| `ID/CS/C` | one use: `NID` the network (`RefID` of its `CompileUnitData`; 0 for the block interface), `UID` the element of the network, `AK` the kind of access (`Write`, `RW`, `Call`, `InstanceDB`, `Multiinstance`, `ArrayBoundary`, `None`, `Jump` and `Definition` for a label; **absent for a reading access**), `XH="1"` for a use the cross-reference list does not show. TIA Portal's list shows these as Read only, Write, Read and write, Call, Single instance and Multiple instance; it has no row for a data block in a network where only a member of it is used, although the table keeps a use of the data block there. The use of an FB as the data type of a multi-instance its list shows (`"FB".member ▶ Data type`, Multiple instance) is not in this table: it comes from the block's interface |
 | `OD/TD/@T` | the data type as `kind:number:name` |
 | `SSD/AOS/AO` | the path of an access, one `AO` per name: `"control".Q_resetNewIdFlag`. `RIDI` names the entries that are the indices of an array element (`"control".I_uid[3]`: `RIDI` of `I_uid` names the entry of the constant 3) |
 | `SSD/@AM` | a part of the variable: `b0` for `.%B0` |
@@ -1358,7 +1396,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 20 777 | 15 627 | `tests/fixtures` (seventeen project files, in this repository) |
+| V21 | v14 | 21 409 | 15 741 | `tests/fixtures` (seventeen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -1421,8 +1459,8 @@ all three configured items (both CPUs and the signal module) are as decoded.
 - Blocks: fail-safe blocks, GRAPH and other languages not in the samples,
   blocks that are instances of library types (relation `IsInstanceOf`),
   download times against a real download.
-- Block code: STL beyond the simplest statements (labels, jumps, comments,
-  calls); SCL keywords and operators not in the samples; LAD and
+- Block code: STL instructions beyond those in the test projects; SCL
+  keywords and operators not in the samples; LAD and
   FBD gates not in the samples; the declarations of a code block's
   parameters and variables as source text; how the code of a know-how
   protected block is stored (not examined, and not to be read).

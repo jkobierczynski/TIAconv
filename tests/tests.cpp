@@ -1874,7 +1874,7 @@ void testCodeReferences() {
         CHECK(r->uses.size() == 2);
         if (r->uses.size() == 2) {
             CHECK(r->uses[0].access == "write" && !r->uses[0].hidden && r->uses[0].network == 2);
-            CHECK(r->uses[1].access == "read/write" && r->uses[1].hidden && r->uses[1].network == 1);
+            CHECK(r->uses[1].access == "read and write" && r->uses[1].hidden && r->uses[1].network == 1);
         }
     }
     if (const tia::CodeReference* r = refById(refs, 10)) {
@@ -1886,9 +1886,9 @@ void testCodeReferences() {
         CHECK(r->uses.size() == 2 && r->uses[1].network == 0 && r->uses[1].access == "array limit");
     }
     if (const tia::CodeReference* r = refById(refs, 40)) CHECK(r->uses.size() == 1 && r->uses[0].access == "call");
-    if (const tia::CodeReference* r = refById(refs, 41)) CHECK(r->uses.size() == 1 && r->uses[0].access == "instance");
+    if (const tia::CodeReference* r = refById(refs, 41)) CHECK(r->uses.size() == 1 && r->uses[0].access == "single instance");
     if (const tia::CodeReference* r = refById(refs, 42)) CHECK(r->uses.size() == 1 && r->uses[0].access.empty());
-    if (const tia::CodeReference* r = refById(refs, 44)) CHECK(r->uses.size() == 1 && r->uses[0].access == "multi-instance");
+    if (const tia::CodeReference* r = refById(refs, 44)) CHECK(r->uses.size() == 1 && r->uses[0].access == "multiple instance");
     if (const tia::CodeReference* r = refById(refs, 50)) CHECK(r->uses.size() == 1 && r->uses[0].access == "Sideways");
 
     // not a reference table, broken documents, an index that names itself
@@ -2095,6 +2095,99 @@ void testStl() {
     CHECK(tia::stlText("<Statements />", refs, lines, notes) && lines.empty());
     CHECK(!tia::stlText("<SCLSource />", refs, lines, notes));
     CHECK(!tia::stlText("<Statements><Statement>", refs, lines, notes));
+}
+
+
+// Constructs as TIA Portal V21 stored them in the test project (second
+// series): SCL loops and a CASE range, STL comments, a label and a jump,
+// CALL with parameters, LAD edge contacts.
+void testCodeConstructs() {
+    std::vector<std::string> lines, notes;
+    // SCL: WHILE, REPEAT, a CASE range; constants only
+    const char scl[] =
+        "<SCLSource><RootStatements>"
+        "<Statement TE=\"WHILE\" SI=\"STWHI\"><Fold><BL /><Const TE=\"FALSE\" /><BL /><KwDO /><NL /><BL NumBLs=\"4\" />"
+        "<Statements><Statement><Const TE=\"x\" /><FiSt /></Statement></Statements><NL /><KwENDW /><FiSt /></Fold></Statement><NL />"
+        "<Statement TE=\"REPEAT\" SI=\"STREP\"><Fold><NL /><BL NumBLs=\"4\" /><Statements><Statement><Const TE=\"y\" /><FiSt />"
+        "</Statement></Statements><NL /><KwUNTIL /><BL /><Const TE=\"TRUE\" /><BL /><KwENDR /><FiSt /></Fold></Statement><NL />"
+        "<Statement TE=\"CASE\" SI=\"STCAS\"><Fold><BL /><Const TE=\"3\" /><BL /><KwOF /><NL /><BL NumBLs=\"4\" />"
+        "<CaseElem><CaseRange><CaseSRange><Const TE=\"1\" /><LDots /><Const TE=\"5\" /></CaseSRange></CaseRange><Colon />"
+        "</CaseElem><NL /><KwENDC /><FiSt /></Fold></Statement>"
+        "</RootStatements></SCLSource>";
+    tia::SclContext ctx;
+    CHECK(tia::sclText(scl, ctx, lines, notes));
+    CHECK_EQ(joinLines(lines), "WHILE FALSE DO\n    x;\nEND_WHILE;\nREPEAT\n    y;\nUNTIL TRUE END_REPEAT;\nCASE 3 OF\n    1..5:\nEND_CASE;\n");
+    CHECK(notes.empty());
+
+    // STL: the reference table entries the statements name
+    std::vector<tia::CodeReference> refs;
+    tia::parseReferencePart(
+        "<IdentXmlPart>"
+        "<Label><ID N=\"M001\" S=\"Label\" RID=\"2\"><CS><C NID=\"1\" UID=\"26\" AK=\"Jump\" /><C NID=\"1\" UID=\"32\" AK=\"Definition\" />"
+        "</CS></ID></Label>"
+        "<SimpleAccess><ID N=\"ZZA\" S=\"Global\" RID=\"6\"><CS><C NID=\"1\" UID=\"24\" /></CS></ID></SimpleAccess>"
+        "<SimpleAccess><ID N=\"ZZB\" S=\"Global\" RID=\"12\"><CS><C NID=\"3\" UID=\"29\" /></CS></ID></SimpleAccess>"
+        "<SimpleAccess><ID N=\"ZZN2\" S=\"Global\" RID=\"14\"><CS><C NID=\"3\" UID=\"31\" AK=\"RW\" /></CS></ID></SimpleAccess>"
+        "<FBBlock><ID N=\"ZZFB\" S=\"Global\" RID=\"9\" ID=\"10,11\"><CS><C NID=\"3\" UID=\"23\" AK=\"Call\" /></CS></ID></FBBlock>"
+        "<AufDBBlock><ID N=\"ZZFB_DB\" S=\"Global\" RID=\"10\"><CS><C NID=\"3\" UID=\"24\" AK=\"InstanceDB\" /></CS></ID></AufDBBlock>"
+        "<BlockInterfaceInfo><ID N=\"\" S=\"BlockInterfaceInfo\" RID=\"11\"><CS><C NID=\"3\" UID=\"25\" AK=\"Call\" /></CS></ID>"
+        "<BIID BT=\"FB\"><BPIL><BPI N=\"in1\" S=\"Input\" /><BPI N=\"io1\" S=\"InOut\" /></BPIL></BIID></BlockInterfaceInfo>"
+        "<Ident><ID N=\"ZZQ\" S=\"Global\" RID=\"15\"><CS><C NID=\"1\" UID=\"40\" /></CS></ID></Ident>"
+        "</IdentXmlPart>",
+        refs);
+    tia::finishReferences(refs, {});
+    const tia::CodeReference* label = nullptr;
+    for (const auto& r : refs)
+        if (r.refId == 2) label = &r;
+    CHECK(label && label->kind == "label" && label->text == "M001" && label->uses.size() == 2 &&
+          label->uses[0].access == "jump" && label->uses[1].access == "definition");
+    for (const auto& r : refs) {
+        if (r.refId == 11) CHECK(r.parameters == (std::vector<std::string>{"in1", "io1"}));
+        if (r.refId == 15) CHECK(r.kind == "undefined name" && r.text == "\"ZZQ\"");
+    }
+    const char stl[] =
+        "<Statements Version=\"14.0.0.0\">"
+        "<Statement><LC DispName=\" line comment\" /></Statement>"
+        "<Statement><Token NumBLs=\"6\" Kw=\"1\" DispName=\"A\" /><OpdAccess NumBLs=\"5\" RefId=\"6\" /><LC NumBLs=\"16\" DispName=\"inline\" /></Statement>"
+        "<Statement><Token Kw=\"113\" DispName=\"JC\" /><OpdAccess NumBLs=\"1\" RefId=\"2\" /></Statement>"
+        "<Statement><Label><OpdAccess RefId=\"2\" /><Token Kw=\":\" /></Label><Token NumBLs=\"1\" Kw=\"239\" DispName=\"NOP\" />"
+        "<UserToken Type=\"Constant\" DispName=\"0\" NumBLs=\"1\" /></Statement>"
+        "<Statement><Token Kw=\"64\" DispName=\"CALL\" /><OpdAccess NumBLs=\"1\" RefId=\"9\" /><Token Kw=\",\" />"
+        "<OpdAccess NumBLs=\"1\" RefId=\"10\" /><CallInfo RefId=\"11\"><ParaExpression FPNum=\"1\"><OpdAccess RefId=\"12\" />"
+        "</ParaExpression><ParaExpression FPNum=\"2\"><OpdAccess RefId=\"14\" /></ParaExpression>"
+        "<ParaExpression FPNum=\"3\"><OpdAccess RefId=\"12\" /></ParaExpression></CallInfo></Statement>"
+        "<Statement />"
+        "</Statements>";
+    lines.clear();
+    notes.clear();
+    CHECK(tia::stlText(stl, refs, lines, notes));
+    // a parameter beyond the called block's list is shown by its number
+    CHECK_EQ(joinLines(lines), "// line comment\nA     \"ZZA\" //inline\nJC    M001\nM001: NOP 0\nCALL  \"ZZFB\", \"ZZFB_DB\"\n"
+                               "      in1  :=\"ZZB\"\n      io1  :=\"ZZN2\"\n      {?3} :=\"ZZB\"\n");
+    CHECK(notes.empty());
+
+    // LAD: a positive edge contact after a contact, a negative one on the
+    // power rail, each to a coil; a negated coil
+    std::vector<tia::NetworkElement> elements;
+    lines.clear();
+    notes.clear();
+    const char lad[] =
+        "<FlgNet><Parts><Part UId=\"20\" Gate=\"Contact\" /><Part UId=\"23\" Gate=\"PContact\" /><Part UId=\"29\" Gate=\"Coil\" />"
+        "<Part UId=\"40\" Gate=\"NContact\" /><Part UId=\"41\" Gate=\"Coil\"><Negated PinName=\"operand\" /></Part>"
+        "<ORef UId=\"24\" RefId=\"12\" /><ORef UId=\"26\" RefId=\"14\" /><ORef UId=\"30\" RefId=\"6\" /><ORef UId=\"31\" RefId=\"9\" />"
+        "</Parts><Wires>"
+        "<Wire><Powerrail /><PCon UId=\"20\" PinName=\"in\" /><PCon UId=\"40\" PinName=\"pre\" /></Wire>"
+        "<Wire><OCon UId=\"31\" /><PCon UId=\"20\" PinName=\"operand\" /></Wire>"
+        "<Wire><PCon UId=\"20\" PinName=\"out\" /><PCon UId=\"23\" PinName=\"pre\" /></Wire>"
+        "<Wire><OCon UId=\"26\" /><PCon UId=\"23\" PinName=\"bit\" /><PCon UId=\"40\" PinName=\"bit\" /></Wire>"
+        "<Wire><OCon UId=\"24\" /><PCon UId=\"23\" PinName=\"operand\" /><PCon UId=\"40\" PinName=\"operand\" /></Wire>"
+        "<Wire><PCon UId=\"23\" PinName=\"out\" /><PCon UId=\"29\" PinName=\"in\" /></Wire>"
+        "<Wire><OCon UId=\"30\" /><PCon UId=\"29\" PinName=\"operand\" /><PCon UId=\"41\" PinName=\"operand\" /></Wire>"
+        "<Wire><PCon UId=\"40\" PinName=\"out\" /><PCon UId=\"41\" PinName=\"in\" /></Wire>"
+        "</Wires></FlgNet>";
+    CHECK(tia::graphicNetwork(lad, refs, elements, lines, notes));
+    CHECK_EQ(joinLines(lines), "1: \"ZZA\" := \"ZZFB\" AND P(\"ZZB\", \"ZZN2\")\n2: \"ZZA\" := NOT N(\"ZZB\", \"ZZN2\")\n");
+    CHECK(notes.empty());
 }
 
 void testGraphicNetworks() {
@@ -2516,19 +2609,19 @@ void testCodeProject() {
                  "\"elements\": [{\"uid\": 21, \"kind\": \"gate\", \"name\": \"Contact\", \"instance\": null, \"options\": [], \"pins\": ["
                  "{\"name\": \"in\", \"direction\": \"in\", \"connected\": [\"power rail\"]}") != std::string::npos);
     CHECK(j.find("{\"kind\": \"tag\", \"kind_stored\": \"SimpleAccess\", \"text\": \"\\\"Start\\\"\", \"data_type\": \"Bool\", \"data_block\": null, "
-                 "\"uses\": [{\"network\": 1, \"access\": \"read/write\", \"access_stored\": \"RW\", \"uid\": 42, \"hidden\": false}]}") !=
+                 "\"declared_as\": null, \"uses\": [{\"network\": 1, \"access\": \"read and write\", \"access_stored\": \"RW\", \"uid\": 42, \"hidden\": false}]}") !=
           std::string::npos);
     // the entries TIA Portal keeps for itself are not listed
     CHECK(j.find("call interface") == std::string::npos && c.find("call interface") == std::string::npos);
     CHECK(c.find("plc,block,block_name,network,network_title,access,kind,item,data_type,data_block\r\n") == 0);
-    CHECK(c.find("PLC_1,FB5,Pump,1,Start the pump,read/write,tag,\"\"\"Start\"\"\",Bool,\r\n") != std::string::npos);
+    CHECK(c.find("PLC_1,FB5,Pump,1,Start the pump,read and write,tag,\"\"\"Start\"\"\",Bool,\r\n") != std::string::npos);
     CHECK(c.find("PLC_1,FB5,Pump,2,,write,data block member,\"\"\"Data\"\".\"\"my buffer\"\"[2, #index]\",Byte,Data\r\n") != std::string::npos);
     CHECK(c.find("PLC_1,FB5,Pump,1,Start the pump,call,block,\"\"\"Motor\"\"\",Motor,\r\n") != std::string::npos);
     CHECK(c.find("PLC_1,FB5,Pump,,,array limit,local,#index,Int,\r\n") != std::string::npos);
     CHECK(c.find("PLC_1,FC2,Recipe,,,,not read,know-how protected,,\r\n") != std::string::npos);
     CHECK(c.find(",constant,") == std::string::npos);  // plain numbers are not listed
     // the use TIA Portal hides is not a row: "my buffer" in network 1
-    CHECK(c.find("PLC_1,FB5,Pump,1,Start the pump,read/write,data block member") == std::string::npos);
+    CHECK(c.find("PLC_1,FB5,Pump,1,Start the pump,read and write,data block member") == std::string::npos);
 
     // without --code the report says nothing about code
     tia::ReportContext plain;
@@ -2661,6 +2754,7 @@ int main() {
     testCodeReferences();
     testScl();
     testStl();
+    testCodeConstructs();
     testGraphicNetworks();
     testCodeProject();
     testCodeProtectionOverTime();

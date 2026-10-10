@@ -4,10 +4,12 @@
 #include "output.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <iomanip>
 #include <map>
+#include <set>
 
 namespace tia {
 namespace {
@@ -708,18 +710,28 @@ void writeCrossReferenceCsv(std::ostream& out, const CodeData& code) {
         }
         struct Row {
             size_t network;
-            std::string access, kind, item, dataType, container;
+            std::string access, kind, item, dataType, container, declaredAs;
         };
         std::vector<Row> rows;
+        // A data block counts in a network only where it is used as a whole:
+        // where one of its members is used, TIA Portal lists the member.
+        std::set<std::pair<int64_t, size_t>> memberUsed;  // (data block entry, network)
+        for (const CodeReference& r : b.references) {
+            if (r.dataBlockRef == 0 || !listedReference(r)) continue;
+            for (const CodeUse& u : r.uses)
+                if (!u.hidden) memberUsed.insert({r.dataBlockRef, u.network});
+        }
         for (const CodeReference& r : b.references) {
             if (!listedReference(r)) continue;
             for (const CodeUse& u : r.uses) {
                 if (u.hidden) continue;
-                Row row{u.network, u.access, r.kind, r.text, r.dataType, r.container};
+                if (r.kind == "data block" && memberUsed.count({r.refId, u.network})) continue;
+                Row row{u.network, u.access, r.kind, r.text, r.dataType, r.container, r.declaredAs};
                 // one row per network and kind of access, however often
                 bool seen = false;
                 for (const Row& x : rows)
-                    if (x.network == row.network && x.access == row.access && x.kind == row.kind && x.item == row.item)
+                    if (x.network == row.network && x.access == row.access && x.kind == row.kind && x.item == row.item &&
+                    x.declaredAs == row.declaredAs)
                         seen = true;
                 if (!seen) rows.push_back(std::move(row));
             }
@@ -728,6 +740,14 @@ void writeCrossReferenceCsv(std::ostream& out, const CodeData& code) {
         for (const Row& r : rows) {
             std::string title;
             if (r.network >= 1 && r.network <= b.networks.size()) title = b.networks[r.network - 1].title;
+            // a multi-instance declared in the interface: where TIA Portal
+            // writes "inner > Data type"
+            if (!r.declaredAs.empty()) {
+                bool plain = !std::isdigit(static_cast<unsigned char>(r.declaredAs[0]));
+                for (char ch : r.declaredAs)
+                    if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '_') plain = false;
+                title = (plain ? "#" + r.declaredAs : "#\"" + r.declaredAs + "\"") + " (data type)";
+            }
             csvRow(out, {b.plc, number, b.name, r.network ? std::to_string(r.network) : "", title, r.access, r.kind,
                          r.item, r.dataType, r.container});
         }
@@ -1152,7 +1172,7 @@ void jsonCode(std::ostream& out, const CodeData& code) {
             if (r.kind == "call interface" || r.kind == "expression") continue;
             out << (first ? "\n" : ",\n") << "      {\"kind\": " << q(r.kind) << ", \"kind_stored\": " << q(r.kindStored)
                 << ", \"text\": " << q(r.text) << ", \"data_type\": " << qn(r.dataType) << ", \"data_block\": "
-                << qn(r.container) << ", \"uses\": [";
+                << qn(r.container) << ", \"declared_as\": " << qn(r.declaredAs) << ", \"uses\": [";
             first = false;
             for (size_t ui = 0; ui < r.uses.size(); ++ui) {
                 const CodeUse& u = r.uses[ui];

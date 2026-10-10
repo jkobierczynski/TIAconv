@@ -272,6 +272,15 @@ References from TIA Portal, taken after save 19 (before the edits of saves
   `IEC_Timer_0_DB` (Main network 5), `ZZDATA` (Main networks 2 and 3, `ZZFBD`
   network 1, `ZZSCL`).
 - After save 21: a screenshot of Main with `"ZZALPHA"` in networks 1 and 2.
+- After save 3 of `s14_code_rewritten`: TIA Portal's full cross-reference list
+  (Tools > Cross-references, objects with references, Access column): every
+  row is in the test, with Read only, Write, Call and Single instance.
+- After save 4: the cross-references of `ZZN2`: Read only in Main NW3, Read
+  and write in NW6 (the InOut), and ZZSCL without a place.
+- After save 6: the cross-references of `ZZOUTER`: called in Main NW8; in
+  `ZZOUTER` NW1 the call of `ZZFB`, `inner` Multiple instance, `ZZB` Read only,
+  `ZZN1` Read and write, `ZZOUT` Write; and `"ZZOUTER".inner ▶ Data type`,
+  Multiple instance, the declaration in the interface.
 
 With the know-how protection (save 23) TIA Portal wrote the project file
 anew, without the earlier saves, and kept the old file in
@@ -284,6 +293,42 @@ whole project, then
 |---|---|
 | 2 | the rewritten file closed by the next save: a new network inserted after network 1 of Main, title `ZZ inserted` |
 | 3 | that network: contact `ZZC`, coil `ZZOUT` |
+| 4 | an InOut parameter `io1` (Int) added to `ZZFB`, and `ZZN2` connected to it in network 6 of Main |
+| 5 | a new FB `ZZOUTER` (LAD) that calls `ZZFB` as multi-instance `inner`, with `in1` = `ZZB`, `io1` = `ZZN1`, `out1` = `ZZOUT` (three actions, one save) |
+| 6 | `ZZOUTER` called in network 8 of Main, with the instance data block `ZZOUTER_DB` |
+| 7, 8 | compiled |
+
+Second series, in the same file (more code constructs):
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 9 | a new SCL function, left with the name `Block_1` |
+| 10 | renamed to `ZZSCL2` |
+| 11 | `WHILE "ZZN1" < 10 DO "ZZN1" := "ZZN1" + 1; END_WHILE;` |
+| 12 | `REPEAT "ZZN2" := "ZZN2" + 1; UNTIL "ZZN2" > 5 END_REPEAT;` |
+| 13 | `CASE "ZZN3" OF 1..5: ...; 6, 8: ...; ELSE ...; END_CASE;` |
+| 14 | `(/* multi-language comment */)` |
+| 15 | a new STL function `ZZSTL2` |
+| 16 | `// line comment`, `A "ZZA"` (a name that no longer existed: the tag was renamed `ZZALPHA` before) |
+| 17 | `JC M001`, `L 1`, `T "ZZN1"`, `M001: NOP 0` |
+| 18 | `//inline comment` after `A "ZZA"` |
+| 19 | network 2 `CALL "ZZFBD"`, network 3 `CALL "ZZFB", "ZZFB_DB"` with `in1`, `out1`, `io1` (two steps, one save) |
+| 20 | a new LAD function block `ZZLAD2` with the Static members `memP`, `memN` |
+| 21 | in `ZZSTL2`, `"ZZA"` corrected to `"ZZALPHA"` |
+| 22 | `ZZLAD2` network 1: contact `"ZZALPHA"`, negated coil without operand |
+| 23 | the coil's operand `"ZZOUT"` |
+| 24 | network 2: positive edge contact `"ZZB"` / `#memP`, coil `"ZZC"` |
+| 25 | network 3: negative edge contact `"ZZB"` / `#memN`, coil `"ZZC"` |
+| 26 | network 4: CTU as multi-instance (CU `"ZZALPHA"`, R `"ZZB"`, PV 10, CV `"ZZN3"`) |
+| 27 | its Q to a coil `"ZZOUT"` |
+| 28 | network 5: TON as multi-instance (IN `"ZZALPHA"`, PT `T#2S`), Q to a coil `"ZZOUT"` |
+| 29 | Main network 9: `ZZSCL2`, `ZZSTL2`, `ZZLAD2` (`ZZLAD2_DB`) chained ENO to EN |
+| 30 | compiled |
+
+References after save 30: screenshots of `ZZSCL2` and `ZZSTL2` in the
+editor (the text of both), of the six networks of `ZZLAD2`, and of the
+cross-references of `ZZLAD2` and `ZZSTL2`. TIA Portal could not generate
+sources for the two blocks here, so there are no source files for them.
 
 The tables above are also the reference for the save history
 (`tiaconv --history`): for every save listed in them, the test expects the

@@ -1,5 +1,40 @@
 # Changes
 
+## 0.13.0
+
+- STL: comments (`//` on a line of its own or after an operand), jump
+  labels (`M001: NOP 0`), the comma of `CALL "FB", "DB"`, and the
+  parameters of a `CALL`, listed as the editor shows them
+  (`in1  :="ZZB"`), with their names from the called block's interface.
+- SCL: `END_WHILE`, `UNTIL`, `END_REPEAT` and ranges in `CASE` (`1..5`).
+  The comment in several languages `(/* */)` is now checked against the
+  editor.
+- LAD: edge contacts as `P(operand, edge bit)` / `N(...)` in the condition
+  instead of a box of their own.
+- Cross-reference: jump labels (kind `label`, access `definition` and
+  `jump`, as TIA Portal lists them) and names the project does not know
+  (kind `undefined name`).
+- The test project `s14_code_rewritten` has a second series of 22 saves with
+  these constructs, a negated coil, and a counter and a timer as
+  multi-instances, all checked against the editor and TIA Portal's
+  cross-reference lists.
+
+## 0.12.1
+
+- Cross-reference: the kinds of access in TIA Portal's words: the instance
+  data block of a call is `single instance` (was `instance`), the actual
+  parameter of an InOut `read and write` (was `read/write`), a multi-instance
+  `multiple instance` (was `multi-instance`). A data block has a row of its
+  own only in networks where it is used as a whole, not where only a member
+  of it is used. Checked against TIA Portal's full cross-reference list of
+  the test project.
+- Cross-reference: the multi-instances an FB declares in its interface
+  have a row, as in TIA Portal's list (`#inner (data type)`). The interfaces
+  of FBs are read for this; know-how protected ones are not.
+- The test project `s14_code_rewritten` has five more saves: an InOut
+  parameter, whose actual parameter TIA Portal and tiaconv list as
+  `read and write`; an FB with a multi-instance, called from Main; compiling.
+
 ## 0.12.0
 
 - `tiaconv diff OLD NEW`: what differs between two projects, or two

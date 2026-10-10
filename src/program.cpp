@@ -118,7 +118,14 @@ public:
             }
             if (role == 3 || role == 4) noteComments(o);
             if (listed) {
-                if (inProject(o)) out.blockList.push_back(makeInfo(o));
+                if (inProject(o)) {
+                    out.blockList.push_back(makeInfo(o));
+                    const BlockInfo& info = out.blockList.back();
+                    if (info.type == "FB" && info.protectionStored != "KnowHowProtection" &&
+                        info.protectionStored != "SystemKnowHowProtection" && info.protection.find("know-how") == std::string::npos &&
+                        info.protection != "system")
+                        pendingInterfaces_.push_back({out.blockList.size() - 1, Key(b.type, b.id)});
+                }
                 else ++out.stats.listedBlocksOutsideProject;
             }
             if (constant) {
@@ -158,6 +165,23 @@ public:
             DataBlock db = makeBlock(o);
             if (db.members.empty() && !db.notes.empty()) ++out.stats.blocksWithoutInterface;
             out.blocks.push_back(std::move(db));
+        }
+        for (const auto& pi : pendingInterfaces_) {
+            const Block* b = project_.live(pi.second.first, pi.second.second);
+            Object o;
+            if (!b) continue;
+            try {
+                if (!project_.decode(*b, o)) continue;
+            } catch (const ParseError&) {
+                continue;
+            }
+            BlockInfo& info = out.blockList[pi.first];
+            std::vector<std::string> notes;
+            std::string family;
+            if (const Value* v = o.expandoValue("TargetFamily"))
+                if (v->type == Value::Type::String) family = v->s;
+            readInterface(o, family, false, info.interfaceMembers, notes);
+            info.interfaceRead = notes.empty() || !info.interfaceMembers.empty();
         }
         std::stable_sort(out.tags.begin(), out.tags.end(), [](const Tag& a, const Tag& b) {
             if (a.plc != b.plc) return a.plc < b.plc;
@@ -228,6 +252,7 @@ private:
     // data type names by family ("S71200") and number
     std::map<std::string, std::map<uint32_t, std::string>> catalogue_;
     std::vector<Key> pendingBlocks_;
+    std::vector<std::pair<size_t, Key>> pendingInterfaces_;  // FB: position in blockList, object
 
     // 1 type catalogue entry, 2 tag, 3 data block, 4 anything else with an
     // interface (code blocks, PLC data types): only its comments are of use
@@ -982,10 +1007,20 @@ private:
         if (const Value* v = o.expandoValue("TargetFamily"))
             if (v->type == Value::Type::String) family = v->s;
 
+        const bool offsets = db.hasAccess && !db.symbolicAccessOnly;
+        readInterface(o, family, offsets, db.members, db.notes);
+        db.memberCount = count(db.members);
+        return db;
+    }
+
+    // The members of a block's interface: of a data block, or of the block
+    // an instance data block is an instance of, or of a code block itself.
+    void readInterface(const Object& o, const std::string& family, bool offsets, std::vector<BlockMember>& out,
+                       std::vector<std::string>& notes) {
         Key iface;
         if (!relInterface_ || !o.relationTarget(relInterface_, iface)) {
-            db.notes.push_back("no interface found");
-            return db;
+            notes.push_back("no interface found");
+            return;
         }
         std::shared_ptr<Part> top = loadPart(iface);
 
@@ -1009,8 +1044,8 @@ private:
             }
         }
         if (!source) {
-            db.notes.push_back("interface not readable");
-            return db;
+            notes.push_back("interface not readable");
+            return;
         }
         std::map<std::string, std::string> rootDefaults;
         if (source != top) valuesOf(source, rootDefaults);
@@ -1020,13 +1055,10 @@ private:
         ctx.family = family;
         ctx.overrides = &overrides;
         ctx.budget = &budget;
-        const bool offsets = db.hasAccess && !db.symbolicAccessOnly;
         members(*source->root, source, ctx, std::string(), std::string(), &rootDefaults, commentsOf(source->key), 0,
-                offsets, 0, true, std::string(), db.members);
-        db.memberCount = count(db.members);
-        if (budget == 0) db.notes.push_back("member list cut off");
-        if (anyUnresolved(db.members)) db.notes.push_back("some nested types could not be followed");
-        return db;
+                offsets, 0, true, std::string(), out);
+        if (budget == 0) notes.push_back("member list cut off");
+        if (anyUnresolved(out)) notes.push_back("some nested types could not be followed");
     }
 };
 
