@@ -922,6 +922,9 @@ fixed offsets per TIA version. Details, and what is still unknown, are in
 
 `tools/` holds the Python scripts used to explore the format.
 
+How the tool is developed and checked, and what is still to do, is in
+[DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## Credits and licence
 
 The newer file layout was first described publicly by Nils Emmerich (ERNW) in
