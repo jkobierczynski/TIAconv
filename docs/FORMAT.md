@@ -20,6 +20,19 @@ ERNW, in ["TIA Project Parser"](https://insinuator.net/2026/08/tia-project-parse
 and the BSD-licensed [tia-parser](https://github.com/ernw/tia-parser).
 `tiaconv` shares no code with it.
 
+[TiaProjectParser](https://gitee.com/lircy/TiaProjectParser) (Apache-2.0,
+C#, 2026), also a reader of `PEData.plf` without TIA Portal, rebuilds the
+symbol tree of a PLC with the access sequences used for symbolic online
+access, and was checked on V13, V14, V15 and V20 projects. Its README is
+the source here of the names of the further data files of a large project
+(`PEData-01.plf`, ...). It also describes the product version in the file
+header (V13 `1300.109.701.1`, V14 `1400.0.3101.1`), and two versions of an
+object kept side by side: the one last downloaded to the PLC and the latest
+edit, the latest winning; that agrees with what is found here (the file
+keeps earlier versions, the last one counts), and the meaning it gives the
+earlier version is not checked here. `tiaconv` shares no code with it, and
+only its README was read.
+
 New in these notes: the older layout, the slot count in the block header,
 relation lists, the older expando segment, the deleted flag in the older
 layout, the rule for which attributes are stored, the page format of large
@@ -47,8 +60,11 @@ from the sample files.
 A project archive (`.zap15_1`, `.zap19`, ...) is an ordinary ZIP file with the
 same tree inside (**verified** for one V19 archive).
 
-Large projects are said to spread their data over several `.plf` files. No
-sample has that; `tiaconv` reads `PEData.plf` only and warns about others.
+Large projects spread their data over several files, `System/PEData.plf`
+and then `PEData-01.plf`, `PEData-02.plf`, ... (the naming as described by
+TiaProjectParser, see Credits). No sample has that, and how the contents of
+the files fit together is not known; `tiaconv` reads `PEData.plf` only, and
+names the other files in a warning that says the report is incomplete.
 
 ## Two layouts
 

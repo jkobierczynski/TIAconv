@@ -915,7 +915,7 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | Anonymous structures | Checked on the V19 sample only. |
 | V17 | One third-party project archive (`.zap17`, two S7-1200 PLCs, 113 LAD networks): every block hash matches, every object decodes, and the code reads without an unknown part; not compared with TIA Portal. |
 | V11, V12, V14, V18, V20 projects | **Not tested.** |
-| Large projects split over several data files | **Not supported**; a warning is printed. |
+| Large projects split over several data files | **Not supported.** The further files (`PEData-01.plf`, ...) are named in a warning that says the report is incomplete; no such project has been seen. |
 | Protected projects | **Not tested.** tiaconv does not try to remove any protection. |
 | Know-how protected blocks | V21: a block that was protected in the test project is listed as protected, its code is not read, in the present state and in every earlier save shown with `--save` or `--history`. Their code is not looked at. |
 

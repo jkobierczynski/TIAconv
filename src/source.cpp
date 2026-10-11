@@ -40,12 +40,25 @@ bool isZip(const std::vector<uint8_t>& d) { return d.size() > 4 && std::memcmp(d
 // Other .plf files next to PEData.plf are not understood yet; say so.
 void noteSiblings(const fs::path& plf, LoadedSource& out) {
     std::error_code ec;
+    std::vector<std::string> names;
     for (const auto& e : fs::directory_iterator(plf.parent_path(), ec)) {
         if (!e.is_regular_file(ec)) continue;
         if (lower(e.path().extension().u8string()) != ".plf") continue;
         if (lower(e.path().filename().u8string()) == "pedata.plf") continue;
-        out.warnings.push_back("additional data file not read: " + e.path().filename().u8string());
+        names.push_back(e.path().filename().u8string());
     }
+    for (auto& w : extraDataFileWarnings(names)) out.warnings.push_back(std::move(w));
+}
+
+// "PEData-01.plf": a further data file of a large project.
+bool isDataPart(const std::string& name) {
+    const std::string n = lower(name);
+    const std::string head = "pedata-", tail = ".plf";
+    if (n.size() <= head.size() + tail.size() || n.compare(0, head.size(), head) != 0 ||
+        n.compare(n.size() - tail.size(), tail.size(), tail) != 0)
+        return false;
+    const std::string digits = n.substr(head.size(), n.size() - head.size() - tail.size());
+    return digits.find_first_not_of("0123456789") == std::string::npos;
 }
 
 LoadedSource fromPlf(const fs::path& plf) {
@@ -71,6 +84,7 @@ LoadedSource fromArchive(const fs::path& file, const std::vector<uint8_t>& zipDa
         throw std::runtime_error("cannot read archive " + file.u8string());
     LoadedSource out;
     bool found = false;
+    std::vector<std::string> extra;
     const mz_uint count = mz_zip_reader_get_num_files(&zip);
     for (mz_uint i = 0; i < count; ++i) {
         mz_zip_archive_file_stat st;
@@ -83,7 +97,9 @@ LoadedSource fromArchive(const fs::path& file, const std::vector<uint8_t>& zipDa
         const bool main = name == "system/pedata.plf" ||
                           (name.size() > 18 && name.compare(name.size() - 18, 18, "/system/pedata.plf") == 0);
         if (!main) {
-            out.warnings.push_back(std::string("additional data file not read: ") + st.m_filename);
+            std::string base = st.m_filename;
+            std::replace(base.begin(), base.end(), '\\', '/');
+            extra.push_back(base.substr(base.rfind('/') == std::string::npos ? 0 : base.rfind('/') + 1));
             continue;
         }
         if (found) continue;
@@ -101,10 +117,27 @@ LoadedSource fromArchive(const fs::path& file, const std::vector<uint8_t>& zipDa
     }
     mz_zip_reader_end(&zip);
     if (!found) throw std::runtime_error("no System/PEData.plf inside " + file.u8string());
+    for (auto& w : extraDataFileWarnings(extra)) out.warnings.push_back(std::move(w));
     return out;
 }
 
 }  // namespace
+
+std::vector<std::string> extraDataFileWarnings(std::vector<std::string> names) {
+    std::sort(names.begin(), names.end());
+    std::vector<std::string> parts, out;
+    for (const auto& n : names) {
+        if (isDataPart(n)) parts.push_back(n);
+        else out.push_back("additional data file not read: " + n);
+    }
+    if (!parts.empty()) {
+        std::string list;
+        for (const auto& n : parts) list += (list.empty() ? "" : ", ") + n;
+        out.insert(out.begin(), "the project is spread over several data files; only PEData.plf is read, not " + list +
+                                    ", so what is reported is incomplete");
+    }
+    return out;
+}
 
 LoadedSource loadProjectData(const std::string& path) {
     const fs::path p = fs::u8path(path);

@@ -17,6 +17,10 @@
 - Cross-reference: named constants of a tag table used in code (kind
   `user constant`, read). Found in a V17 project, the first V17 file read:
   it has the v14 layout and reads in full.
+- A project spread over several data files (`PEData-01.plf`, ... next to
+  `PEData.plf`) is named as such in one warning, with the files that are
+  not read and the note that the report is incomplete.
+- FORMAT.md credits TiaProjectParser for the naming of those files.
 
 ## 0.13.0
 

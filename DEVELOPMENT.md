@@ -203,7 +203,8 @@ because TIA Portal can rewrite the whole file.
 
 - V11, V12, V14, V18 and V20 projects (untested; V17 read from one
   third-party archive, not compared with TIA Portal); projects split over
-  several `.plf` files (not supported, the tool warns); protected
+  several data files (`PEData-01.plf`, ...: not read, the tool names them
+  in a warning; how they fit together needs one such project); protected
   (encrypted) projects (reported, not opened).
 - V13: code reads as plausible SCL but has no source to compare with;
   comments in V13 projects are not decoded.

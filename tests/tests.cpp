@@ -22,6 +22,7 @@
 #include "miniz.h"
 #include "output.hpp"
 #include "program.hpp"
+#include "source.hpp"
 #include "project.hpp"
 #include "sha256.hpp"
 #include "xml.hpp"
@@ -2101,6 +2102,23 @@ void testStl() {
 // Constructs as TIA Portal V21 stored them in the test project (second
 // series): SCL loops and a CASE range, STL comments, a label and a jump,
 // CALL with parameters, LAD edge contacts.
+
+// .plf files next to PEData.plf: the further data files of a large project
+// are named together; anything else on its own.
+void testExtraDataFiles() {
+    CHECK(tia::extraDataFileWarnings({}).empty());
+    const std::vector<std::string> w = tia::extraDataFileWarnings({"PEData-02.plf", "Other.plf", "PEData-01.plf"});
+    CHECK(w.size() == 2);
+    if (w.size() == 2) {
+        CHECK_EQ(w[0], "the project is spread over several data files; only PEData.plf is read, not PEData-01.plf, "
+                       "PEData-02.plf, so what is reported is incomplete");
+        CHECK_EQ(w[1], "additional data file not read: Other.plf");
+    }
+    // not a numbered part
+    const std::vector<std::string> v = tia::extraDataFileWarnings({"PEData-x.plf", "pedata-.plf"});
+    CHECK(v.size() == 2 && v[0].find("additional data file") == 0 && v[1].find("additional data file") == 0);
+}
+
 void testCodeConstructs() {
     std::vector<std::string> lines, notes;
     // SCL: WHILE, REPEAT, a CASE range; constants only
@@ -2761,6 +2779,7 @@ int main() {
     testScl();
     testStl();
     testCodeConstructs();
+    testExtraDataFiles();
     testGraphicNetworks();
     testCodeProject();
     testCodeProtectionOverTime();
