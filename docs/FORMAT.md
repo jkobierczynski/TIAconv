@@ -1115,7 +1115,7 @@ kind of entry. `IIdentPartData.PayLoad` is a blob with an XML document:
 
 | | |
 |---|---|
-| element name | the kind of entry: `GlobalAccess` (a data block member), `InterfaceAccess` (a parameter or variable of the block itself), `SimpleAccess` (a PLC tag), `LiteralConstant`, `LocalConstant`, `FBBlock`, `FCBlock`, `OBBlock` (a called block), `AufDBBlock` (an instance data block), `DepDBBlock` (a data block that is accessed), `MultInstAccess`, `Instruction` (of the library), `BlockInterfaceInfo` (the parameters of a called block as they were when the call was made, `BIID/BPIL/BPI N="..."` in order), `Expression`, `Label` (a jump label of STL), `Ident` (a name typed in the code that the project does not know) |
+| element name | the kind of entry: `GlobalAccess` (a data block member), `InterfaceAccess` (a parameter or variable of the block itself), `SimpleAccess` (a PLC tag), `LiteralConstant`, `LocalConstant`, `FBBlock`, `FCBlock`, `OBBlock` (a called block), `AufDBBlock` (an instance data block), `DepDBBlock` (a data block that is accessed), `MultInstAccess`, `Instruction` (of the library), `BlockInterfaceInfo` (the parameters of a called block as they were when the call was made, `BIID/BPIL/BPI N="..."` in order), `Expression`, `GlobalConstant` (a named constant of a tag table, used in code; seen in V17), `Label` (a jump label of STL), `Ident` (a name typed in the code that the project does not know) |
 | `ID/@RID` | the reference number (`RefId` in the code) |
 | `ID/@N` | the name, for entries that have one: a tag, a block, a constant, an instruction. TIA Portal keeps it current: in the V19 sample a renamed data block has its new name here and the old one in the type (`OD/TD/@T`) |
 | `ID/@S` | `Global`, `Local`, `Constant`, `Instruction`, ... |
@@ -1405,6 +1405,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V13 | v11 | 11 886 | 10 450 | github.com/RoverURC/FolderPLC |
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
+| V17 | v14 | 2 637 | 2 516 | a third-party project archive (`.zap17`), not in this repository |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
 | V21 | v14 | 21 627 | 15 761 | `tests/fixtures` (seventeen project files, in this repository) |
 
@@ -1440,7 +1441,7 @@ all three configured items (both CPUs and the signal module) are as decoded.
 
 ## Open questions
 
-- Layout of V11, V12, V14, V17, V18, V20 projects.
+- Layout of V11, V12, V14, V18, V20 projects (V17 has the v14 layout).
 - Projects with several `.plf` files.
 - Protected (encrypted) projects and know-how-protected blocks.
 - The meaning of `NodeIPConfiguration` values.

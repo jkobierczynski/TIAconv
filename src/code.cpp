@@ -82,6 +82,7 @@ std::string kindName(const std::string& stored) {
     if (stored == "SimpleAccess") return "tag";
     if (stored == "LiteralConstant" || stored == "Constant") return "constant";
     if (stored == "LocalConstant") return "local constant";
+    if (stored == "GlobalConstant") return "user constant";  // a named constant of a tag table
     if (stored == "FBBlock" || stored == "FCBlock" || stored == "OBBlock") return "block";
     if (stored == "AufDBBlock") return "instance data block";
     if (stored == "DepDBBlock") return "data block";
@@ -1324,7 +1325,8 @@ void finishReferences(std::vector<CodeReference>& refs, const std::vector<Networ
         r.kind = kindName(r.kindStored);
         // only accesses can be told to be a reading one when nothing is stated
         const bool statesKind = !(r.kind == "data block member" || r.kind == "local" || r.kind == "tag" ||
-                                  r.kind == "constant" || r.kind == "local constant" || r.kind == "data block");
+                                  r.kind == "constant" || r.kind == "local constant" || r.kind == "user constant" ||
+                                  r.kind == "data block");
         for (CodeUse& u : r.uses) {
             if (u.access.empty()) u.access = accessName(u.accessStored, statesKind || !u.accessStored.empty());
             auto it = position.find(u.networkId);

@@ -201,7 +201,8 @@ because TIA Portal can rewrite the whole file.
 
 ### Needs projects not at hand
 
-- V11, V12, V14, V17, V18 and V20 projects (untested); projects split over
+- V11, V12, V14, V18 and V20 projects (untested; V17 read from one
+  third-party archive, not compared with TIA Portal); projects split over
   several `.plf` files (not supported, the tool warns); protected
   (encrypted) projects (reported, not opened).
 - V13: code reads as plausible SCL but has no source to compare with;

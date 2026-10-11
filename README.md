@@ -37,8 +37,8 @@ engineering station.
 - read-only: the project is never modified
 - output as text, JSON or CSV
 
-> **Status: early.** Checked against four public projects (V13, V15.1, V16,
-> V19) and seventeen V21 test project files made for this repository. In those, every
+> **Status: early.** Checked against five third-party projects (V13, V15.1,
+> V16, V17, V19) and seventeen V21 test project files made for this repository. In those, every
 > name, address and module was entered by hand and is read back exactly, and
 > tags and function block interfaces match what TIA Portal itself exported.
 > See [What is verified](#what-is-verified) for what is not covered yet.
@@ -676,7 +676,8 @@ PLC_4,OB1,Main,2,New ID flag reset,write,data block member,"""control"".Q_resetN
   member itself is a row of kind `multi-instance`.
 - `kind` is `tag`, `data block member`, `data block`, `instance data block`,
   `local` (a parameter or variable of the block itself), `local constant`,
-  `block`, `instruction`, `multi-instance`, `label` (a jump label of STL,
+  `block`, `instruction`, `multi-instance`, `user constant` (a named
+  constant of a tag table, read only), `label` (a jump label of STL,
   with the accesses `definition` and `jump`) or `undefined name` (a name
   typed in the code that the project does not know, shown as such in the
   editor). Plain numbers and texts in the code are not listed.
@@ -890,7 +891,7 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 
 | | |
 |---|---|
-| File structure | Every byte of the twenty-one project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match. |
+| File structure | Every byte of the twenty-one project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match, and in the V17 archive read since. |
 | Object decoding | All 31 980 objects decode without an out-of-range read. |
 | Device name, IP address, mask, router, PROFINET name, subnet | Read back exactly as entered in the V21 test projects, each at the step where it was entered. |
 | Order number, type, firmware | For the V16 sample all three match what its author documented; for the V19 sample the CPU type does. In the V21 test projects all three were confirmed by the person who configured them. |
@@ -912,7 +913,8 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | Block code (`--code`, `--xref-csv`) | V21: a test project with one action per save (`s14_code`): LAD with contacts, a normally closed contact, parallel branches, set coil, comparison, MOVE, ADD, a timer, a block call and three calls chained ENO to EN; FBD with a negated input; SCL; STL; an FB with its own parameters. Every save shows that action in the history and nothing else. All eight networks of the OB, and the networks of the FBD, LAD and STL blocks, agree operand by operand with screenshots of the editor; the SCL text is identical to the source TIA Portal generated for the block, and the STL statements to the generated STL source. TIA Portal's full cross-reference list of the project (every tag, data block member, local, block and instruction with its access: read, write, read and write at an InOut parameter, call, single instance, multiple instance, also the declaration of a multi-instance) agrees with the CSV row by row, as does the call structure (the four calls and the five data block accesses). A tag renamed without compiling shows its new name in all four blocks, as the editor does; an inserted network appears at its place. The block that was know-how protected is listed as protected and not read, also in earlier saves. V19 and V15.1 samples: the bodies of the eight SCL blocks published as source files next to them are identical, 852 lines; two networks of the V15.1 sample (a call with 22 parameters, a network of 17 parts) agree with screenshots in its repository. A second series in the same project, one action per save: SCL `WHILE`, `REPEAT ... UNTIL`, `CASE` with a range and a list and a comment in several languages; STL with a line comment, an inline comment, a jump to a label, and `CALL` of an FC and of an FB with input, output and in-out parameters; LAD with a negated coil, positive and negative edge contacts, a counter and a timer as multi-instances. Each save shows that action; the SCL and STL text agrees with the editor line for line (an inline comment's column apart), the LAD networks with screenshots, and the cross-references of the new FB and of the STL block with TIA Portal's lists row by row (the label with Definition and Jump; the timer and counter instances, unlike an FB's, with no row for their declaration). **Not checked:** STL and SCL instructions and keywords beyond those in the test projects and samples (`EXIT`, `CONTINUE`, ...); LAD and FBD parts beyond those listed under Block code; V13 code, which reads as plausible SCL but has no source to compare with; GRAPH and fail-safe blocks, which are not read. |
 | Comparing projects (`tiaconv diff`) | V21: two saves of one file give what the save history lists for the saves between them; a save with itself and a file with itself give no difference; the test project before its know-how protection against the file TIA Portal wrote anew after it (several saves apart) gives exactly the five changes made in between, without the protected block's code; a "Save as" copy is paired with its original; two projects made apart are recognised as such. **Not checked:** two projects made apart with largely the same contents (a project rebuilt by hand, or imported from a library), where pairing by name matters most. |
 | Anonymous structures | Checked on the V19 sample only. |
-| V11, V12, V14, V17, V18, V20 projects | **Not tested.** |
+| V17 | One third-party project archive (`.zap17`, two S7-1200 PLCs, 113 LAD networks): every block hash matches, every object decodes, and the code reads without an unknown part; not compared with TIA Portal. |
+| V11, V12, V14, V18, V20 projects | **Not tested.** |
 | Large projects split over several data files | **Not supported**; a warning is printed. |
 | Protected projects | **Not tested.** tiaconv does not try to remove any protection. |
 | Know-how protected blocks | V21: a block that was protected in the test project is listed as protected, its code is not read, in the present state and in every earlier save shown with `--save` or `--history`. Their code is not looked at. |

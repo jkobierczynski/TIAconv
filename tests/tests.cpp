@@ -2133,6 +2133,9 @@ void testCodeConstructs() {
         "<BlockInterfaceInfo><ID N=\"\" S=\"BlockInterfaceInfo\" RID=\"11\"><CS><C NID=\"3\" UID=\"25\" AK=\"Call\" /></CS></ID>"
         "<BIID BT=\"FB\"><BPIL><BPI N=\"in1\" S=\"Input\" /><BPI N=\"io1\" S=\"InOut\" /></BPIL></BIID></BlockInterfaceInfo>"
         "<Ident><ID N=\"ZZQ\" S=\"Global\" RID=\"15\"><CS><C NID=\"1\" UID=\"40\" /></CS></ID></Ident>"
+        // a named constant of a tag table (seen in a V17 project): read
+        "<GlobalConstant><ID N=\"OFFSET\" S=\"Global\" RID=\"16\"><CS><C NID=\"1\" UID=\"41\" /></CS></ID>"
+        "<OD S=\"32\"><TD TDF=\"OST\" T=\"Real:33554440:Real\" /></OD></GlobalConstant>"
         "</IdentXmlPart>",
         refs);
     tia::finishReferences(refs, {});
@@ -2144,6 +2147,9 @@ void testCodeConstructs() {
     for (const auto& r : refs) {
         if (r.refId == 11) CHECK(r.parameters == (std::vector<std::string>{"in1", "io1"}));
         if (r.refId == 15) CHECK(r.kind == "undefined name" && r.text == "\"ZZQ\"");
+        if (r.refId == 16)
+            CHECK(r.kind == "user constant" && r.text == "\"OFFSET\"" && r.dataType == "Real" && r.uses.size() == 1 &&
+                  r.uses[0].access == "read");
     }
     const char stl[] =
         "<Statements Version=\"14.0.0.0\">"

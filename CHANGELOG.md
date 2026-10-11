@@ -14,6 +14,9 @@
   the cross-references of an SCL block (`ZZSCL2`), where TIA Portal lists
   every use and the CSV has one row per network and kind of access.
 - The test project `s14_code_rewritten` has a third series of 13 saves.
+- Cross-reference: named constants of a tag table used in code (kind
+  `user constant`, read). Found in a V17 project, the first V17 file read:
+  it has the v14 layout and reads in full.
 
 ## 0.13.0
 
