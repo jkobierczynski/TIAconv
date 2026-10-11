@@ -1,5 +1,20 @@
 # Changes
 
+## 0.14.0
+
+- Save history and `tiaconv diff`: the interface of FBs and FCs, member by
+  member (section, data type, default value, comment). A rename is a
+  removed and an added member; a multi-instance is one member. The
+  interface of a know-how protected block is not read, and members are not
+  compared across a protection being set or removed.
+- The history no longer says "modified, in something that is not reported"
+  for a block when a member of it changed in the same save.
+- Checked: the offsets of an instance block with standard access against
+  TIA Portal's Offset column (until now seen only in the V13 sample), and
+  the cross-references of an SCL block (`ZZSCL2`), where TIA Portal lists
+  every use and the CSV has one row per network and kind of access.
+- The test project `s14_code_rewritten` has a third series of 13 saves.
+
 ## 0.13.0
 
 - STL: comments (`//` on a line of its own or after an operand), jump

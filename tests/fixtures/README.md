@@ -325,6 +325,27 @@ Second series, in the same file (more code constructs):
 | 29 | Main network 9: `ZZSCL2`, `ZZSTL2`, `ZZLAD2` (`ZZLAD2_DB`) chained ENO to EN |
 | 30 | compiled |
 
+Third series, in the same file (the interface of an FB, standard access):
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 31 | `ZZLAD2`: Input `start`, Bool |
+| 32 | Output `count`, Int |
+| 33 | Static `memP` renamed `edgeP` |
+| 34 | `count` from Int to DInt |
+| 35 | `start` gets the comment `start signal` |
+| 36 | `count` gets the default value `5` |
+| 37 | Static `memN` deleted |
+| 38 | Static `memN` added again, Bool |
+| 39 | a new LAD function block `ZZSTD` |
+| 40 | its "Optimized block access" switched off |
+| 41 | its members: Input `i1` Bool, `i2` Int; Output `o1` Real; InOut `io1` Int; Static `s1` String, `s2` Bool (one save) |
+| 42 | Main network 10: `ZZSTD` called with the instance block `ZZSTD_DB` |
+| 43 | compiled |
+
+References after save 43: screenshots of `ZZSTD_DB` with its Offset column,
+of the interface of `ZZLAD2`, and of the cross-references of `ZZSCL2`.
+
 References after save 30: screenshots of `ZZSCL2` and `ZZSTL2` in the
 editor (the text of both), of the six networks of `ZZLAD2`, and of the
 cross-references of `ZZLAD2` and `ZZSTL2`. TIA Portal could not generate

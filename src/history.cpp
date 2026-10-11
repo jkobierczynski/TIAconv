@@ -34,6 +34,7 @@ struct Entity {
     // a network: its code as text; a block: its code is not read
     std::vector<std::string> code;
     bool codeUnread = false;
+    bool codeInterface = false;  // a member of an FB's or FC's own interface
 };
 
 struct Snapshot {
@@ -111,8 +112,12 @@ void securityAttrs(const Module& m, std::vector<Attr>& a) {
 
 std::string endText(const ConnectionEnd& e) { return path({e.device, e.module, e.interface}); }
 
+// `codeInterface`: the members of an FB's or FC's own interface, where a
+// start value is the default value and the section is part of what a member
+// is; the members of a multi-instance are those of its FB and not listed.
 void addMembers(Snapshot& snap, const std::string& blockKey, const std::string& blockLabel,
-                const std::vector<BlockMember>& members, const std::string& prefix, int depth) {
+                const std::vector<BlockMember>& members, const std::string& prefix, int depth,
+                bool codeInterface = false) {
     if (depth > 32) return;
     for (const auto& m : members) {
         const std::string name = prefix.empty() ? m.name : prefix + "." + m.name;
@@ -123,12 +128,25 @@ void addMembers(Snapshot& snap, const std::string& blockKey, const std::string& 
         e.parent = blockKey;
         e.kind = "member";
         e.label = blockLabel + " / " + name;
+        e.codeInterface = codeInterface;
         e.description = m.dataType + (m.hasStartValue ? " = " + m.startValue : std::string());
+        if (codeInterface && depth == 0 && !m.section.empty()) e.description = m.section + ", " + e.description;
         e.attrs.push_back({"data type", m.dataType, 0});
-        e.attrs.push_back({"start value", m.hasStartValue ? m.startValue : std::string(), 0});
+        e.attrs.push_back({codeInterface ? "default value" : "start value", m.hasStartValue ? m.startValue : std::string(), 0});
         e.attrs.push_back({"comment", m.comment, 0});
         snap.add(std::move(e));
-        addMembers(snap, blockKey, blockLabel, m.members, name, depth + 1);
+        if (codeInterface) {
+            bool instance = false;  // its members have sections of their own: a multi-instance
+            for (const auto& c : m.members)
+                if (!c.section.empty()) instance = true;
+            if (instance) continue;
+            // the members of a system type (an IEC timer, DTL) are not the block's
+            const std::string& t = m.dataType;
+            const size_t of = t.rfind(" of ");
+            const std::string element = t.compare(0, 6, "Array[") == 0 && of != std::string::npos ? t.substr(of + 4) : t;
+            if (element != "Struct" && (element.empty() || element[0] != '"')) continue;
+        }
+        addMembers(snap, blockKey, blockLabel, m.members, name, depth + 1, codeInterface);
     }
 }
 
@@ -370,6 +388,14 @@ Snapshot takeSnapshot(const Project& project, const ProtectedVersions& protected
         const std::string label = it != snap.index.end() ? snap.list[it->second].label : path({db.plc, db.name});
         addMembers(snap, blockKey, label, db.members, std::string(), 0);
     }
+    // the interface of FBs and FCs (not of know-how protected ones: not read)
+    for (const BlockInfo& b : prog.blockList) {
+        if (!b.interfaceRead) continue;
+        const std::string blockKey = key("blk", b.id);
+        auto it = snap.index.find(blockKey);
+        if (it == snap.index.end()) continue;
+        addMembers(snap, blockKey, snap.list[it->second].label, b.interfaceMembers, std::string(), 0, true);
+    }
 
     for (const auto& t : prog.tags) {
         Entity e;
@@ -540,10 +566,11 @@ void diff(const Snapshot& original, const Snapshot& after, std::vector<HistoryCh
             renames.emplace(old.attrs[0].value, e.attrs[0].value);
     }
 
-    // The networks of a block whose code is not read, before or after, say
-    // nothing: they are not compared.
+    // The networks and the interface of a block whose code is not read,
+    // before or after, say nothing: they are not compared (a block whose
+    // protection was removed did not gain its members then).
     auto unreadBlock = [&](const Entity& e) {
-        if (e.kind != "network") return false;
+        if (e.kind != "network" && !e.codeInterface) return false;
         for (const Snapshot* s : {&before, &after}) {
             auto p = s->index.find(e.parent);
             if (p != s->index.end() && s->list[p->second].codeUnread) return true;

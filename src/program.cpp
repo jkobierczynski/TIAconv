@@ -121,7 +121,7 @@ public:
                 if (inProject(o)) {
                     out.blockList.push_back(makeInfo(o));
                     const BlockInfo& info = out.blockList.back();
-                    if (info.type == "FB" && info.protectionStored != "KnowHowProtection" &&
+                    if ((info.type == "FB" || info.type == "FC") && info.protectionStored != "KnowHowProtection" &&
                         info.protectionStored != "SystemKnowHowProtection" && info.protection.find("know-how") == std::string::npos &&
                         info.protection != "system")
                         pendingInterfaces_.push_back({out.blockList.size() - 1, Key(b.type, b.id)});

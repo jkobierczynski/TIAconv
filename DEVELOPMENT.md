@@ -5,7 +5,7 @@ what is still unclear or still to do. The user-facing description is in
 [README.md](README.md), the file format in [docs/FORMAT.md](docs/FORMAT.md),
 the releases in [CHANGELOG.md](CHANGELOG.md).
 
-State at the time of writing: version 0.13.0. A STEP 7 Professional V21
+State at the time of writing: version 0.14.0. A STEP 7 Professional V21
 trial licence is available until about 27–29 October 2026; the items marked
 *(trial)* below need it.
 
@@ -129,6 +129,16 @@ because TIA Portal can rewrite the whole file.
   and creation time and are paired by identity; projects made apart are
   paired by name, because object ids are sequential and coincide by chance.
 
+### Interfaces of FBs and FCs (0.14.0)
+
+- An FB or FC keeps its interface in the same form as a data block
+  (sections, members, default values, comments). The save history and
+  `tiaconv diff` list its members; a rename is a removed and an added
+  member, because members have no identity of their own. Not read for
+  know-how protected blocks.
+- Offsets of an instance block with standard access follow from the FB's
+  interface: checked against TIA Portal's Offset column.
+
 ### Block code (0.11.0 to 0.13.0)
 
 - A code block's networks are the `CompileUnitData` objects of its relation
@@ -140,7 +150,9 @@ because TIA Portal can rewrite the whole file.
   sources in all comparisons), and LAD/FBD in a text notation of its own.
 - Every block keeps a reference table of what its code names, with the kind
   of access per use; it is the data TIA Portal's cross-reference list is
-  made from. `--xref-csv` writes it in TIA Portal's words: read only, write,
+  made from. TIA Portal's list has a row per use; `--xref-csv` has one row
+  per network and kind of access, the JSON every use. It is written in TIA
+  Portal's words: read only, write,
   read and write, call, single instance, multiple instance, and definition
   and jump for labels. A data block has a row of its own only where it is
   used as a whole; a multi-instance an FB declares has a row for its
@@ -161,15 +173,8 @@ because TIA Portal can rewrite the whole file.
 
 ### Needs TIA Portal *(trial)*
 
-- **`ZZSCL2` cross-references.** Its seven rows are the only code rows not
-  compared with TIA Portal's list.
-- **The interface of FBs and FCs in the history.** Members of an FB's own
-  interface are read (for the multi-instance rows) but are not items of the
-  history; added, renamed or retyped members do not show. This is also the
-  start of the declarations feature below.
-- **Offsets in instance blocks with standard access** (section offset plus
-  member offset): seen only in the V13 sample, never compared with TIA
-  Portal.
+- **The other columns of an interface**: Retain, accessible from HMI,
+  writable, visible, setpoint. Not read.
 - **Instances of library types** (relation `IsInstanceOf`): not read; the
   block list should say which type and version a block is an instance of.
 - **Two projects made apart** with largely the same contents: where
@@ -207,8 +212,8 @@ because TIA Portal can rewrite the whole file.
 
 ### Features
 
-- **Declarations.** The interface of FBs and FCs (sections, members, types,
-  default values, comments) in the outputs and the history, then as the
+- **Declarations.** The interface of FBs and FCs is read and in the history
+  (0.14.0); still to do: in the text report and the JSON, and as the
   declaration part of a source (`VAR_INPUT ... END_VAR`), so that an SCL or
   STL block comes out as a complete source like the one TIA Portal
   generates.

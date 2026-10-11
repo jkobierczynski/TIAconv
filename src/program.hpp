@@ -129,9 +129,9 @@ struct BlockInfo {
     Flag onlyInLoadMemory;        // "Only store in load memory"
     Flag accessibleFromOpcUa;     // "Data block accessible from OPC UA"
     Flag accessibleFromWebServer; // "Data block accessible via Web server"
-    // FB: the members of its interface (Input, Output, InOut, Static), read
-    // when the block is not know-how protected. Used for the multi-instances
-    // it declares; not listed in the outputs yet.
+    // FB, FC: the members of its interface (Input, Output, InOut, Static,
+    // Temp, ...), read when the block is not know-how protected. In the save
+    // history, and for the multi-instances an FB declares.
     bool interfaceRead = false;
     std::vector<BlockMember> interfaceMembers;
 };

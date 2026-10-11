@@ -905,6 +905,14 @@ void textChanges(std::ostream& out, const HistorySave& s, const char* in) {
             if (!ch[i].isMarker) other = true;
             if (ch[i].attribute == "compiled") compiled = true;
         }
+        // nor when something inside the item changed in this save (a member
+        // of a block), which is reported on a line of its own
+        if (!other) {
+            const std::string inside = ch[idx.front()].item + " / ";
+            for (const auto& c : ch)
+                if (c.item.compare(0, inside.size(), inside) == 0) other = true;
+            if (other) continue;
+        }
         for (size_t i : idx) {
             const HistoryChange& c = ch[i];
             std::string part;

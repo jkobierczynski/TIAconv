@@ -1305,6 +1305,16 @@ blob attribute, plus an ordered list of further parts.
 The list keeps its empty positions (target type and id 0), because members
 refer to parts by position.
 
+A function block or function has its interface in the same form, reached
+the same way from the block (`BlockInterfaceBaseData.CurrentInterface`):
+the root document lists the sections with their members, default values
+in the `Values` part, comments in the `Comments` part. In V21 (the third
+series of `s14_code_rewritten`) an FB's members, sections, data types, a
+default value and a comment read as the editor's interface table shows
+them, and an instance block with standard access has the offsets of TIA
+Portal's Offset column. The editor's Retain column and the other flags
+(accessible from HMI, writable, visible, setpoint) are not read.
+
 A root document:
 
     <Root ...>
@@ -1396,7 +1406,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V15.1 | v14 | 1 921 | 1 837 | github.com/majorBien/Inveo-RFID-Reader---Tia-Portal-Sample-programs-and-external-blocks |
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 21 409 | 15 741 | `tests/fixtures` (seventeen project files, in this repository) |
+| V21 | v14 | 21 627 | 15 761 | `tests/fixtures` (seventeen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -1437,8 +1447,6 @@ all three configured items (both CPUs and the signal module) are as decoded.
 - The exact rule TIA Portal uses to derive an automatic PROFINET device name
   from the device name (`ZZBRAVO` gives `zzbravo`, `PLC_1` gives `plc_1`).
 - Relation lists beyond the two keyed ones.
-- Offsets in instance blocks with standard access (section offset plus member
-  offset) have only been seen in the V13 sample.
 - The `h` attribute of a start value.
 - Access level numbers of an S7-1200 with firmware V4.0 to V4.6 (assumed to
   be those of V4.7) and of other CPU families; whether the level follows the
