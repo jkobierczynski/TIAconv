@@ -178,6 +178,17 @@ struct HmiTag {
     std::string addressMode;       // as stored: Fixed, Invalid, ...
     std::string acquisitionCycle;  // "1 s"
     std::string acquisitionMode;   // as stored: Visible, Continuous, OnDemand, ...
+    // Limits, as TIA Portal's Range page names them: the value of a constant
+    // limit, "tag" for a limit given by another tag (not read), empty for
+    // none. Upper 2 and Lower 2 are compared with TIA Portal V21; Upper 1 and
+    // Lower 1 are taken to be the two other stored limits, not compared.
+    std::string limitUpper2, limitUpper1, limitLower1, limitLower2;
+    // Linear scaling, when switched on: "PLC 0 .. 27648 -> HMI 0 .. 100".
+    std::string linearScaling;
+    // Multiplexing switched on: the index tag that selects the tag it stands
+    // for. The list of tags it selects from is not read.
+    bool multiplexing = false;
+    std::string multiplexIndexTag;
     std::vector<HmiTagMember> members;  // tags of a structured type
     size_t memberCount = 0;             // all levels
 

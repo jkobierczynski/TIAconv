@@ -272,11 +272,38 @@ const Step kStepsHmi[] = {
     {35, "+|connection|ZZPANEL / HMI_Connection_2|HMI to S7-1500/ET200MP station_2 / ZZCHARLIE / X1"},
     {35, "+|HMI tag|ZZPANEL / ZZTABLE / ZZCH|Word, %MW200"},
     {36, "+|HMI tag|ZZPANEL / ZZTABLE / ZZOPT1|Real, PLC tag DB_Optimized.my_real"},
+    // later: limits, linear scaling, the acquisition mode "On demand", a
+    // multiplexed tag. ZZSTD's cycle and mode and ZZMEM's type and connection
+    // changed along with them, as the file shows.
+    {37, "~|HMI tag|ZZPANEL / Default tag table / ZZINT|upper limit 2||100"},
+    {37, "~|HMI tag|ZZPANEL / Default tag table / ZZINT|lower limit 2||0"},
+    {38, "~|HMI tag|ZZPANEL / Default tag table / ZZSTD|linear scaling||PLC 0 .. 27648 -> HMI 0 .. 100"},
+    {39, "~|HMI tag|ZZPANEL / Default tag table / ZZSTD|acquisition cycle|500 ms|1 s"},
+    {39, "~|HMI tag|ZZPANEL / Default tag table / ZZSTD|acquisition mode|Cyclic continuous|Cyclic in operation"},
+    {39, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|acquisition cycle|1 s|"},
+    {39, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|acquisition mode|Cyclic in operation|On demand"},
+    {40, "+|HMI tag|ZZPANEL / Default tag table / ZZMUX|SInt, internal"},
+    {40, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|data type|Word|SInt"},
+    {40, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|connection|HMI_Connection_1|"},
+    {40, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|PLC|ZZBRAVO|"},
+    {40, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|PLC tag|MyInt|"},
+    {40, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|link to the PLC tag|broken|"},
 };
 
 std::string stepText(const tia::HistoryChange& c) {
     if (c.change == "changed") return "~|" + c.kind + "|" + c.item + "|" + c.attribute + "|" + c.from + "|" + c.to;
     return std::string(c.change == "added" ? "+" : "-") + "|" + c.kind + "|" + c.item + "|" + c.description;
+}
+
+// A comparison of what was found with what is expected that says what
+// differs when they are not the same.
+bool same(const std::multiset<std::string>& found, const std::multiset<std::string>& expected) {
+    if (found == expected) return true;
+    for (const auto& e : expected)
+        if (!found.count(e)) std::printf("    missing: %s\n", e.c_str());
+    for (const auto& f : found)
+        if (!expected.count(f)) std::printf("    not expected: %s\n", f.c_str());
+    return false;
 }
 
 bool followsFromSomethingElse(const tia::HistoryChange& c) {
@@ -458,9 +485,10 @@ void testHistory() {
 // (exports/HMITags.xlsx), two screenshots of "Show all tags" and one of the
 // Inspector window.
 void testHmi() {
-    Loaded l = load("s13_hmi");
+    // the export was made after save 36; the file goes on to save 40
+    Loaded l = load("s13_hmi", 36);
     common(l, "s13_hmi");
-    CHECK(l.saves == 36);
+    CHECK(l.saves == 40);  // recorded in the file
 
     // the panel, as added and as the topology view listed it
     const tia::Module* panel = module(l.inv, "ZZPANEL");
@@ -577,8 +605,25 @@ void testHmi() {
         CHECK(o && o->plcTag == "DB_Standard.my_real" && o->address == "%DB1.DBD270" && o->plcDataType == "Real");
     }
 
+    // after save 40: limits (Range page), linear scaling, On demand, multiplexing
+    {
+        Loaded end = load("s13_hmi");
+        const tia::HmiTag *zint = nullptr, *zstd = nullptr, *zmem = nullptr, *zmux = nullptr;
+        for (const auto& t : end.prog.hmiTags) {
+            if (t.name == "ZZINT") zint = &t;
+            if (t.name == "ZZSTD") zstd = &t;
+            if (t.name == "ZZMEM") zmem = &t;
+            if (t.name == "ZZMUX") zmux = &t;
+        }
+        CHECK(zint && zint->limitUpper2 == "100" && zint->limitLower2 == "0" && zint->limitUpper1.empty() &&
+              zint->limitLower1.empty() && zint->linearScaling.empty() && !zint->multiplexing);
+        CHECK(zstd && zstd->linearScaling == "PLC 0 .. 27648 -> HMI 0 .. 100" && zstd->limitUpper2.empty());
+        CHECK(zmem && tia::acquisitionModeName(zmem->acquisitionMode) == "On demand" && zmem->acquisitionCycle.empty());
+        CHECK(zmux && zmux->multiplexing && zmux->multiplexIndexTag == "ZZSTD" && zmux->access == "internal");
+    }
+
     const tia::History h = history("s13_hmi");
-    CHECK(h.savesInFile == 36 && h.saves.size() == 36);
+    CHECK(h.savesInFile == 40 && h.saves.size() == 40);
     checkSteps(h, kStepsHmi, 18, {});
     checkTotals(h, load("s13_hmi"));
 }
@@ -623,17 +668,14 @@ void testDiff() {
     CHECK(d.unreadBlocks == 1);
     CHECK(diffSteps("s14_code", 22, "s14_code", 22, &d).empty() && d.changes.empty());
     // two saves of one file: what the history lists for the saves between them
-    CHECK(diffSteps("s14_code", 19, "s14_code", 20) ==
-          (std::multiset<std::string>{"~|network|ZZPLC / Main [OB1] / network 1|code|1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\"|"
+    CHECK(same(diffSteps("s14_code", 19, "s14_code", 20), std::multiset<std::string>{"~|network|ZZPLC / Main [OB1] / network 1|code|1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\"|"
                                       "1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZC\""}));
     // a rename: the tag, and nothing in the networks that use it
-    CHECK(diffSteps("s14_code", 20, "s14_code", 21) ==
-          (std::multiset<std::string>{"~|tag|ZZPLC / Default tag table / ZZALPHA|name|ZZA|ZZALPHA"}));
+    CHECK(same(diffSteps("s14_code", 20, "s14_code", 21), std::multiset<std::string>{"~|tag|ZZPLC / Default tag table / ZZALPHA|name|ZZA|ZZALPHA"}));
     // before the protection, and the file TIA Portal wrote anew after it
     // plus one more network: several saves at once; nothing of the protected
     // block's code, though the old side has it unprotected
-    CHECK(diffSteps("s14_code", 19, "s14_code_rewritten", 3, &d) ==
-          (std::multiset<std::string>{
+    CHECK(same(diffSteps("s14_code", 19, "s14_code_rewritten", 3, &d), std::multiset<std::string>{
               "~|network|ZZPLC / Main [OB1] / network 1|code|1: \"ZZOUT\" := \"ZZA\" AND NOT \"ZZB\"|"
               "1: \"ZZOUT\" := \"ZZALPHA\" AND NOT \"ZZC\"",
               "+|network|ZZPLC / Main [OB1] / network 2|ZZ inserted, LAD",
@@ -652,16 +694,14 @@ void testDiff() {
         if (tia::substantialChange(c)) ++substantial;
     CHECK(substantial == 5);
     // the InOut parameter added to ZZFB and given ZZN2 in Main
-    CHECK(diffSteps("s14_code_rewritten", 3, "s14_code_rewritten", 4, &d) ==
-          (std::multiset<std::string>{
+    CHECK(same(diffSteps("s14_code_rewritten", 3, "s14_code_rewritten", 4, &d), std::multiset<std::string>{
               "+|member|ZZPLC / ZZFB_DB [DB3] / io1|Int", "+|member|ZZPLC / ZZFB [FB1] / io1|InOut, Int",
               "~|network|ZZPLC / Main [OB1] / network 6|code|1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZALPHA\", out1 => \"ZZC\")|"
               "1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZALPHA\", io1 := \"ZZN2\", out1 => \"ZZC\")"}));
     // s13_hmi continues s12_constants: up to its save 18 they are the same
     // project; "Save as" then gave it another name, the identities stayed
     CHECK(diffSteps("s12_constants", 0, "s13_hmi", 18, &d).empty() && d.changes.empty());
-    CHECK(diffSteps("s12_constants", 0, "s13_hmi", 19, &d) ==
-          (std::multiset<std::string>{"~|project|s13_hmi|name|s12_constants|s13_hmi"}));
+    CHECK(same(diffSteps("s12_constants", 0, "s13_hmi", 19, &d), std::multiset<std::string>{"~|project|s13_hmi|name|s12_constants|s13_hmi"}));
     CHECK(d.sameLineage);
     // two projects made apart: their objects are numbered alike, which says
     // nothing; items are paired by name. The two PLC stations differ, the
@@ -908,8 +948,8 @@ void testCode() {
         CHECK(scl && scl->isProtected && !scl->protectedLater && scl->protection == "know-how" && scl->networks.empty() &&
               scl->references.empty());
         const tia::BlockCode* main = codeOf(l, "Main");
-        CHECK(main && main->networks.size() == 11);
-        if (main && main->networks.size() == 11) {
+        CHECK(main && main->networks.size() == 12);
+        if (main && main->networks.size() == 12) {
             // the network inserted after the first is the second, with the next free number
             CHECK(main->networks[1].title == "ZZ inserted" && main->networks[1].networkId == 9);
             CHECK(joined(main->networks[1].lines) == "1: \"ZZOUT\" := \"ZZC\"\n");
@@ -972,18 +1012,18 @@ void testCode() {
             CHECK(declared == 1);
         }
         const tia::History hr = history("s14_code_rewritten");
-        CHECK(hr.saves.size() == 43 && hr.notes.size() == 1);
-        if (hr.saves.size() == 43) {
+        CHECK(hr.saves.size() == 56 && hr.notes.size() == 1);
+        if (hr.saves.size() == 56) {
             CHECK(hr.saves[1].firstState);
             std::multiset<std::string> found;
             for (const auto& c : hr.saves[2].changes)
                 if (!followsFromSomethingElse(c)) found.insert(stepText(c));
-            CHECK(found == (std::multiset<std::string>{"~|network|ZZPLC / Main [OB1] / network 2|code||1: \"ZZOUT\" := \"ZZC\""}));
+            CHECK(same(found, std::multiset<std::string>{"~|network|ZZPLC / Main [OB1] / network 2|code||1: \"ZZOUT\" := \"ZZC\""}));
             // then the InOut parameter io1 of ZZFB, given ZZN2 in network 6
             found.clear();
             for (const auto& c : hr.saves[3].changes)
                 if (!followsFromSomethingElse(c)) found.insert(stepText(c));
-            CHECK(found == (std::multiset<std::string>{
+            CHECK(same(found, std::multiset<std::string>{
                                "+|member|ZZPLC / ZZFB_DB [DB3] / io1|Int", "+|member|ZZPLC / ZZFB [FB1] / io1|InOut, Int",
                                "~|network|ZZPLC / Main [OB1] / network 6|code|1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZALPHA\", "
                                "out1 => \"ZZC\")|1: \"ZZFB\", \"ZZFB_DB\"(in1 := \"ZZALPHA\", io1 := \"ZZN2\", out1 => \"ZZC\")"}));
@@ -993,8 +1033,8 @@ void testCode() {
             for (size_t i = 4; i < hr.saves.size(); ++i)
                 for (const auto& c : hr.saves[i].changes)
                     if (!followsFromSomethingElse(c)) steps[i].insert(stepText(c));
-            CHECK(steps[4] == (std::multiset<std::string>{"+|block|ZZPLC / ZZOUTER [FB2]|LAD"}));
-            CHECK(steps[5] == (std::multiset<std::string>{
+            CHECK(same(steps[4], std::multiset<std::string>{"+|block|ZZPLC / ZZOUTER [FB2]|LAD"}));
+            CHECK(same(steps[5], std::multiset<std::string>{
                                   "~|block|ZZPLC / Main [OB1]|networks|8|9", "+|block|ZZPLC / ZZOUTER_DB [DB4]|instance, DB",
                                   "~|network|ZZPLC / Main [OB1] / network 8|code||1: \"ZZOUTER\", \"ZZOUTER_DB\"()",
                                   "+|network|ZZPLC / Main [OB1] / network 9|LAD, empty"}));
@@ -1008,7 +1048,7 @@ void testCode() {
                         const std::string t = stepText(c);
                         later.insert(std::to_string(i + 1) + "|" + t.substr(0, t.find('\n')));
                     }
-            CHECK(later == (std::multiset<std::string>{
+            CHECK(same(later, std::multiset<std::string>{
                 "9|+|block|ZZPLC / Block_1 [FC4]|SCL",
                 "10|~|block|ZZPLC / ZZSCL2 [FC4]|name|Block_1|ZZSCL2",
                 "11|~|network|ZZPLC / ZZSCL2 [FC4] / network 1|code||WHILE \"ZZN1\" < 10 DO",
@@ -1053,13 +1093,13 @@ void testCode() {
             // the third series: the interface of ZZLAD2 changed member by
             // member, then an FB with standard access, its call, compiling
             std::multiset<std::string> third;
-            for (size_t i = 30; i < hr.saves.size(); ++i)
+            for (size_t i = 30; i < 43 && i < hr.saves.size(); ++i)
                 for (const auto& c : hr.saves[i].changes)
                     if (!followsFromSomethingElse(c)) {
                         const std::string t = stepText(c);
                         third.insert(std::to_string(i + 1) + "|" + t.substr(0, t.find('\n')));
                     }
-            CHECK(third == (std::multiset<std::string>{
+            CHECK(same(third, std::multiset<std::string>{
                 "31|+|member|ZZPLC / ZZLAD2 [FB3] / start|Input, Bool",
                 "32|+|member|ZZPLC / ZZLAD2 [FB3] / count|Output, Int",
                 // a renamed member: removed and added; the code follows
@@ -1084,6 +1124,59 @@ void testCode() {
                 // compiling: the instance block takes over the changed interface
                 "43|+|member|ZZPLC / ZZLAD2_DB [DB5] / count|DInt = 5", "43|+|member|ZZPLC / ZZLAD2_DB [DB5] / edgeP|Bool",
                 "43|+|member|ZZPLC / ZZLAD2_DB [DB5] / start|Bool", "43|-|member|ZZPLC / ZZLAD2_DB [DB5] / memP|Bool"}));
+            // the fourth series: a user constant in code; the PLC renamed for
+            // the PROFINET name rule; the IP address set at the device and back
+            std::multiset<std::string> fourth;
+            for (size_t i = 43; i < hr.saves.size(); ++i)
+                for (const auto& c : hr.saves[i].changes)
+                    if (!followsFromSomethingElse(c) && c.kind != "hardware identifier") {
+                        const std::string t = stepText(c);
+                        fourth.insert(std::to_string(i + 1) + "|" + t.substr(0, t.find('\n')));
+                    }
+            CHECK(same(fourth, std::multiset<std::string>{
+                "44|+|user constant|ZZPLC / Default tag table / ZZK|Int = 7",
+                "45|+|network|ZZPLC / Main [OB1] / network 12|LAD, empty",
+                "45|~|block|ZZPLC / Main [OB1]|networks|11|12",
+                "45|~|network|ZZPLC / Main [OB1] / network 11|code||1: Move(in := \"ZZK\", out1 => \"ZZN3\")",
+                "46|~|module|S7-1500/ET200MP station_1 / ZZ PLC|name|ZZPLC|ZZ PLC",
+                "47|~|module|S7-1500/ET200MP station_1 / ZZ\xC3\x84PLC|name|ZZ PLC|ZZ\xC3\x84PLC",
+                "48|~|module|S7-1500/ET200MP station_1 / 1ZZPLC|name|ZZ\xC3\x84PLC|1ZZPLC",
+                "49|~|module|S7-1500/ET200MP station_1 / PLC_1|name|1ZZPLC|PLC_1",
+                "50|~|module|S7-1500/ET200MP station_1 / ~ZZPLC|name|PLC_1|~ZZPLC",
+                "51|~|module|S7-1500/ET200MP station_1 / ZZ~PLC|name|~ZZPLC|ZZ~PLC",
+                "52|~|module|S7-1500/ET200MP station_1 / ZZPLC|name|ZZ~PLC|ZZPLC",
+                "53|~|interface|S7-1500/ET200MP station_1 / ZZPLC / X1|IP address set outside the project|no|yes",
+                "54|~|interface|S7-1500/ET200MP station_1 / ZZ-PLC / X1|IP address set outside the project|yes|no",
+                "54|~|module|S7-1500/ET200MP station_1 / ZZ-PLC|name|ZZPLC|ZZ-PLC",
+                "55|~|module|S7-1500/ET200MP station_1 / -ZZPLC|name|ZZ-PLC|-ZZPLC",
+                "56|~|module|S7-1500/ET200MP station_1 / ZZPLC|name|-ZZPLC|ZZPLC"}));
+            // the PROFINET device name and converted name TIA Portal showed
+            // after each rename (screenshots of the PROFINET interface)
+            const struct { size_t save; const char* plc; const char* name; const char* converted; } names[] = {
+                {46, "ZZ PLC", "zz plc", "zzxaplc5903"},
+                {47, "ZZ\xC3\x84PLC", "zz\xC3\xA4plc", "xn--zzplc-hra"},
+                {48, "1ZZPLC", "1zzplc", "xd1zzplc458b"},
+                {49, "PLC_1", "plc_1", "plcxb1d0ed"},
+                {50, "~ZZPLC", "~zzplc", "xh7ezzplc9ae6"},
+                {51, "ZZ~PLC", "zz~plc", "zzxh7eplc2ceb"},
+                {54, "ZZ-PLC", "zz-plc", "zz-plc"},
+                {55, "-ZZPLC", "-zzplc", "xqzzplcc65e"},
+            };
+            for (const auto& n : names) {
+                Loaded at = load("s14_code_rewritten", n.save);
+                const tia::Interface* i = firstInterface(at.inv, n.plc);
+                CHECK(i && i->profinetNameAuto && i->profinetNameDerived && i->profinetName == n.name &&
+                      i->profinetNameConverted == n.converted);
+            }
+            // D1: "IP address is set directly at the device"; the address stays stored
+            {
+                Loaded at = load("s14_code_rewritten", 53);
+                const tia::Interface* i = firstInterface(at.inv, "ZZPLC");
+                CHECK(i && i->ipAssignedElsewhere && i->ip == "192.168.0.1");
+                Loaded back = load("s14_code_rewritten", 54);
+                i = firstInterface(back.inv, "ZZ-PLC");
+                CHECK(i && !i->ipAssignedElsewhere && i->ip == "192.168.0.1");
+            }
         }
 
         // TIA Portal's full list of cross-references after save 3, the
@@ -1133,6 +1226,7 @@ void testCode() {
                               "Main 9 call \"ZZSCL2\"", "Main 9 call \"ZZSTL2\"", "Main 9 call \"ZZLAD2\"",
                               "Main 9 single instance \"ZZLAD2_DB\"",
                               "Main 10 call \"ZZSTD\"", "Main 10 single instance \"ZZSTD_DB\"",
+                              "Main 11 read \"ZZK\"", "Main 11 write \"ZZN3\"",  // a user constant
                               "ZZLAD2 1 read \"ZZALPHA\"", "ZZLAD2 1 write \"ZZOUT\"",
                               "ZZLAD2 2 read \"ZZB\"", "ZZLAD2 2 write \"ZZC\"", "ZZLAD2 2 read and write #edgeP",
                               "ZZLAD2 3 read \"ZZB\"", "ZZLAD2 3 write \"ZZC\"", "ZZLAD2 3 read and write #memN",
@@ -1187,7 +1281,9 @@ int main() {
             CHECK(i->hasIpSetByUser && !i->ipSetByUser);  // still TIA's default
             CHECK(!i->ipAssignedElsewhere);
             CHECK(i->router.empty());
-            CHECK(i->profinetNameAuto && i->profinetName.empty());
+            // automatic: derived from the CPU's name as TIA Portal does it
+            CHECK(i->profinetNameAuto && i->profinetNameDerived && i->profinetName == "plc_1" &&
+                  i->profinetNameConverted == "plcxb1d0ed");
             CHECK(i->subnet.empty());
         }
     }
@@ -1198,7 +1294,9 @@ int main() {
         CHECK(module(l.inv, "PLC_1") == nullptr);
         // The stored PROFINET name does not follow the rename while it is automatic.
         const tia::Interface* i = firstInterface(l.inv, "ZZALPHA");
-        CHECK(i && i->profinetNameAuto && i->profinetName.empty() && i->profinetNameStored == "plc_1");
+        // tiaconv derives the current one, as TIA Portal shows it.
+        CHECK(i && i->profinetNameAuto && i->profinetNameStored == "plc_1" && i->profinetNameDerived &&
+              i->profinetName == "zzalpha" && i->profinetNameConverted == "zzalpha");
     }
     {
         Loaded l = load("s03_ip");

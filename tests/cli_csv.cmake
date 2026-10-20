@@ -56,7 +56,7 @@ endif()
 
 # HMI tags: a project without an HMI device gives the header and nothing else
 execute_process(COMMAND "${TIACONV}" -q --hmi-tags-csv - "${PROJECT}" OUTPUT_VARIABLE hmi RESULT_VARIABLE rc)
-if(NOT rc EQUAL 0 OR NOT hmi MATCHES "^hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,comment,start_value,members,plc_tag_found,plc_data_type,address_stored\r?\n$")
+if(NOT rc EQUAL 0 OR NOT hmi MATCHES "^hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,comment,start_value,members,plc_tag_found,plc_data_type,address_stored,upper_limit_2,upper_limit_1,lower_limit_1,lower_limit_2,linear_scaling,multiplex_index_tag\r?\n$")
   message(FATAL_ERROR "unexpected HMI tags CSV: ${hmi}")
 endif()
 

@@ -449,9 +449,36 @@ is **inferred**.
 | `NodeGetsAddressAutomatically` | bool | V21: true on a new CPU, false once an address is typed. Not "address set at the device" |
 | `NodeIPConfiguration` | int | 0 in all projects but one; 3 in the V16 sample whose documentation says the PLC really uses another address (`PnPnIpSuiteViaOtherPath` is true there too) |
 | `PnPnNoSAutoGenerate` | bool | "generate PROFINET device name automatically" |
-| `PnNameOfStation` | string | the PROFINET device name when the automatic option is off. While it is on, the value is **not updated**: it stays `plc_1` after the PLC is renamed |
+| `PnNameOfStation` | string | the PROFINET device name when the automatic option is off. While it is on, the value is **not updated**: it stays `plc_1` after the PLC is renamed; TIA Portal derives the name when it shows it (see "Automatic PROFINET names") |
 | `NodeMacAddress` | `xs:long` | `08-00-06-01-00-0x` in every sample: a placeholder, not the real MAC |
 | `NodePBMpiAddress` | int | PROFIBUS / MPI station address |
+
+### Automatic PROFINET names
+
+With "Generate PROFINET device name automatically" TIA Portal derives two
+names from the CPU's name whenever it shows them; neither is stored. In V21
+(the fourth series of `s14_code_rewritten`, eleven names compared with the
+properties dialog):
+
+- **PROFINET device name**: the CPU's name in lower case (`ZZ PLC` gives
+  `zz plc`, `ZZÄPLC` gives `zzäplc`).
+- **Converted name**, the form a device uses on the network: letters,
+  digits, a dot and a hyphen between them stay as they are. A space becomes
+  `xa`, an underscore `xb`, any other ASCII character `xh` and its code in
+  two hex digits (`~` gives `xh7e`), a hyphen at the start `xq`, and a name
+  that starts with a digit gets `xd` in front. When anything was converted
+  this way, the CRC-16/ARC (polynomial 0x8005 reflected, initial value 0)
+  of the result follows as four lower-case hex digits: `zz plc` gives
+  `zzxaplc` and then `5903`, so `zzxaplc5903`; `plc_1` gives `plcxb1d0ed`;
+  `1zzplc` gives `xd1zzplc458b`; `-zzplc` gives `xqzzplcc65e`.
+- A name with letters beyond ASCII and nothing else to convert gets the
+  IDNA form, `xn--` and the Punycode of the name (`zzäplc` gives
+  `xn--zzplc-hra`), without a checksum.
+
+Not seen: a hyphen at the end or next to a dot, a dot together with
+characters to convert, letters beyond ASCII together with a space or a
+hyphen, names in other scripts; IO devices and CPUs with two PROFINET
+interfaces. `tiaconv` does not derive those.
 
 `INodeData.NodeType` is 3 on Ethernet nodes and 2 on MPI/PROFIBUS nodes
 (**inferred**).
@@ -764,7 +791,9 @@ structured type `HmiStructureMemberTagData`, reached through the relation
 | acquisition cycle | relation `IHmiTagAttributes_AcquisitionCycle` to `HmiCycleData`, whose name is the cycle ("1 s", "500 ms") |
 | acquisition mode | `IHmiTagAttributes.AcquisitionTriggerMode`: `Visible` is the default, "Cyclic in operation" in the editor and in the export. `Continuous` is what the editor calls "Cyclic continuous" and the export "Continuous". The model also has a `CyclicContinuous`, which is **not** what that choice stores, and `OnDemand`, `OnChange` and others not seen |
 | start value | `IHmiTagStructureAttributes.StartValue` |
-| limits, scaling, coding | `IHmiTagStructureAttributes`; the defaults read 10 / 0 / 100 / 0 for the scaling ends, as in the export. Never seen changed |
+| limits | `IHmiTagStructureAttributes.LimitHighType` and `LimitHighConstant` are the Range page's "Upper 2", `LimitLowType` / `LimitLowConstant` its "Lower 2" (compared with TIA Portal V21: 100 and 0 entered there). `LimitHighLow…` and `LimitLowHigh…` are taken to be "Upper 1" and "Lower 1" (not compared). A type is `NoLimit` or `Constant` (the value as text); another type, presumably for a limit given by a tag, is not seen |
+| linear scaling | `IHmiTagStructureAttributes.LinearScaling` (bool) and `ScalingPlcLow`, `ScalingPlcHigh`, `ScalingHmiLow`, `ScalingHmiHigh`; the defaults read 0 / 10 / 0 / 100, as in the export. Switched on with PLC 0 to 27648 and HMI 0 to 100 in V21 |
+| multiplexing | `IHmiTagAttributes.UseMultiplexing` (bool) and relation `IHmiTagAttributes_MultiplexIndex` to the index tag. Where the list of tags it selects from is kept is not known (not seen saved) |
 | address | `ITagAddress.LogicalAddress` and `AddressMode`, see below |
 
 In the file the tags of a device are in the order of their object ids, which
@@ -831,9 +860,12 @@ left over from something else (`%DB1.DBD0` for a Bool, mode `Fixed`).
 side says the tag or member has one. After the PLC tag was deleted the HMI
 tag still stores `%MW20`.
 
-**Not seen**: limits, linear scaling, multiplexed tags, acquisition modes
-other than the two above, HMI tags in the older layout, PC runtimes, WinCC
-Unified devices.
+`OnDemand` is stored for the acquisition mode "On demand", and the
+acquisition cycle is then removed.
+
+**Not seen**: the list of a multiplexed tag, limits given by a tag,
+acquisition modes other than the three above, HMI tags in the older layout,
+PC runtimes, WinCC Unified devices.
 
 ## Blocks
 
@@ -1423,7 +1455,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V17 | v14 | 2 637 | 2 516 | a third-party project archive (`.zap17`), not in this repository |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 21 627 | 15 761 | `tests/fixtures` (seventeen project files, in this repository) |
+| V21 | v14 | 21 868 | 15 764 | `tests/fixtures` (seventeen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -1461,8 +1493,9 @@ all three configured items (both CPUs and the signal module) are as decoded.
 - Projects with several `.plf` files.
 - Protected (encrypted) projects and know-how-protected blocks.
 - The meaning of `NodeIPConfiguration` values.
-- The exact rule TIA Portal uses to derive an automatic PROFINET device name
-  from the device name (`ZZBRAVO` gives `zzbravo`, `PLC_1` gives `plc_1`).
+- The automatic PROFINET name for characters and combinations not seen
+  (see "Automatic PROFINET names"), for IO devices, and for a CPU with more
+  than one PROFINET interface.
 - Relation lists beyond the two keyed ones.
 - The `h` attribute of a start value.
 - Access level numbers of an S7-1200 with firmware V4.0 to V4.6 (assumed to

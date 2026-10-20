@@ -394,7 +394,9 @@ Snapshot takeSnapshot(const Project& project, const ProtectedVersions& protected
         const std::string blockKey = key("blk", b.id);
         auto it = snap.index.find(blockKey);
         if (it == snap.index.end()) continue;
-        addMembers(snap, blockKey, snap.list[it->second].label, b.interfaceMembers, std::string(), 0, true);
+        // a copy: adding the members can move the list the label is in
+        const std::string label = snap.list[it->second].label;
+        addMembers(snap, blockKey, label, b.interfaceMembers, std::string(), 0, true);
     }
 
     for (const auto& t : prog.tags) {
@@ -442,6 +444,12 @@ Snapshot takeSnapshot(const Project& project, const ProtectedVersions& protected
         e.attrs.push_back({"address", t.address, 0});
         e.attrs.push_back({"acquisition cycle", t.acquisitionCycle, 0});
         e.attrs.push_back({"acquisition mode", acquisitionModeName(t.acquisitionMode), 0});
+        e.attrs.push_back({"upper limit 2", t.limitUpper2, 0});
+        e.attrs.push_back({"upper limit 1", t.limitUpper1, 0});
+        e.attrs.push_back({"lower limit 1", t.limitLower1, 0});
+        e.attrs.push_back({"lower limit 2", t.limitLower2, 0});
+        e.attrs.push_back({"linear scaling", t.linearScaling, 0});
+        e.attrs.push_back({"multiplexed by", t.multiplexing ? (t.multiplexIndexTag.empty() ? "?" : t.multiplexIndexTag) : "", 0});
         e.attrs.push_back({"comment", t.comment, 0});
         e.attrs.push_back({"start value", t.startValue, 0});
         snap.add(std::move(e));

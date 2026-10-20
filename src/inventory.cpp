@@ -174,6 +174,201 @@ std::string accessLevelName(const std::string& type, const std::string& firmware
     return std::string();
 }
 
+namespace {
+
+// UTF-8 to code points; false on an invalid sequence.
+bool decodeUtf8(const std::string& s, std::vector<uint32_t>& out) {
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        uint32_t cp = 0;
+        size_t n = 0;
+        if (c < 0x80) cp = c, n = 1;
+        else if ((c & 0xE0) == 0xC0) cp = c & 0x1F, n = 2;
+        else if ((c & 0xF0) == 0xE0) cp = c & 0x0F, n = 3;
+        else if ((c & 0xF8) == 0xF0) cp = c & 0x07, n = 4;
+        else return false;
+        if (i + n > s.size()) return false;
+        for (size_t k = 1; k < n; ++k) {
+            const unsigned char d = static_cast<unsigned char>(s[i + k]);
+            if ((d & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (d & 0x3F);
+        }
+        out.push_back(cp);
+        i += n;
+    }
+    return true;
+}
+
+void appendUtf8(std::string& out, uint32_t cp) {
+    if (cp < 0x80) {
+        out += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (cp >> 18));
+        out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+}
+
+// Punycode (RFC 3492) of a label; false on overflow.
+bool punycode(const std::vector<uint32_t>& in, std::string& out) {
+    const uint32_t base = 36, tmin = 1, tmax = 26, skew = 38, damp = 700;
+    auto digit = [](uint32_t d) { return static_cast<char>(d < 26 ? 'a' + d : '0' + (d - 26)); };
+    auto adapt = [&](uint32_t delta, uint32_t points, bool first) {
+        delta = first ? delta / damp : delta / 2;
+        delta += delta / points;
+        uint32_t k = 0;
+        while (delta > ((base - tmin) * tmax) / 2) {
+            delta /= base - tmin;
+            k += base;
+        }
+        return k + (base - tmin + 1) * delta / (delta + skew);
+    };
+    uint32_t n = 128, delta = 0, bias = 72, h = 0;
+    for (uint32_t cp : in)
+        if (cp < 0x80) out += static_cast<char>(cp);
+    h = static_cast<uint32_t>(out.size());
+    const uint32_t b = h;
+    if (b > 0) out += '-';
+    while (h < in.size()) {
+        uint32_t m = 0xFFFFFFFF;
+        for (uint32_t cp : in)
+            if (cp >= n && cp < m) m = cp;
+        if (static_cast<uint64_t>(m - n) * (h + 1) + delta > 0xFFFFFFFFull) return false;
+        delta += (m - n) * (h + 1);
+        n = m;
+        for (uint32_t cp : in) {
+            if (cp < n && ++delta == 0) return false;
+            if (cp == n) {
+                uint32_t q = delta;
+                for (uint32_t k = base;; k += base) {
+                    const uint32_t t = k <= bias ? tmin : k >= bias + tmax ? tmax : k - bias;
+                    if (q < t) break;
+                    out += digit(t + (q - t) % (base - t));
+                    q = (q - t) / (base - t);
+                }
+                out += digit(q);
+                bias = adapt(delta, h + 1, h == b);
+                delta = 0;
+                ++h;
+            }
+        }
+        ++delta;
+        ++n;
+    }
+    return true;
+}
+
+uint16_t crc16arc(const std::string& s) {
+    uint16_t crc = 0;
+    for (unsigned char c : s) {
+        crc ^= c;
+        for (int k = 0; k < 8; ++k) crc = (crc & 1) ? static_cast<uint16_t>((crc >> 1) ^ 0xA001) : static_cast<uint16_t>(crc >> 1);
+    }
+    return crc;
+}
+
+}  // namespace
+
+DerivedProfinetName deriveProfinetName(const std::string& deviceName) {
+    DerivedProfinetName r;
+    std::vector<uint32_t> cps;
+    if (deviceName.empty() || !decodeUtf8(deviceName, cps)) return r;
+    // lower case: ASCII and the Latin-1 letters (seen: Ä -> ä); other scripts
+    // are not known
+    std::vector<uint32_t> lower;
+    bool nonAscii = false, toEncode = false, dot = false, hyphen = false;
+    for (size_t k = 0; k < cps.size(); ++k) {
+        uint32_t cp = cps[k];
+        if (cp >= 'A' && cp <= 'Z') cp += 32;
+        else if (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) cp += 32;
+        else if (cp >= 0x80 && !(cp >= 0xDF && cp <= 0xFF && cp != 0xF7)) return r;
+        if (cp >= 0x80) nonAscii = true;
+        // seen: "ZZ-PLC" gives "zz-plc" unchanged, "-ZZPLC" "-zzplc" with
+        // "xq" for the hyphen in the converted form; at the end: not seen
+        else if (cp == '-' && k + 1 < cps.size()) (k == 0 ? toEncode : hyphen) = true;
+        else if (cp == ' ' || cp == '_' || (cp > ' ' && cp < 0x7F && cp != '-' && cp != '.' &&
+                                            !((cp >= 'a' && cp <= 'z') || (cp >= '0' && cp <= '9'))))
+            toEncode = true;  // " " -> xa, "_" -> xb, other ASCII -> xh and its code ("~" -> xh7e)
+        else if (cp == '.') dot = true;  // seen: "ZZ.PLC" gives "zz.plc", converted the same
+        else if (!((cp >= 'a' && cp <= 'z') || (cp >= '0' && cp <= '9'))) {
+            // a hyphen, a dot or anything else: the name in lower case is
+            // known, its converted form is not
+            for (uint32_t c : lower) appendUtf8(r.name, c);
+            for (size_t k = lower.size(); k < cps.size(); ++k) {
+                uint32_t c = cps[k];
+                if (c >= 'A' && c <= 'Z') c += 32;
+                else if (c >= 0xC0 && c <= 0xDE && c != 0xD7) c += 32;
+                else if (c >= 0x80 && !(c >= 0xDF && c <= 0xFF && c != 0xF7)) return DerivedProfinetName();
+                appendUtf8(r.name, c);
+            }
+            r.known = true;
+            return r;
+        }
+        lower.push_back(cp);
+    }
+    for (uint32_t c : lower) appendUtf8(r.name, c);
+    r.known = true;
+    const bool leadingDigit = lower[0] >= '0' && lower[0] <= '9';
+    if (dot) {
+        // only a dot between plain parts is known: unchanged
+        bool plain = !nonAscii && !toEncode && !leadingDigit && lower.front() != '.' && lower.back() != '.';
+        for (size_t k = 1; plain && k < lower.size(); ++k) {
+            if (lower[k - 1] == '.' && (lower[k] == '.' || lower[k] == '-' || (lower[k] >= '0' && lower[k] <= '9')))
+                plain = false;
+            if (lower[k] == '.' && lower[k - 1] == '-') plain = false;
+        }
+        if (plain) {
+            r.converted = r.name;
+            r.convertedKnown = true;
+        }
+        return r;
+    }
+    if (nonAscii) {
+        if (toEncode || leadingDigit || hyphen) return r;  // the two kinds together: not seen
+        std::string p;
+        if (!punycode(lower, p)) return r;
+        r.converted = "xn--" + p;
+        r.convertedKnown = true;
+        return r;
+    }
+    if (!toEncode && !leadingDigit) {
+        r.converted = r.name;  // nothing to convert
+        r.convertedKnown = true;
+        return r;
+    }
+    std::string c = leadingDigit ? "xd" : "";
+    for (size_t k = 0; k < lower.size(); ++k) {
+        const uint32_t cp = lower[k];
+        if (cp == '-') {
+            c += k == 0 ? "xq" : "-";
+        } else if (cp == ' ') {
+            c += "xa";
+        } else if (cp == '_') {
+            c += "xb";
+        } else if ((cp >= 'a' && cp <= 'z') || (cp >= '0' && cp <= '9')) {
+            c += static_cast<char>(cp);
+        } else {
+            char code[3];
+            std::snprintf(code, sizeof code, "%02x", static_cast<unsigned>(cp));
+            c += "xh";
+            c += code;
+        }
+    }
+    char hex[5];
+    std::snprintf(hex, sizeof hex, "%04x", crc16arc(c));
+    r.converted = c + hex;
+    r.convertedKnown = true;
+    return r;
+}
+
 std::string projectEventText(const ProjectEvent& e) {
     if (e.event == "ProjectHistoryUserCreated") return "Project created with TIA Portal " + e.version;
     if (e.event == "ProjectHistoryConverted")
@@ -793,6 +988,22 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
         if (r.hasContainer) {
             auto ci = items.find(r.container);
             if (ci != items.end()) m.container = ci->second.module.name;
+        }
+        // A CPU's PROFINET name on automatic: the one TIA Portal generates
+        // from the CPU's name (only checked for a CPU with one interface).
+        if (m.kind == "controller") {
+            size_t automatic = 0;
+            for (const auto& i : m.interfaces)
+                if (i.profinetNameAuto) ++automatic;
+            if (automatic == 1)
+                for (auto& i : m.interfaces) {
+                    if (!i.profinetNameAuto) continue;
+                    const DerivedProfinetName d = deriveProfinetName(m.name);
+                    if (!d.known) continue;
+                    i.profinetName = d.name;
+                    i.profinetNameDerived = true;
+                    if (d.convertedKnown) i.profinetNameConverted = d.converted;
+                }
         }
         if (!opt.allItems) {
             // Newer CPUs carry an internal "virtual" interface without an

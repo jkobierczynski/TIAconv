@@ -37,10 +37,15 @@ struct Interface {
     int64_t busAddress = 0;
     // PROFINET device name. With profinetNameAuto TIA Portal derives the name
     // from the device name and the stored value is not kept up to date, so it
-    // goes to profinetNameStored and profinetName stays empty.
+    // goes to profinetNameStored; profinetName is then what tiaconv derives
+    // the way TIA Portal does (profinetNameDerived), where it can, or empty.
     std::string profinetName;
     std::string profinetNameStored;
     bool profinetNameAuto = false;
+    bool profinetNameDerived = false;
+    // The name in the form the network uses ("zzxaplc5903"), as TIA Portal
+    // shows it under "Converted name"; empty when not derived.
+    std::string profinetNameConverted;
     std::string configuredMac;
     std::string subnet;
 };
@@ -240,5 +245,25 @@ struct InventoryOptions {
 };
 
 Inventory buildInventory(const Project& project, const InventoryOptions& opt = {});
+
+// The PROFINET device name TIA Portal generates from a device name, and its
+// converted form, as far as the rule is known (compared with TIA Portal V21):
+// the name in lower case; in the converted form a space becomes "xa", an
+// underscore "xb", another ASCII character "xh" and its code in hex ("~":
+// "xh7e", a hyphen at the start "xq"), a leading digit gets "xd" in front,
+// and then the CRC-16/ARC
+// of the result follows as four hex digits ("ZZ PLC": "zz plc",
+// "zzxaplc5903"); a dot or hyphen between plain parts stays ("zz.plc",
+// "zz-plc"); a name with
+// letters beyond ASCII and nothing else to
+// convert gets the IDNA form ("ZZÄPLC": "zzäplc", "xn--zzplc-hra"). `known`
+// is false when the name has characters the rule is not known for.
+struct DerivedProfinetName {
+    bool known = false;           // `name` follows from the rule
+    bool convertedKnown = false;  // `converted` too
+    std::string name;
+    std::string converted;
+};
+DerivedProfinetName deriveProfinetName(const std::string& deviceName);
 
 }  // namespace tia

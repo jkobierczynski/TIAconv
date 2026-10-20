@@ -1548,15 +1548,16 @@ void testHmiTags() {
     tia::writeHmiTagsCsv(csv, d);
     const std::string c = csv.str();
     CHECK(c.find("hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,"
-                 "comment,start_value,members,plc_tag_found,plc_data_type,address_stored\r\n") == 0);
+                 "comment,start_value,members,plc_tag_found,plc_data_type,address_stored,upper_limit_2,upper_limit_1,"
+                 "lower_limit_1,lower_limit_2,linear_scaling,multiplex_index_tag\r\n") == 0);
     CHECK(c.find("\r\nHMI_1,HMI tags,Data_Speed,Int,symbolic,HMI_Connection_1,PLC_1,Data.Speed,%DB7.DBW2,1 s,"
-                 "Cyclic in operation,,12,,yes,Int,%DB7.DBW2\r\n") != std::string::npos);
+                 "Cyclic in operation,,12,,yes,Int,%DB7.DBW2,,,,,,\r\n") != std::string::npos);
     CHECK(c.find("\r\nHMI_1,HMI tags,Lost,Int,symbolic,HMI_Connection_1,PLC_1,\"\"\"Gone.DB\"\".x\",,1 s,Cyclic in operation,,,,"
-                 "no,,%DB1.DBD0\r\n") != std::string::npos);
-    CHECK(c.find("\r\nHMI_1,HMI tags,Internal,UInt,internal,,,,,1 s,Cyclic in operation,,,,,,\r\n") != std::string::npos);
-    CHECK(c.find("\r\nHMI_1,HMI tags,Unnamed,Int,symbolic,HMI_Connection_1,PLC_1,,,1 s,Cyclic in operation,,,,,,%DB1.DBD0\r\n") !=
+                 "no,,%DB1.DBD0,,,,,,\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Internal,UInt,internal,,,,,1 s,Cyclic in operation,,,,,,,,,,,,\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Unnamed,Int,symbolic,HMI_Connection_1,PLC_1,,,1 s,Cyclic in operation,,,,,,%DB1.DBD0,,,,,,\r\n") !=
           std::string::npos);
-    CHECK(c.find("\r\nHMI_1,HMI tags,Struct,MotorUDT,internal,,,,,1 s,Cyclic in operation,,,3,,,\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Struct,MotorUDT,internal,,,,,1 s,Cyclic in operation,,,3,,,,,,,,,\r\n") != std::string::npos);
 
     tia::ReportContext ctx;
     std::ostringstream text, json;
@@ -2117,6 +2118,41 @@ void testExtraDataFiles() {
     // not a numbered part
     const std::vector<std::string> v = tia::extraDataFileWarnings({"PEData-x.plf", "pedata-.plf"});
     CHECK(v.size() == 2 && v[0].find("additional data file") == 0 && v[1].find("additional data file") == 0);
+}
+
+
+// The PROFINET device name TIA Portal V21 generates from a CPU's name, and
+// its converted form, as its properties dialog showed them.
+void testProfinetNames() {
+    struct Case { const char* device; const char* name; const char* converted; };
+    const Case cases[] = {
+        {"ZZBRAVO", "zzbravo", "zzbravo"},
+        {"ZZ PLC", "zz plc", "zzxaplc5903"},
+        {"ZZ\xC3\x84PLC", "zz\xC3\xA4plc", "xn--zzplc-hra"},  // ZZÄPLC
+        {"1ZZPLC", "1zzplc", "xd1zzplc458b"},
+        {"PLC_1", "plc_1", "plcxb1d0ed"},
+        {"ZZ.PLC", "zz.plc", "zz.plc"},
+        {"~ZZPLC", "~zzplc", "xh7ezzplc9ae6"},  // the names as the project stored them
+        {"ZZ~PLC", "zz~plc", "zzxh7eplc2ceb"},
+        {"ZZ-PLC", "zz-plc", "zz-plc"},
+        {"-ZZPLC", "-zzplc", "xqzzplcc65e"},
+    };
+    for (const auto& c : cases) {
+        const tia::DerivedProfinetName d = tia::deriveProfinetName(c.device);
+        CHECK(d.known && d.convertedKnown);
+        CHECK_EQ(d.name, c.name);
+        CHECK_EQ(d.converted, c.converted);
+    }
+    // the name is known, the converted form not: a hyphen at the end or next
+    // to a dot; a dot together with something to convert; letters beyond
+    // ASCII with a space or a hyphen
+    for (const char* n : {"ZZPLC-", "ZZ.-PLC", "ZZ.1PLC", "ZZ.P LC", "ZZ\xC3\x84 PLC", "ZZ-\xC3\x84PLC"}) {
+        const tia::DerivedProfinetName d = tia::deriveProfinetName(n);
+        CHECK(d.known && !d.convertedKnown && d.converted.empty());
+    }
+    CHECK_EQ(tia::deriveProfinetName("ZZ.P LC").name, "zz.p lc");
+    // not known at all: another script, broken UTF-8, nothing
+    for (const char* n : {"\xCE\xA0LC", "ZZ\xC3", ""}) CHECK(!tia::deriveProfinetName(n).known);
 }
 
 void testCodeConstructs() {
@@ -2779,6 +2815,7 @@ int main() {
     testScl();
     testStl();
     testCodeConstructs();
+    testProfinetNames();
     testExtraDataFiles();
     testGraphicNetworks();
     testCodeProject();

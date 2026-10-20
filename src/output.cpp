@@ -615,6 +615,10 @@ void jsonProgram(std::ostream& out, const ProgramData& prog) {
             << ", \"acquisition_cycle\": " << qn(t.acquisitionCycle) << ", \"acquisition_mode\": "
             << qn(acquisitionModeName(t.acquisitionMode)) << ", \"acquisition_mode_stored\": " << qn(t.acquisitionMode)
             << ", \"comment\": " << qn(t.comment) << ", \"start_value\": " << qn(t.startValue)
+            << ", \"limits\": {\"upper_2\": " << qn(t.limitUpper2) << ", \"upper_1\": " << qn(t.limitUpper1)
+            << ", \"lower_1\": " << qn(t.limitLower1) << ", \"lower_2\": " << qn(t.limitLower2) << "}"
+            << ", \"linear_scaling\": " << qn(t.linearScaling) << ", \"multiplexing\": " << tf(t.multiplexing)
+            << ", \"multiplex_index_tag\": " << qn(t.multiplexIndexTag)
             << ", \"member_count\": " << t.memberCount << ", \"members\": ";
         jsonHmiMembers(out, t.members);
         out << "}";
@@ -651,13 +655,15 @@ void writeTagsCsv(std::ostream& out, const ProgramData& prog) {
 
 void writeHmiTagsCsv(std::ostream& out, const ProgramData& prog) {
     out << "hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,comment,"
-           "start_value,members,plc_tag_found,plc_data_type,address_stored\r\n";
+           "start_value,members,plc_tag_found,plc_data_type,address_stored,upper_limit_2,upper_limit_1,lower_limit_1,"
+           "lower_limit_2,linear_scaling,multiplex_index_tag\r\n";
     for (const auto& t : prog.hmiTags)
         csvRow(out, {t.hmi, t.table, t.name, t.dataType, t.access, t.connection, t.plc, t.plcTag, t.address,
                      t.acquisitionCycle, acquisitionModeName(t.acquisitionMode), t.comment, t.startValue,
                      t.memberCount ? std::to_string(t.memberCount) : std::string(),
                      !t.plcTag.empty() && !t.plc.empty() ? (t.plcTagFound ? "yes" : "no") : "", t.plcDataType,
-                     t.addressStored});
+                     t.addressStored, t.limitUpper2, t.limitUpper1, t.limitLower1, t.limitLower2, t.linearScaling,
+                     t.multiplexing ? (t.multiplexIndexTag.empty() ? std::string("?") : t.multiplexIndexTag) : ""});
 }
 
 void writeConstantsCsv(std::ostream& out, const ProgramData& prog) {
@@ -1240,8 +1246,18 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
                     if (i.ipAssignedElsewhere) out << "  [address assigned outside the project]";
                 }
                 if (i.hasBusAddress) out << "  bus address " << i.busAddress;
-                if (!i.profinetName.empty()) out << "  PROFINET name \"" << i.profinetName << "\"";
-                else if (i.profinetNameAuto) out << "  PROFINET name automatic";
+                if (i.profinetNameAuto && i.profinetNameDerived) {
+                    // as TIA Portal generates it from the CPU's name
+                    out << "  PROFINET name \"" << i.profinetName << "\" (automatic";
+                    if (i.profinetNameConverted.empty()) out << ", converted form not derived";
+                    else if (i.profinetNameConverted != i.profinetName)
+                        out << ", converted \"" << i.profinetNameConverted << "\"";
+                    out << ")";
+                } else if (!i.profinetName.empty()) {
+                    out << "  PROFINET name \"" << i.profinetName << "\"";
+                } else if (i.profinetNameAuto) {
+                    out << "  PROFINET name automatic";
+                }
                 if (!i.subnet.empty()) out << "  subnet " << i.subnet;
                 out << "\n";
             }
@@ -1404,7 +1420,8 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
                         << ", \"ip_set_by_user\": " << (i.hasIpSetByUser ? tf(i.ipSetByUser) : "null");
                 if (i.hasBusAddress) out << ", \"bus_address\": " << i.busAddress;
                 out << ", \"profinet_name\": " << qn(i.profinetName) << ", \"profinet_name_auto\": "
-                    << tf(i.profinetNameAuto) << ", \"profinet_name_stored\": " << qn(i.profinetNameStored)
+                    << tf(i.profinetNameAuto) << ", \"profinet_name_converted\": " << qn(i.profinetNameConverted)
+                    << ", \"profinet_name_stored\": " << qn(i.profinetNameStored)
                     << ", \"configured_mac\": " << qn(i.configuredMac)
                     << ", \"subnet\": " << qn(i.subnet) << "}";
             }

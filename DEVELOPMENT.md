@@ -5,7 +5,7 @@ what is still unclear or still to do. The user-facing description is in
 [README.md](README.md), the file format in [docs/FORMAT.md](docs/FORMAT.md),
 the releases in [CHANGELOG.md](CHANGELOG.md).
 
-State at the time of writing: version 0.14.0. A STEP 7 Professional V21
+State at the time of writing: version 0.15.0. A STEP 7 Professional V21
 trial licence is available until about 27–29 October 2026; the items marked
 *(trial)* below need it.
 
@@ -96,7 +96,10 @@ because TIA Portal can rewrite the whole file.
   addresses, masks, routers, subnets, PROFINET names; addresses assigned
   outside the project are reported as such.
 - With "generate PROFINET device name automatically" TIA Portal derives the
-  name and does not update the stored copy; the report says so.
+  name and does not update the stored copy. tiaconv derives it as TIA Portal
+  does (0.15.0): the CPU's name in lower case, and the converted name with
+  `xa`, `xb`, `xd`, `xh`, `xq` codes and a CRC-16/ARC, or IDNA for letters
+  beyond ASCII (FORMAT.md, "Automatic PROFINET names").
 - PROFINET IO systems, port connections (topology), S7 and HMI connections
   including partners outside the project.
 - CPU security settings: access level, PUT/GET, web server, OPC UA server,
@@ -116,7 +119,8 @@ because TIA Portal can rewrite the whole file.
 - Constants: hardware identifiers with what each stands for, user
   constants, other system constants.
 - HMI tags of each HMI device, with connection, the PLC at the other end,
-  the PLC tag or data block member, address and acquisition cycle.
+  the PLC tag or data block member, address, acquisition cycle and mode,
+  limits, linear scaling and the index tag of a multiplexed tag (0.15.0).
 
 ### Save history and diff (0.9.0, 0.12.0)
 
@@ -183,15 +187,16 @@ because TIA Portal can rewrite the whole file.
   Anonymous user's rights as on the S7-1200 (only a new CPU's state was
   compared). Also unknown: the access level numbers of an S7-1200 with
   firmware V4.0 to V4.6.
-- **IP address set directly at the device**: inferred from a public sample,
-  not confirmed in a V21 project.
-- **The automatic PROFINET name rule**: two examples only (`ZZBRAVO` gives
-  `zzbravo`, `PLC_1` gives `plc_1`); names with a space, an umlaut or a
-  leading digit would show the rule. Until then tiaconv does not derive the
-  name itself.
-- **HMI leftovers**: limits, linear scaling, multiplexed tags, the
-  acquisition mode "On demand"; PC runtimes and WinCC Unified; HMI tags in
-  V13.
+- **The automatic PROFINET name** for combinations not seen (an umlaut
+  with a space, a dot with characters to convert, a hyphen at the end), for
+  IO devices and for CPUs with two PROFINET interfaces.
+- **HMI leftovers**: the list of a multiplexed tag (not found in the file),
+  upper limit 1 and lower limit 1 (assumed); PC runtimes and WinCC Unified;
+  HMI tags in V13.
+- **A user constant in TIA Portal's cross-reference list**: tiaconv lists it
+  as read; not compared.
+- **The download state** (TiaProjectParser's two versions of an object) and
+  download times: PLCSIM Advanced did not start an instance here.
 - **Technology objects and S7-1500 central modules**: identifier kinds and
   objects not seen yet; technology objects are listed like blocks, their
   meaning is not looked at.

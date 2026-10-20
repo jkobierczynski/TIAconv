@@ -185,6 +185,10 @@ licence for WinCC Advanced.
 | 34 | on ZZBRAVO the PLC tag `MyInt` deleted, which `ZZMEM` still names |
 | 35 | second HMI connection, to ZZCHARLIE (`HMI_Connection_2`), and in `ZZTABLE` the tag `ZZCH` on it: Word, absolute access, %MW200 |
 | 36 | in `ZZTABLE` the tag `ZZOPT1` on `DB_Optimized.my_real` |
+| 37 | `ZZINT`, Range: upper 2 = 100, lower 2 = 0 |
+| 38 | `ZZSTD`, linear scaling: PLC 0 to 27648, HMI 0 to 100 |
+| 39 | `ZZMEM`: acquisition mode "On demand"; in the same save `ZZSTD` back to 1 s and "Cyclic in operation" |
+| 40 | a new internal tag `ZZMUX` (SInt) with multiplexing on, index tag `ZZSTD`; in the same save `ZZMEM` became an internal SInt tag |
 
 References from TIA Portal, all taken after save 36 unless stated:
 
@@ -342,6 +346,29 @@ Third series, in the same file (the interface of an FB, standard access):
 | 41 | its members: Input `i1` Bool, `i2` Int; Output `o1` Real; InOut `io1` Int; Static `s1` String, `s2` Bool (one save) |
 | 42 | Main network 10: `ZZSTD` called with the instance block `ZZSTD_DB` |
 | 43 | compiled |
+
+Fourth series, in the same file (a user constant, PROFINET names, the IP
+address set at the device):
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 44 | user constant `ZZK`, Int, value 7, in the Default tag table |
+| 45 | Main network 11: MOVE from `"ZZK"` to `"ZZN3"` |
+| 46 | the PLC renamed `ZZ PLC` |
+| 47 | renamed `ZZÄPLC` |
+| 48 | renamed `1ZZPLC` |
+| 49 | renamed `PLC_1` |
+| 50 | renamed `~ZZPLC` |
+| 51 | renamed `ZZ~PLC` |
+| 52 | renamed `ZZPLC` |
+| 53 | X1: "IP address is set directly at the device" |
+| 54 | X1: "Set IP address in the project" again (192.168.0.1); the PLC renamed `ZZ-PLC` |
+| 55 | renamed `-ZZPLC` |
+| 56 | renamed `ZZPLC` |
+
+References: for each name, the PROFINET device name and the converted name
+that TIA Portal's properties dialog showed (also for `ZZ.PLC`, not saved);
+the network in Main with the MOVE.
 
 References after save 43: screenshots of `ZZSTD_DB` with its Offset column,
 of the interface of `ZZLAD2`, and of the cross-references of `ZZSCL2`.

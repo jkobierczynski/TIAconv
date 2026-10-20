@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "program.hpp"
 
+#include <cstdio>
+
 #include <algorithm>
 #include <cstdlib>
 #include <map>
@@ -387,6 +389,36 @@ private:
         t.addressStored = attrStr(o, "ITagAddress", "LogicalAddress");
         t.addressMode = attrStr(o, "ITagAddress", "AddressMode");
         t.acquisitionMode = attrStr(o, "IHmiTagAttributes", "AcquisitionTriggerMode");
+        {
+            const char* set = "IHmiTagStructureAttributes";
+            auto limit = [&](const char* type, const char* value) {
+                const std::string kind = attrStr(o, set, type);
+                if (kind.empty() || kind == "NoLimit") return std::string();
+                if (kind == "Constant") return attrStr(o, set, value);
+                return std::string(kind == "Tag" ? "tag" : kind);
+            };
+            t.limitUpper2 = limit("LimitHighType", "LimitHighConstant");
+            t.limitUpper1 = limit("LimitHighLowType", "LimitHighLowConstant");
+            t.limitLower1 = limit("LimitLowHighType", "LimitLowHighConstant");
+            t.limitLower2 = limit("LimitLowType", "LimitLowConstant");
+            bool scaling = false;
+            if (attrBool(o, set, "LinearScaling", scaling) && scaling) {
+                auto number = [&](const char* name) {
+                    const Value* v = o.attr(set, name);
+                    if (!v) return std::string("?");
+                    char buf[64];
+                    switch (v->type) {
+                    case Value::Type::Int: return std::to_string(v->i);
+                    case Value::Type::UInt: return std::to_string(v->u);
+                    case Value::Type::Float: std::snprintf(buf, sizeof buf, "%.15g", v->f); return std::string(buf);
+                    case Value::Type::String: return v->s;
+                    default: return std::string("?");
+                    }
+                };
+                t.linearScaling = "PLC " + number("ScalingPlcLow") + " .. " + number("ScalingPlcHigh") + " -> HMI " +
+                                  number("ScalingHmiLow") + " .. " + number("ScalingHmiHigh");
+            }
+        }
         // the runtime item of the HMI device, and the device it is in
         Key runtime;
         if (o.relationTarget(relTarget_, runtime)) {
@@ -397,6 +429,11 @@ private:
         Key table;
         if (o.relationTarget(relTagTable_, table)) t.table = nameOf(table);
         for (const Key& k : targets(o, "IHmiTagAttributes_AcquisitionCycle")) t.acquisitionCycle = nameOf(k);
+        bool mux = false;
+        if (attrBool(o, "IHmiTagAttributes", "UseMultiplexing", mux) && mux) {
+            t.multiplexing = true;
+            for (const Key& k : targets(o, "IHmiTagAttributes_MultiplexIndex")) t.multiplexIndexTag = nameOf(k);
+        }
         for (const Key& k : targets(o, "IHmiTagAttributes_Connection")) {
             t.connection = nameOf(k);
             // The connection the tag names is the HMI device's view of it; the
@@ -1111,6 +1148,7 @@ std::string acquisitionModeName(const std::string& stored) {
     // not what TIA Portal stores for that choice.
     if (stored == "Visible") return "Cyclic in operation";
     if (stored == "Continuous") return "Cyclic continuous";
+    if (stored == "OnDemand") return "On demand";  // seen in V21 after choosing it
     return stored;
 }
 

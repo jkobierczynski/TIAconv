@@ -143,8 +143,14 @@ read.
 - **PROFINET device names.** When a device has "generate PROFINET device name
   automatically" switched on, TIA Portal derives the name from the device
   name and does not keep the stored copy up to date (a PLC renamed to
-  `ZZALPHA` still stores `plc_1`). The report then says `PROFINET name
-  automatic`; the stale copy is in the JSON as `profinet_name_stored`.
+  `ZZALPHA` still stores `plc_1`). For a CPU tiaconv derives the name the
+  way TIA Portal does, and also the converted name, the form the network
+  uses (TIA Portal shows it as "Converted name"):
+  `PROFINET name "zz plc" (automatic, converted "zzxaplc5903")`. The rule
+  is in FORMAT.md; where a name has characters the rule is not known for,
+  the report says `converted form not derived`, or only `PROFINET name
+  automatic`. The JSON has `profinet_name_converted`, and the stale copy as
+  `profinet_name_stored`.
 - `ip_set_by_user` in the JSON is a flag from the project. In V21 it is false
   until someone types an address; a V13 project has it false on an address
   that is clearly not the default, so treat it as a hint.
@@ -861,7 +867,15 @@ PLC that is.
   and the CSV under the name TIA Portal's tag editor uses: `Cyclic in
   operation` (the default) and `Cyclic continuous`. TIA Portal's export
   writes the second one as `Continuous`, which is also how it is stored
-  (`acquisition_mode_stored` in the JSON). Other modes are given as stored.
+  (`acquisition_mode_stored` in the JSON), and `On demand`. Other modes are
+  given as stored.
+- **Limits** (the Range page: upper limit 2, upper limit 1, lower limit 1,
+  lower limit 2; a constant's value, or `tag` for a limit given by a tag),
+  **linear scaling** (`PLC 0 .. 27648 -> HMI 0 .. 100`) and the **index tag**
+  of a multiplexed tag are in the JSON, the CSV and the save history. Upper
+  limit 2 and lower limit 2 were compared with TIA Portal; that the two
+  others are upper limit 1 and lower limit 1 is not checked. The list of
+  tags a multiplexed tag selects from is not read.
 - Notes at the end of a line: `link to the PLC tag broken` when TIA Portal
   has marked it so (it shows the PLC tag on a red background; deleting the
   PLC tag does that), `PLC tag not found in the PLC's tags and data blocks`
@@ -892,8 +906,9 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | | |
 |---|---|
 | File structure | Every byte of the twenty-one project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match, and in the V17 archive read since. |
-| Object decoding | All 31 980 objects decode without an out-of-range read. |
-| Device name, IP address, mask, router, PROFINET name, subnet | Read back exactly as entered in the V21 test projects, each at the step where it was entered. |
+| Object decoding | All 31 983 objects decode without an out-of-range read. |
+| Device name, IP address, mask, router, PROFINET name, subnet | Read back exactly as entered in the V21 test projects, each at the step where it was entered. "IP address is set directly at the device" switched on and off again shows in the save where it was done, with the address still stored. |
+| Automatic PROFINET names | V21: the device name and converted name TIA Portal showed for eleven CPU names (with a space, an umlaut, a leading digit, an underscore, a tilde, a dot, a hyphen in the middle and at the start) are the ones tiaconv derives; the converted names that carry a checksum match it as CRC-16/ARC in every case. Names that combine characters in ways not seen (an umlaut with a space, a dot with characters to convert, a hyphen at the end) are not derived. Not checked: IO devices, CPUs with more than one PROFINET interface. |
 | Order number, type, firmware | For the V16 sample all three match what its author documented; for the V19 sample the CPU type does. In the V21 test projects all three were confirmed by the person who configured them. |
 | Which attributes are stored | The rule reproduces, for all 2 629 object types listed there, the resolved layout table that the V13 sample carries; and with it every plain attribute segment of all samples is covered exactly, byte for byte, with two exceptions (one audit-trail object in each of two projects). `tools/check_storage_rule.py` repeats both checks. |
 | CPU security settings | V21: one test project was saved 23 times with one setting changed each time, on three CPUs (S7-1500 firmware V1.8 and V4.1, S7-1200 firmware V2.2). On a fourth (S7-1200 firmware V4.7) the rights of the Anonymous user were changed in four more saves, and the level tiaconv prints is the one TIA Portal showed after each. tiaconv is run on the project as it was after each save and shows exactly that change: every access level, PUT/GET, web server on the module and on the interface, HTTPS only, NTP with its server, display protection, OPC UA server, legacy communication, protection of configuration data, access control. For the newest CPU the result also matches the overview page of TIA Portal's security wizard. **Not read:** users and roles, which decide about access on a CPU with user management. **Not checked:** that the level follows the Anonymous user on an S7-1500 as well (there only the state of a new CPU was compared), S7-1200 with firmware V4.0 to V4.6, S7-300/400, ET 200SP CPUs, software controllers, HMI devices. |

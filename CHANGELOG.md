@@ -1,5 +1,32 @@
 # Changes
 
+## 0.15.0
+
+- PROFINET names: for a CPU with "generate PROFINET device name
+  automatically", the device name and the converted name are derived as
+  TIA Portal does it (`PROFINET name "zz plc" (automatic, converted
+  "zzxaplc5903")`; JSON `profinet_name_converted`). Checked against eleven
+  names in TIA Portal V21. Names with characters in combinations not seen
+  are not derived, and the report says so.
+- HMI tags: limits (upper/lower limit 2, and the two others), linear
+  scaling, the index tag of a multiplexed tag, and the acquisition mode
+  "On demand", in the JSON, the HMI tags CSV (six new columns at the end)
+  and the save history.
+- Checked in V21: "IP address is set directly at the device", and a user
+  constant used in code.
+- The test projects `s14_code_rewritten` (13 more saves, 56 in all) and
+  `s13_hmi` (4 more, 40 in all) hold these steps.
+- Fixed (since 0.14.0): the save history and `tiaconv diff` could name an
+  FB or FC interface member without its block (`member  / io1`) or read
+  freed memory; seen in the Windows build. The block's name was taken by
+  reference from a list that grows while the members are added.
+- Windows: the executable carries version information (product, version,
+  description, licence) and a manifest that runs it as the user without
+  elevation. Unsigned programs without either are more often taken for
+  malware by virus scanners.
+- Tests: a failing comparison of changes prints what is missing and what
+  was not expected.
+
 ## 0.14.0
 
 - Save history and `tiaconv diff`: the interface of FBs and FCs, member by

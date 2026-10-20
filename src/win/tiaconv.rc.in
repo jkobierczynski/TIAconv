@@ -1,0 +1,40 @@
+// tiaconv - TIA Portal project reader
+// Copyright (C) 2026 Jurgen Kobierczynski
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Version information and manifest of the Windows executable, so that
+// Windows and virus scanners can tell what the program is.
+#include <winver.h>
+#include <winuser.h>
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "tiaconv.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "Jurgen Kobierczynski"
+      VALUE "FileDescription",  "tiaconv - read-only reader of TIA Portal project files"
+      VALUE "FileVersion",      "@PROJECT_VERSION@"
+      VALUE "InternalName",     "tiaconv"
+      VALUE "LegalCopyright",   "Copyright (C) 2026 Jurgen Kobierczynski. GPL-3.0-or-later."
+      VALUE "OriginalFilename", "tiaconv.exe"
+      VALUE "ProductName",      "tiaconv"
+      VALUE "ProductVersion",   "@PROJECT_VERSION@"
+      VALUE "Comments",         "https://github.com/jkobierczynski/TIAconv"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END
