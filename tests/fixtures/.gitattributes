@@ -1,0 +1,3 @@
+# The test projects and what TIA Portal exported from them are compared
+# byte for byte: git must not change their line ends.
+* -text

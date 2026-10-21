@@ -104,6 +104,26 @@ std::string accessProtection(const Security& s);
 // empty for combinations that have not been checked against TIA Portal.
 std::string accessLevelName(const std::string& type, const std::string& firmware, int64_t level);
 
+// An address range of a module in the input or output area (%I, %Q), as
+// TIA Portal's device overview shows it.
+struct IoAddress {
+    std::string item;        // the item that has it: the module or one of its parts
+    bool input = true;       // false: output
+    int64_t startBit = 0;    // from the start of the area, in bits
+    int64_t lengthBits = 0;
+    int64_t processImage = 0;  // the process image partition; 0: automatic update
+};
+// "I 64...67", "Q 8", "I 2.0...2.1" (bits when it does not fill whole bytes)
+std::string ioAddressText(const IoAddress& a);
+// All of a module's addresses as one text: "I 0, Q 0" or, with parts,
+// "DI 8/DQ 6_1: I 0, Q 0; AI 2_1: I 64...67"
+std::string ioAddressesText(const std::string& module, const std::vector<IoAddress>& addresses);
+// "off", "on, read only", "on (read and write)", with ", community names
+// public/private (TIA Portal's defaults)" or ", community names changed";
+// empty when nothing is stored.
+struct Module;
+std::string snmpText(const Module& m);
+
 struct Module {
     uint64_t id = 0;
     std::string name;
@@ -120,6 +140,17 @@ struct Module {
     std::string modified;
     std::vector<Interface> interfaces;
     Security security;       // controllers only
+    // Input and output addresses: its own and those of its parts that are not
+    // listed as modules of their own (the onboard I/O of a CPU, the
+    // submodule of a signal module), in the order of the parts.
+    std::vector<IoAddress> ioAddresses;
+    // SNMP, where the project stores it (seen on ET 200SP interface modules):
+    // on or off, read only, and whether the community names are the ones
+    // TIA Portal fills in ("public", "private"). The names themselves are
+    // secrets and are not kept.
+    Setting snmp, snmpReadOnly;
+    bool hasSnmpCommunities = false;
+    bool snmpDefaultCommunities = false;
     std::string ioController;  // IO devices: the controller they are assigned to
     std::string ioSystem;      // ... and its IO system
 };

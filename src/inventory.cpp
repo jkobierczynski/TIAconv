@@ -14,7 +14,7 @@ namespace {
 
 using Key = std::pair<uint32_t, uint64_t>;
 
-enum class Role { None, Project, Device, Item, Node, Subnet, Connection, IoSystem, RightSet, Right, Persistence };
+enum class Role { None, Project, Device, Item, Node, Subnet, Connection, IoSystem, RightSet, Right, Persistence, Address };
 
 const char kBaseDevice[] = "Siemens.Automation.DomainModel.BaseDeviceData";
 const char kBaseDeviceItem[] = "Siemens.Automation.DomainModel.BaseDeviceItemData";
@@ -125,7 +125,83 @@ struct ItemRec {
     Key interfaceItem{0, 0};  // ports: the interface they belong to
     bool hasInterfaceItem = false;
     std::vector<Key> portPeers;  // ports: the ports they are cabled to
+    std::vector<IoAddress> ioAddresses;  // its own
+    bool listed = false;
 };
+
+// The addresses of a device item as V14 and later keep them: expando
+// attributes AM_<n>_AddrData_<m>, a structure with StartAddress (in bits),
+// Length (bits), AdditionalInfo (2 input, 4 output) and
+// ProcessImagePartNumber.
+}  // namespace
+
+std::string ioAddressText(const IoAddress& a) {
+    const char* area = a.input ? "I " : "Q ";
+    const int64_t end = a.startBit + (a.lengthBits > 0 ? a.lengthBits : 1) - 1;
+    std::string text;
+    if (a.startBit % 8 == 0 && a.lengthBits > 0 && a.lengthBits % 8 == 0) {
+        text = std::to_string(a.startBit / 8);
+        if (end / 8 != a.startBit / 8) text += "..." + std::to_string(end / 8);
+    } else {
+        text = std::to_string(a.startBit / 8) + "." + std::to_string(a.startBit % 8);
+        if (end != a.startBit) text += "..." + std::to_string(end / 8) + "." + std::to_string(end % 8);
+    }
+    std::string out = area + text;
+    if (a.processImage) out += " (PIP " + std::to_string(a.processImage) + ")";
+    return out;
+}
+
+std::string snmpText(const Module& m) {
+    if (!m.snmp.stored) return std::string();
+    std::string out = !m.snmp.on ? "off" : (m.snmpReadOnly.stored && m.snmpReadOnly.on ? "on, read only" : "on (read and write)");
+    if (m.snmp.on && m.hasSnmpCommunities)
+        out += m.snmpDefaultCommunities ? ", community names public/private (TIA Portal's defaults)"
+                                        : ", community names changed";
+    return out;
+}
+
+std::string ioAddressesText(const std::string& module, const std::vector<IoAddress>& addresses) {
+    std::string out;
+    for (size_t i = 0; i < addresses.size(); ++i) {
+        const IoAddress& a = addresses[i];
+        const bool sameItem = i > 0 && addresses[i - 1].item == a.item;
+        if (sameItem) out += ", ";
+        else {
+            if (i) out += "; ";
+            if (a.item != module) out += a.item + ": ";
+        }
+        out += ioAddressText(a);
+    }
+    return out;
+}
+
+namespace {
+
+std::vector<IoAddress> readIoAddresses(const Object& o, const std::string& item) {
+    std::vector<IoAddress> out;
+    for (const auto& kv : o.expando) {
+        const std::string& k = kv.first;
+        if (k.compare(0, 3, "AM_") != 0 || k.find("_AddrData_") == std::string::npos) continue;
+        const Value& v = kv.second;
+        if (v.type != Value::Type::Record) continue;
+        uint64_t start = 0, length = 0, info = 0, pip = 0;
+        const Value* s = v.field("StartAddress");
+        const Value* l = v.field("Length");
+        const Value* i = v.field("AdditionalInfo");
+        if (!s || !l || !i || !s->asUInt(start) || !l->asUInt(length) || !i->asUInt(info)) continue;
+        if (info != 2 && info != 4) continue;
+        if (const Value* p = v.field("ProcessImagePartNumber")) p->asUInt(pip);
+        IoAddress a;
+        a.item = item;
+        a.input = info == 2;
+        a.startBit = static_cast<int64_t>(start);
+        a.lengthBits = static_cast<int64_t>(length);
+        a.processImage = static_cast<int64_t>(pip);
+        out.push_back(a);
+    }
+    std::stable_sort(out.begin(), out.end(), [](const IoAddress& x, const IoAddress& y) { return x.input > y.input; });
+    return out;
+}
 
 }  // namespace
 
@@ -414,6 +490,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
                 else if (meta.derivesFromShort(t->name, "DeviceFunctionRightSet")) r = Role::RightSet;
                 else if (meta.derivesFromShort(t->name, "DeviceFunctionRight")) r = Role::Right;
                 else if (meta.derivesFromShort(t->name, "CorePersistenceInfo")) r = Role::Persistence;
+                else if (meta.derivesFromShort(t->name, "AddressObjectData")) r = Role::Address;
             }
         }
         roles[type] = r;
@@ -438,6 +515,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
         std::vector<Key> heads;
     };
     std::vector<IoRec> ioRecs;
+    std::vector<std::pair<Key, IoAddress>> v13Addresses;
     const uint32_t relIoMaster = meta.relationId("MastersystemData", "Master");
     const uint32_t relIoHeads = meta.relationId("MastersystemData", "HeadModules");
     const uint32_t relIoSubnet = meta.relationId("MastersystemData", "Subnet");
@@ -544,6 +622,18 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
                         r.portPeers.emplace_back(rel.targetType, rel.targetId);
             r.hasParent = o.relationTarget(relParent, r.parent);
             r.hasContainer = o.relationTarget(relContainer, r.container);
+            r.ioAddresses = readIoAddresses(o, m.name);
+            readSetting(o, "SNMPEnabled", m.snmp);
+            readSetting(o, "SNMPEnableReadOnly", m.snmpReadOnly);
+            {
+                const Value* ro = o.expandoValue("SNMPReadOnlyCommunityName");
+                const Value* rw = o.expandoValue("SNMPReadWriteCommunityName");
+                if (ro && rw && ro->type == Value::Type::String && rw->type == Value::Type::String) {
+                    // compared with the defaults only; the names are not kept
+                    m.hasSnmpCommunities = true;
+                    m.snmpDefaultCommunities = ro->s == "public" && rw->s == "private";
+                }
+            }
             items[key] = std::move(r);
         } else if (role == Role::Subnet) {
             Subnet s;
@@ -576,6 +666,34 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
                     if (rel.relation == relIoHeads && (rel.targetType || rel.targetId))
                         r.heads.emplace_back(rel.targetType, rel.targetId);
             ioRecs.push_back(std::move(r));
+        } else if (role == Role::Address) {
+            // V13: an object of its own per range, StartAddress and BitAddress
+            // in bytes and bits, Length in bits, IoType 1 input, 2 output.
+            Key item;
+            uint64_t start = 0, bit = 0, length = 0, io = 0, pip = 0;
+            const Value* s = o.attr("IAddressObjectData", "StartAddress");
+            const Value* l = o.attr("IAddressObjectData", "Length");
+            const Value* t = o.attr("IAddressObjectData", "IoType");
+            bool hasItem = false;
+            for (const auto& rel : o.relations) {
+                const RelationDef* d = meta.relation(rel.relation);
+                if (d && d->name == "Parent" && (rel.targetType || rel.targetId)) {
+                    item = {rel.targetType, rel.targetId};
+                    hasItem = true;
+                    break;
+                }
+            }
+            if (hasItem && s && l && t && s->asUInt(start) &&
+                l->asUInt(length) && t->asUInt(io) && (io == 1 || io == 2)) {
+                if (const Value* b2 = o.attr("IAddressObjectData", "BitAddress")) b2->asUInt(bit);
+                if (const Value* p = o.attr("IAddressObjectData", "ProcessImagePartNumber")) p->asUInt(pip);
+                IoAddress a;
+                a.input = io == 1;
+                a.startBit = static_cast<int64_t>(start * 8 + bit);
+                a.lengthBits = static_cast<int64_t>(length);
+                a.processImage = static_cast<int64_t>(pip);
+                v13Addresses.emplace_back(item, a);
+            }
         } else if (role == Role::Persistence) {
             // The history TIA Portal keeps itself, a list of structures.
             const Value* h = o.attr("IPersistenceInfoAttributes", "History");
@@ -1018,7 +1136,50 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
         const bool pseudo = m.orderNumber.compare(0, 8, "Virtual ") == 0;
         const bool listed =
             opt.allItems || (!m.orderNumber.empty() && !port && !pseudo) || !m.interfaces.empty();
-        if (listed) devices[dev].modules.push_back(m);
+        r.listed = listed;
+    }
+
+    // Addresses: V13 keeps them in objects of their own. Each range goes to
+    // the item itself when it is listed, otherwise to the nearest listed item
+    // above it (the CPU for its onboard I/O, the module for its submodule).
+    for (auto& ka : v13Addresses) {
+        auto it = items.find(ka.first);
+        if (it == items.end()) continue;
+        ka.second.item = it->second.module.name;
+        it->second.ioAddresses.push_back(ka.second);
+    }
+    for (auto& kv : items)
+        std::stable_sort(kv.second.ioAddresses.begin(), kv.second.ioAddresses.end(),
+                         [](const IoAddress& x, const IoAddress& y) { return x.input > y.input; });
+    {
+        // parts in the order of their position under the module
+        std::vector<std::pair<Key, const ItemRec*>> withAddresses;
+        for (const auto& kv : items)
+            if (!kv.second.ioAddresses.empty()) withAddresses.emplace_back(kv.first, &kv.second);
+        std::stable_sort(withAddresses.begin(), withAddresses.end(), [](const auto& a, const auto& b) {
+            const Module& x = a.second->module;
+            const Module& y = b.second->module;
+            if (x.position != y.position) return x.position < y.position;
+            return x.id < y.id;
+        });
+        for (const auto& w : withAddresses) {
+            Key k = w.first;
+            for (int depth = 0; depth < 64; ++depth) {
+                auto it = items.find(k);
+                if (it == items.end()) break;
+                if (it->second.listed) {
+                    auto& to = it->second.module.ioAddresses;
+                    to.insert(to.end(), w.second->ioAddresses.begin(), w.second->ioAddresses.end());
+                    break;
+                }
+                if (!it->second.hasParent) break;
+                k = it->second.parent;
+            }
+        }
+    }
+    for (auto& kv : items) {
+        Key dev;
+        if (kv.second.listed && owningDevice(kv.first, dev)) devices[dev].modules.push_back(kv.second.module);
     }
 
     for (auto& kv : devices) {

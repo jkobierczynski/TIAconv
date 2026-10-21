@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(tiaconv VERSION 0.15.0 LANGUAGES C CXX)
+project(tiaconv VERSION 0.16.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,6 +30,7 @@ add_library(tiacore STATIC
   src/output.cpp
   src/program.cpp
   src/code.cpp
+  src/blocksource.cpp
   src/project.cpp
   src/sha256.cpp
   src/source.cpp
@@ -96,6 +97,12 @@ if(BUILD_TESTING)
     -DREWRITTEN=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/s14_code_rewritten
     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/cli_diff
     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_diff.cmake)
+
+  add_test(NAME cli_sources COMMAND ${CMAKE_COMMAND}
+    -DTIACONV=$<TARGET_FILE:tiaconv>
+    -DPROJECT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/s08_program
+    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/cli_sources
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_sources.cmake)
 
   add_test(NAME cli_save COMMAND ${CMAKE_COMMAND}
     -DTIACONV=$<TARGET_FILE:tiaconv>

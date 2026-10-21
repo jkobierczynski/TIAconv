@@ -114,6 +114,9 @@ struct Network {
     // without code. "unread": `notes` says why.
     std::string content;
     std::vector<std::string> lines;
+    // SCL: empty lines at the end of the text, not in `lines`; a generated
+    // source has them
+    size_t trailingEmptyLines = 0;
     std::vector<NetworkElement> elements;
     std::vector<std::string> notes;
 };
@@ -180,7 +183,7 @@ struct SclContext {
     const std::vector<std::string>* comments = nullptr;  // index = number - 1
 };
 bool sclText(const std::string& xml, const SclContext& ctx, std::vector<std::string>& lines,
-             std::vector<std::string>& notes);
+             std::vector<std::string>& notes, size_t* trailingEmptyLines = nullptr);
 
 // The lines of an STL network from its stored document. Returns false when
 // the document is not STL statements.

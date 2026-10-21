@@ -3,25 +3,32 @@
 Reads a Siemens TIA Portal project **without TIA Portal** and lists what is in
 it:
 
-- stations, CPUs and modules with order numbers and firmware versions,
+- stations, CPUs and modules with order numbers, firmware versions and
+  input and output addresses,
 - network interfaces with their IP settings and PROFINET names, and subnets,
 - PROFINET IO systems (which IO device belongs to which controller), the
   cabling between ports, and the configured S7 and HMI connections,
 - the security settings of each CPU: access level, PUT/GET, web server,
-  OPC UA server, NTP, display protection, access control,
+  OPC UA server, NTP, display protection, access control; SNMP where the
+  project stores it,
 - the blocks of each PLC (OB, FB, FC, DB, PLC data types) with number,
   language, folder, know-how, write and copy protection, whether they are
-  compiled, and when they were last changed and downloaded,
+  compiled, and when they were last changed and downloaded; for an OB its
+  priority and the cycle of a cyclic interrupt,
 - hardware identifiers with the module, interface or port each one stands
   for, and user constants with data type, value and comment,
 - PLC tags with data type, address and comment,
 - the tags of HMI devices (panels): which PLC tag or data block member each
   one stands for, over which connection, with data type and update cycle,
-- data blocks with their members, data types, start values, comments and,
+- data blocks with their members, data types, start values, comments,
+  retain, whether HMI, OPC UA and the Web API may read and write them, and,
   for blocks with standard access, absolute offsets,
 - the code of the blocks (OB, FB, FC), network by network: SCL and STL as
   source text, LAD and FBD as a listing in text form, and a cross-reference of the
   tags, data block members and blocks each block reads, writes or calls,
+- the blocks as source files (`--sources`), one per block in folders as in
+  the project tree: SCL and STL with their declarations as TIA Portal's
+  "Generate source from blocks" writes them, ready to keep in git,
 - the save history, as far as the file still holds it: what was added,
   removed or changed with each save, when, and by which user,
 - the differences between two projects or two versions of one
@@ -55,6 +62,7 @@ engineering station.
     tiaconv -q --tags-csv tags.csv --blocks-csv blocks.csv MyProject/
     tiaconv --code MyProject/            # also print the code of the blocks
     tiaconv -q --xref-csv xref.csv MyProject/   # who reads and writes what
+    tiaconv -q --sources src/ MyProject/  # one source file per block
     tiaconv diff Archive/MyProject.zap19 MyProject/   # what changed since the archive
 
 Example (a public V15.1 project):
@@ -116,6 +124,7 @@ Options:
 | `--members` | print the members of every data block in the text report (the JSON always has them) |
 | `--code` | add the code of the blocks to the text report and the JSON: the networks of every OB, FB and FC as text (see [Block code](#block-code)) |
 | `--xref-csv FILE` | the cross-reference as CSV: which block uses which tag, data block member or block, in which network, reading or writing |
+| `--sources DIR` | one source file per OB, FB and FC into `DIR`, in folders per PLC and project-tree folder (see [Block sources](#block-sources)) |
 | `--objects FILE` | every decoded object as JSON lines: attributes and relations. For research and for comparing two versions of a project |
 | `--meta FILE` | the type model embedded in the project (XML) |
 | `--all-devices` | also list device objects outside the project tree (copies kept for library types) |
@@ -159,6 +168,28 @@ read.
   of the real device.
 - An S7-1200 rack has the literal order number `Rack`; that is what the
   project stores.
+- **I/O addresses** are those of TIA Portal's device overview. A module
+  with addresses of its own gets one line, a CPU one line per part
+  (onboard I/O, counters, pulse outputs):
+
+        1     ZZALPHA       CPU 1212C AC/DC/Rly  6ES7 212-1BD30-0XB0  V2.2      Rack_0
+              I/O addresses:
+                DI 8/DQ 6_1  I 0, Q 0
+                AI 2_1       I 64...67
+                HSC_1        I 1000...1003
+                ...
+        2     DI 8x24VDC_1  SM 1221 DI8 x 24VDC  6ES7 221-1BF30-0XB0  V1.0      Rack_0
+              I/O addresses: I 8
+
+  Byte ranges as TIA Portal writes them (`64...67`), bits where a range
+  does not fill whole bytes (`4.0...4.1`), and `(PIP n)` for a process image
+  partition other than automatic update. The JSON has `io_addresses` with
+  start and length in bits, the CSV a column `io_addresses`, the history and
+  `tiaconv diff` the changes.
+- **SNMP**: where the project stores it (seen on ET 200SP interface modules)
+  the module has a line `SNMP: off`, or `on, read only` / `on (read and
+  write)` with whether the community names are TIA Portal's defaults
+  `public`/`private`. The names themselves are never shown.
 
 ### Earlier saves
 
@@ -733,6 +764,59 @@ its FB or instruction are not listed again. The interface of a know-how
 protected block is not read, and a block whose protection is removed did
 not gain its members then: they are not compared across the protection.
 
+### Block sources
+
+`--sources DIR` writes one file per OB, FB and FC, in a folder per PLC and
+the folders of the project tree below it (`DIR/PLC_1/Program blocks/Pumps/`).
+SCL blocks become `.scl`, STL blocks `.awl`, in the form TIA Portal's
+"Generate source from blocks" writes: header, declarations, code, CR LF line
+ends and a UTF-8 byte-order mark (`--no-bom` leaves it off). This is the FB
+`Block_2` of the test project `s08_program`, identical byte for byte to the
+source TIA Portal generated for it:
+
+    FUNCTION_BLOCK "Block_2"
+    { S7_Optimized_Access := 'TRUE' }
+    VERSION : 0.1
+       VAR_INPUT 
+          MB12 : Byte := 16#3;   // My input byte
+       END_VAR
+
+       VAR_OUTPUT 
+          MB14 : Byte := 16#4;   // My output byte
+       END_VAR
+
+       VAR_IN_OUT 
+          MB15 : Byte;   // My In/Out byte
+       END_VAR
+
+       VAR 
+          "666" : DInt := 666;   // My Static
+       END_VAR
+
+
+    BEGIN
+    NETWORK
+    TITLE = 
+    END_FUNCTION_BLOCK
+
+Retain members are in `VAR RETAIN` sections of their own, and members that
+HMI, OPC UA or the Web API may not read or write carry
+`{ ExternalAccessible := 'False'; ...}`, setpoints `S7_SetPoint := 'True'`.
+Not written: the `S7_SetPoint := 'False'` TIA Portal adds to multi-instances,
+and the `InstructionName` and `LibVersion` of instruction instances (a timer
+as a multi-instance), whose place in the project file is not known. LAD and FBD
+have no source form in TIA Portal; they become `.txt` files with the same
+header and declarations and tiaconv's listing of the networks. A know-how
+protected block becomes a `.txt` file that says so, without interface or
+code.
+
+With the files in git and a run of tiaconv for each project version, `git
+diff` shows what changed in the program, block by block.
+
+`--code` shows the declarations in the text report too (under `Interface`),
+and the JSON has them as `declarations`, every section with Temp, Constant
+and the return value.
+
 ### Constants
 
 This is `tiaconv --save 15 tests/fixtures/s12_constants`, the rows of one PLC:
@@ -812,6 +896,13 @@ This is `tiaconv --save 15 tests/fixtures/s12_constants`, the rows of one PLC:
   section of each member (`[Input]`, `[Output]`, `[InOut]`, `[Static]`).
   Temporary variables and constants are not part of a data block and are
   left out.
+- **Retain and access from outside.** The JSON has for every member
+  `retain` and `accessible_from_hmi`, `visible_in_hmi`, `writable_from_hmi`
+  (TIA Portal's "Accessible from HMI/OPC UA/Web API", "Visible in HMI
+  engineering", "Writable from HMI/OPC UA/Web API"); `--blocks-csv` has
+  them as columns. A member of a structure has no more than the structure.
+  The JSON also has `setpoint`. The members that HMI, OPC UA or the Web API
+  may write are what a client on the network can change.
 - `(type not followed)` marks a member whose type definition is not stored
   with the block. That is normal for some system data types (`TCON_Param`
   passed as in/out parameter, for instance).
@@ -871,11 +962,12 @@ PLC that is.
   given as stored.
 - **Limits** (the Range page: upper limit 2, upper limit 1, lower limit 1,
   lower limit 2; a constant's value, or `tag` for a limit given by a tag),
-  **linear scaling** (`PLC 0 .. 27648 -> HMI 0 .. 100`) and the **index tag**
-  of a multiplexed tag are in the JSON, the CSV and the save history. Upper
-  limit 2 and lower limit 2 were compared with TIA Portal; that the two
-  others are upper limit 1 and lower limit 1 is not checked. The list of
-  tags a multiplexed tag selects from is not read.
+  **linear scaling** (`PLC 0 .. 27648 -> HMI 0 .. 100`), and for a
+  multiplexed tag the **index tag** and the **list** of tags it selects
+  from (`0 ZZABS; 1 ZZINT; 2 ZZMEM`, the number being the index value) are
+  in the JSON, the CSV and the save history. Upper limit 2 and lower limit
+  2 were compared with TIA Portal; that the two others are upper limit 1
+  and lower limit 1 is not checked.
 - Notes at the end of a line: `link to the PLC tag broken` when TIA Portal
   has marked it so (it shows the PLC tag on a red background; deleting the
   PLC tag does that), `PLC tag not found in the PLC's tags and data blocks`
@@ -906,10 +998,12 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | | |
 |---|---|
 | File structure | Every byte of the twenty-one project files is accounted for by the block list; in V15.1, V16, V19 and V21 all block hashes match, and in the V17 archive read since. |
-| Object decoding | All 31 983 objects decode without an out-of-range read. |
+| Object decoding | All 32 003 objects decode without an out-of-range read. |
 | Device name, IP address, mask, router, PROFINET name, subnet | Read back exactly as entered in the V21 test projects, each at the step where it was entered. "IP address is set directly at the device" switched on and off again shows in the save where it was done, with the address still stored. |
 | Automatic PROFINET names | V21: the device name and converted name TIA Portal showed for eleven CPU names (with a space, an umlaut, a leading digit, an underscore, a tilde, a dot, a hyphen in the middle and at the start) are the ones tiaconv derives; the converted names that carry a checksum match it as CRC-16/ARC in every case. Names that combine characters in ways not seen (an umlaut with a space, a dot with characters to convert, a hyphen at the end) are not derived. Not checked: IO devices, CPUs with more than one PROFINET interface. |
 | Order number, type, firmware | For the V16 sample all three match what its author documented; for the V19 sample the CPU type does. In the V21 test projects all three were confirmed by the person who configured them. |
+| I/O addresses | The addresses of every module and CPU part with I/O in four projects (V13, V16, V17, V21; six S7-1200 CPUs, five signal modules, two signal boards) are those an S7-1200 gives them by default and that TIA Portal's device overview shows: onboard I/O at 0 and 64, counters from 1000, pulse outputs from Q 1000, signal boards at 4 and 80, signal modules at 8, 96, 112, 128 depending on slot and kind. **Not checked:** S7-1500 and ET 200 modules (none of the projects has any), addresses changed by hand, process image partitions. |
+| SNMP | V21: the two ET 200SP interface modules of `s10_connections` store SNMP as off; the settings appear in the save in which the station was assigned to the CPU. **Not checked:** SNMP switched on, the community names changed, CPUs (which store no SNMP setting in these projects). |
 | Which attributes are stored | The rule reproduces, for all 2 629 object types listed there, the resolved layout table that the V13 sample carries; and with it every plain attribute segment of all samples is covered exactly, byte for byte, with two exceptions (one audit-trail object in each of two projects). `tools/check_storage_rule.py` repeats both checks. |
 | CPU security settings | V21: one test project was saved 23 times with one setting changed each time, on three CPUs (S7-1500 firmware V1.8 and V4.1, S7-1200 firmware V2.2). On a fourth (S7-1200 firmware V4.7) the rights of the Anonymous user were changed in four more saves, and the level tiaconv prints is the one TIA Portal showed after each. tiaconv is run on the project as it was after each save and shows exactly that change: every access level, PUT/GET, web server on the module and on the interface, HTTPS only, NTP with its server, display protection, OPC UA server, legacy communication, protection of configuration data, access control. For the newest CPU the result also matches the overview page of TIA Portal's security wizard. **Not read:** users and roles, which decide about access on a CPU with user management. **Not checked:** that the level follows the Anonymous user on an S7-1500 as well (there only the state of a new CPU was compared), S7-1200 with firmware V4.0 to V4.6, S7-300/400, ET 200SP CPUs, software controllers, HMI devices. |
 | IO systems | V21: in a test project saved once per action, an ET 200SP station appears as a device when added, under the controller's IO system when assigned (with the IO system name and number TIA Portal shows), under the other controller after being reassigned; the IO system it left is reported empty. **Not checked:** PROFIBUS, I-devices, shared devices. |
@@ -924,8 +1018,10 @@ Add `-DTIACONV_STATIC=ON` for a statically linked executable.
 | Offsets | V21: all twelve offsets of a standard block (Bool, Byte, Int, DInt, Real, Date, String, arrays, a nested PLC data type) are the ones in the Offset column of TIA Portal's block editor. In the ten blocks of the V13 and V15.1 samples that have offsets they are consistent with the sizes of the data types. V21: the six offsets of the instance block of an FB with standard access (Input, Output, InOut and Static, Bool, Int, Real, String) are the ones in TIA Portal's Offset column. |
 | `standard` / `optimized` | V21: of two global blocks made with the same members, the one with "optimized block access" switched off is reported as standard, the other as optimized; a block whose generated source says `S7_Optimized_Access := 'TRUE'` is reported as optimized. |
 | Constants | V21: four user constants entered one per save (Int, Real, Time, String, in two tag tables, one with a comment) read back with name, type, value, comment and table; a changed value and a deleted constant show in their save. The three constants left at the end are identical to TIA Portal's own export of them (name, tag table, data type, value, comment). What TIA Portal showed at the end (the three constants left, and the number of entries it gives for each tag table, which counts tags, user constants and system constants: 63 and 10) is what tiaconv reports. V16 sample: the connection block its author wrote refers to interface 64, and 64 is the hardware identifier of the CPU's PROFINET interface. All 58 system constants of that PLC (23 hardware identifiers, among them those of two IO devices, the OB constant and 34 process image partitions) have the name, data type and value shown in TIA Portal's "System constants" tab. What a hardware identifier stands for is not shown there; it agrees with the constant's name in every case. **Not checked:** PLCs with PROFIBUS, central modules of an S7-1500 or technology objects, which bring further kinds of identifiers. |
-| HMI tags | V21: a test project with a KTP400 Basic panel, one action per save: an internal tag, tags on a data block member (standard and optimized access), on a PLC tag and on a PLC data type, two tags with absolute access on two connections to two PLCs, cycle, acquisition mode, comment and start value changed, a tag deleted, a PLC tag deleted under its HMI tag. Each appears in the save in which it was made. At the end all 7 tags agree with TIA Portal's own export of the tag table (name, tag table, connection, PLC tag, data type, access method, address, start value, comment, acquisition mode and cycle, in the export's order) and with screenshots of the tag table (PLC name per tag, the four members of the structured tag, the broken link shown in red). V19 sample: the 100 tags on a Comfort panel agree with TIA Portal V21's export of that project in every one of those columns, 100 of 100. On the PLC side, every tag with an intact link leads to a tag or member that tiaconv reads from the block interface, with the same data type; where the block has standard access the address stored with the HMI tag is the offset read there (V21 and V15.1). Not checked: limits and linear scaling (never changed from their defaults), multiplexed tags, acquisition mode "On demand", PC runtimes, WinCC Unified, HMI tags in V13 projects. |
+| HMI tags | V21: a test project with a KTP400 Basic panel, one action per save: an internal tag, tags on a data block member (standard and optimized access), on a PLC tag and on a PLC data type, two tags with absolute access on two connections to two PLCs, cycle, acquisition mode, comment and start value changed, a tag deleted, a PLC tag deleted under its HMI tag. Each appears in the save in which it was made. At the end all 7 tags agree with TIA Portal's own export of the tag table (name, tag table, connection, PLC tag, data type, access method, address, start value, comment, acquisition mode and cycle, in the export's order) and with screenshots of the tag table (PLC name per tag, the four members of the structured tag, the broken link shown in red). V19 sample: the 100 tags on a Comfort panel agree with TIA Portal V21's export of that project in every one of those columns, 100 of 100. On the PLC side, every tag with an intact link leads to a tag or member that tiaconv reads from the block interface, with the same data type; where the block has standard access the address stored with the HMI tag is the offset read there (V21 and V15.1). Later saves: upper and lower limit 2, linear scaling, acquisition mode "On demand", and a multiplexed tag with its index tag and a list of three tags, each as TIA Portal showed it. Not checked: upper and lower limit 1, PC runtimes, WinCC Unified, HMI tags in V13 projects. |
 | Block code (`--code`, `--xref-csv`) | V21: a test project with one action per save (`s14_code`): LAD with contacts, a normally closed contact, parallel branches, set coil, comparison, MOVE, ADD, a timer, a block call and three calls chained ENO to EN; FBD with a negated input; SCL; STL; an FB with its own parameters. Every save shows that action in the history and nothing else. All eight networks of the OB, and the networks of the FBD, LAD and STL blocks, agree operand by operand with screenshots of the editor; the SCL text is identical to the source TIA Portal generated for the block, and the STL statements to the generated STL source. TIA Portal's full cross-reference list of the project (every tag, data block member, local, block and instruction with its access: read, write, read and write at an InOut parameter, call, single instance, multiple instance, also the declaration of a multi-instance) agrees with the CSV row by row, as does the call structure (the four calls and the five data block accesses). A tag renamed without compiling shows its new name in all four blocks, as the editor does; an inserted network appears at its place. The block that was know-how protected is listed as protected and not read, also in earlier saves. V19 and V15.1 samples: the bodies of the eight SCL blocks published as source files next to them are identical, 852 lines; two networks of the V15.1 sample (a call with 22 parameters, a network of 17 parts) agree with screenshots in its repository. A second series in the same project, one action per save: SCL `WHILE`, `REPEAT ... UNTIL`, `CASE` with a range and a list and a comment in several languages; STL with a line comment, an inline comment, a jump to a label, and `CALL` of an FC and of an FB with input, output and in-out parameters; LAD with a negated coil, positive and negative edge contacts, a counter and a timer as multi-instances. Each save shows that action; the SCL and STL text agrees with the editor line for line (an inline comment's column apart), the LAD networks with screenshots, and the cross-references of the new FB and of the STL block with TIA Portal's lists row by row (the label with Definition and Jump; the timer and counter instances, unlike an FB's, with no row for their declaration). **Not checked:** STL and SCL instructions and keywords beyond those in the test projects and samples (`EXIT`, `CONTINUE`, ...); LAD and FBD parts beyond those listed under Block code; V13 code, which reads as plausible SCL but has no source to compare with; GRAPH and fail-safe blocks, which are not read. |
+| Block sources (`--sources`), declarations | Identical byte for byte to the sources TIA Portal generated: `ZZSCL` and `ZZSTL` (V21, `s14_code`), the FB `Block_2` with all four sections (V21, `s08_program`), and three of the five SCL sources published with the V19 sample (title, author, family, comment, retain sections, structures, members not accessible or not writable from HMI). In the other two only the eight lines of multi-instances differ, where TIA Portal also writes `S7_SetPoint` and, for instructions, `InstructionName` and `LibVersion`. The interface of `ZZLAD2` agrees with the editor (screenshot). V21, one setting per save on five members of an FB: not writable, not accessible, not visible, retain and setpoint each show in the save in which they were set, and agree with the editor's interface table (screenshot). **Not checked:** STL blocks with labels, calls or comments as a source; blocks with a title, author or comment in V21; OB sources. |
+| OB events | V21: a cyclic interrupt OB with a cycle of 250000 µs and then a phase offset of 10000 µs set by hand; both read as entered, each in its save, and the priority (11) is the one its properties show. The other two cyclic interrupt OBs (V21, V17) have TIA Portal's default cycle of 100 ms. **Not checked:** the priorities of other OB kinds and CPU families. |
 | Comparing projects (`tiaconv diff`) | V21: two saves of one file give what the save history lists for the saves between them; a save with itself and a file with itself give no difference; the test project before its know-how protection against the file TIA Portal wrote anew after it (several saves apart) gives exactly the five changes made in between, without the protected block's code; a "Save as" copy is paired with its original; two projects made apart are recognised as such. **Not checked:** two projects made apart with largely the same contents (a project rebuilt by hand, or imported from a library), where pairing by name matters most. |
 | Anonymous structures | Checked on the V19 sample only. |
 | V17 | One third-party project archive (`.zap17`, two S7-1200 PLCs, 113 LAD networks): every block hash matches, every object decodes, and the code reads without an unknown part; not compared with TIA Portal. |

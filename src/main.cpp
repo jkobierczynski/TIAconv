@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "blocksource.hpp"
 #include "code.hpp"
 #include "container.hpp"
 #include "history.hpp"
@@ -60,6 +61,11 @@ const char kUsage[] =
     "                      and FC as text (text report and JSON)\n"
     "      --xref-csv FILE    write the cross-reference as CSV: which block uses\n"
     "                         which tag, data block member or block, and how\n"
+    "      --sources DIR   write one source file per OB, FB and FC into DIR, in\n"
+    "                      folders per PLC and project-tree folder: SCL and STL\n"
+    "                      as TIA Portal generates their sources (.scl, .awl),\n"
+    "                      LAD and FBD in tiaconv's notation (.txt); know-how\n"
+    "                      protected blocks as a note, without code\n"
     "      --objects FILE  write every decoded object as JSON lines (for research)\n"
     "      --meta FILE     write the type model embedded in the project (XML)\n"
     "      --all-devices   also list device objects outside the project tree\n"
@@ -92,7 +98,7 @@ const char kUsage[] =
 
 struct Args {
     std::string input, json, csv, objects, meta, tagsCsv, blocksCsv, blockListCsv, constantsCsv, historyCsv, hmiTagsCsv,
-        xrefCsv;
+        xrefCsv, sourcesDir;
     bool allDevices = false, allItems = false, verify = false, quiet = false, members = false, noBom = false;
     bool history = false, code = false;
     size_t save = 0;  // 0: the current state
@@ -237,6 +243,7 @@ int run(const std::vector<std::string>& argv) {
         else if (s == "--members") a.members = true;
         else if (s == "--code") a.code = true;
         else if (s == "--xref-csv") value(a.xrefCsv);
+        else if (s == "--sources") value(a.sourcesDir);
         else if (s == "--no-bom") a.noBom = true;
         else if (s == "--meta") value(a.meta);
         else if (s == "--all-devices") a.allDevices = true;
@@ -294,7 +301,7 @@ int run(const std::vector<std::string>& argv) {
     ctx.shownSave = a.save;
 
     tia::CodeData code;
-    if (a.code || !a.xrefCsv.empty()) {
+    if (a.code || !a.xrefCsv.empty() || !a.sourcesDir.empty()) {
         // An earlier save is not a way around a protection set later.
         tia::ProtectedVersions protectedUpTo;
         if (a.save) {
@@ -340,6 +347,13 @@ int run(const std::vector<std::string>& argv) {
     if (!a.historyCsv.empty())
         emitCsv(a.historyCsv, bom, [&](std::ostream& o) { tia::writeHistoryCsv(o, history); });
     if (!a.csv.empty()) emitCsv(a.csv, bom, [&](std::ostream& o) { tia::writeCsv(o, inv, ctx); });
+    if (!a.sourcesDir.empty()) {
+        if (a.sourcesDir == "-") throw std::invalid_argument("--sources needs a folder, not standard output");
+        const size_t n = tia::writeBlockSources(a.sourcesDir, prog, code, bom);
+        if (!a.quiet)
+            (stdoutTaken ? std::cerr : std::cout) << "\n" << n << " block source file" << (n == 1 ? "" : "s")
+                                                  << " written to " << a.sourcesDir << "\n";
+    }
     if (!a.objects.empty()) emit(a.objects, [&](std::ostream& o) { tia::writeObjects(o, project); });
     if (!a.meta.empty())
         emit(a.meta, [&](std::ostream& o) {

@@ -56,8 +56,28 @@ struct BlockMember {
     uint64_t offsetBits = 0;
     bool isBit = false;
     bool unresolved = false;  // the nested type could not be followed
+    // The member's own settings, as stored: MFlags (-1 when not stored, which
+    // is the default: accessible, visible and writable from HMI/OPC UA) and
+    // Remanence ("Retain"; empty when not stored).
+    int64_t flags = -1;
+    std::string remanence;
     std::vector<BlockMember> members;
 };
+
+// "Accessible from HMI/OPC UA/Web API", "Visible in HMI engineering",
+// "Writable from HMI/OPC UA/Web API", from MFlags: accessible is bit 0,
+// visible bit 1, and bit 6 marks a member that is not writable; visible and
+// writable are off when the member is not accessible. Derived from the
+// sources TIA Portal generated for 81 members of the V19 sample and checked
+// against the members of every other project read; see FORMAT.md.
+struct MemberAccess {
+    bool accessible = true, visible = true, writable = true;
+    bool setpoint = false;  // "Setpoint": bit 9, only where accessible
+};
+MemberAccess memberAccess(const BlockMember& m);
+// The same for a member of a structure: no more than the structure (`outer`).
+MemberAccess memberAccess(const BlockMember& m, const MemberAccess& outer);
+bool isRetain(const BlockMember& m);
 
 struct DataBlock {
     uint64_t id = 0;
@@ -134,7 +154,22 @@ struct BlockInfo {
     // history, and for the multi-instances an FB declares.
     bool interfaceRead = false;
     std::vector<BlockMember> interfaceMembers;
+    // OB, FB, FC: every section of the interface, Temp, Constant and Return
+    // included, as the declaration part of a source shows them. Not read for
+    // know-how protected blocks.
+    bool declarationsRead = false;
+    std::vector<BlockMember> declarations;
+    // OB: the event it handles, as stored with the event: its priority, and
+    // for a cyclic interrupt the cycle and phase shift in microseconds.
+    bool hasPriority = false;
+    int64_t priority = 0;
+    bool hasCycle = false;
+    int64_t cycleMicroseconds = 0, phaseShiftMicroseconds = 0;
 };
+
+// "100 ms", "1.5 ms", "2 s": a time in microseconds as TIA Portal shows it,
+// in ms below a second and for whole milliseconds.
+std::string microsecondsText(int64_t us);
 
 // What TIA Portal calls a programming language ("LAD" for LAD_CLASSIC);
 // names that have not been compared with TIA Portal are returned as stored.
@@ -186,9 +221,11 @@ struct HmiTag {
     // Linear scaling, when switched on: "PLC 0 .. 27648 -> HMI 0 .. 100".
     std::string linearScaling;
     // Multiplexing switched on: the index tag that selects the tag it stands
-    // for. The list of tags it selects from is not read.
+    // for, and the list of tags it selects from (index 0, 1, ...; "?" where
+    // an entry names no tag).
     bool multiplexing = false;
     std::string multiplexIndexTag;
+    std::vector<std::string> multiplexTags;
     std::vector<HmiTagMember> members;  // tags of a structured type
     size_t memberCount = 0;             // all levels
 
@@ -206,6 +243,8 @@ struct HmiTag {
 // TIA Portal's name for an acquisition mode ("Cyclic in operation" for
 // Visible); modes that have not been seen in a project are returned as stored.
 std::string acquisitionModeName(const std::string& stored);
+// The list of a multiplexed tag as one text: "0 ZZABS; 1 ZZINT; 2 ZZMEM".
+std::string multiplexListText(const std::vector<std::string>& tags);
 
 struct ProgramStats {
     size_t tagsOutsideProject = 0;

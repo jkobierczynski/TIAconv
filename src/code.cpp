@@ -309,6 +309,13 @@ public:
         while (!out.empty() && out.back().empty()) out.pop_back();
         return out;
     }
+    // the empty lines lines() leaves off at the end (the text ends with them)
+    size_t trailingEmptyLines() const {
+        size_t n = 0;
+        for (size_t i = text_.size(); i > 0 && (text_[i - 1] == '\n' || text_[i - 1] == '\r'); --i)
+            if (text_[i - 1] == '\n') ++n;
+        return n;
+    }
 
 private:
     const SclContext& ctx_;
@@ -1170,7 +1177,7 @@ private:
             SclContext ctx;
             ctx.references = &code.references;
             ctx.comments = &comments;
-            if (sclText(doc, ctx, n.lines, n.notes)) {
+            if (sclText(doc, ctx, n.lines, n.notes, &n.trailingEmptyLines)) {
                 n.content = n.lines.empty() ? "empty" : "scl";
                 return;
             }
@@ -1360,7 +1367,7 @@ void finishReferences(std::vector<CodeReference>& refs, const std::vector<Networ
 }
 
 bool sclText(const std::string& xml, const SclContext& ctx, std::vector<std::string>& lines,
-             std::vector<std::string>& notes) {
+             std::vector<std::string>& notes, size_t* trailingEmptyLines) {
     std::unique_ptr<XmlNode> root;
     try {
         root = parseXml(xml);
@@ -1374,6 +1381,7 @@ bool sclText(const std::string& xml, const SclContext& ctx, std::vector<std::str
     if (!statements) return false;
     w.walk(*statements, 0);
     lines = w.lines();
+    if (trailingEmptyLines) *trailingEmptyLines = lines.empty() ? 0 : w.trailingEmptyLines();
     return true;
 }
 

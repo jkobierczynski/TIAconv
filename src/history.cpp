@@ -134,6 +134,19 @@ void addMembers(Snapshot& snap, const std::string& blockKey, const std::string& 
         e.attrs.push_back({"data type", m.dataType, 0});
         e.attrs.push_back({codeInterface ? "default value" : "start value", m.hasStartValue ? m.startValue : std::string(), 0});
         e.attrs.push_back({"comment", m.comment, 0});
+        e.attrs.push_back({"retain", isRetain(m) ? "yes" : "", 0});
+        {
+            // from HMI, OPC UA and the Web API; empty for the default
+            const MemberAccess a = memberAccess(m);
+            std::string access;
+            if (!a.accessible) access = "not accessible";
+            else {
+                if (!a.visible) access = "not visible";
+                if (!a.writable) access += std::string(access.empty() ? "" : ", ") + "not writable";
+                if (a.setpoint) access += std::string(access.empty() ? "" : ", ") + "setpoint";
+            }
+            e.attrs.push_back({"external access", access, 0});
+        }
         snap.add(std::move(e));
         if (codeInterface) {
             bool instance = false;  // its members have sections of their own: a multi-instance
@@ -224,6 +237,8 @@ Snapshot takeSnapshot(const Project& project, const ProtectedVersions& protected
             me.attrs.push_back({"plugged into", m.container, kRef});
             me.attrs.push_back({"IO controller", m.ioController, kRef});
             me.attrs.push_back({"IO system", m.ioSystem, kRef});
+            me.attrs.push_back({"I/O addresses", ioAddressesText(m.name, m.ioAddresses), 0});
+            me.attrs.push_back({"SNMP", snmpText(m), 0});
             if (m.kind == "controller") {
                 securityAttrs(m, me.attrs);
                 plcKeys.emplace(m.name, me.key);
@@ -320,6 +335,9 @@ Snapshot takeSnapshot(const Project& project, const ProtectedVersions& protected
         e.attrs.push_back({"type", b.type, 0});
         e.attrs.push_back({"number", b.hasNumber ? std::to_string(b.number) : std::string(), 0});
         e.attrs.push_back({"kind", b.kind, 0});
+        e.attrs.push_back({"priority", b.hasPriority ? std::to_string(b.priority) : std::string(), 0});
+        e.attrs.push_back({"cycle time", b.hasCycle ? microsecondsText(b.cycleMicroseconds) : std::string(), 0});
+        e.attrs.push_back({"phase shift", b.hasCycle ? microsecondsText(b.phaseShiftMicroseconds) : std::string(), 0});
         e.attrs.push_back({"instance of", b.instanceOf, kRef});
         e.attrs.push_back({"language", b.language.empty() ? b.languageStored : b.language, 0});
         e.attrs.push_back({"protection", b.protection, 0});
@@ -450,6 +468,7 @@ Snapshot takeSnapshot(const Project& project, const ProtectedVersions& protected
         e.attrs.push_back({"lower limit 2", t.limitLower2, 0});
         e.attrs.push_back({"linear scaling", t.linearScaling, 0});
         e.attrs.push_back({"multiplexed by", t.multiplexing ? (t.multiplexIndexTag.empty() ? "?" : t.multiplexIndexTag) : "", 0});
+        e.attrs.push_back({"multiplex list", multiplexListText(t.multiplexTags), 0});
         e.attrs.push_back({"comment", t.comment, 0});
         e.attrs.push_back({"start value", t.startValue, 0});
         snap.add(std::move(e));

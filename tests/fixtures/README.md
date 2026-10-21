@@ -187,8 +187,9 @@ licence for WinCC Advanced.
 | 36 | in `ZZTABLE` the tag `ZZOPT1` on `DB_Optimized.my_real` |
 | 37 | `ZZINT`, Range: upper 2 = 100, lower 2 = 0 |
 | 38 | `ZZSTD`, linear scaling: PLC 0 to 27648, HMI 0 to 100 |
-| 39 | `ZZMEM`: acquisition mode "On demand"; in the same save `ZZSTD` back to 1 s and "Cyclic in operation" |
-| 40 | a new internal tag `ZZMUX` (SInt) with multiplexing on, index tag `ZZSTD`; in the same save `ZZMEM` became an internal SInt tag |
+| 39 | `ZZMEM`: acquisition mode "On demand"; in the same save, on purpose, `ZZSTD` back to 1 s and "Cyclic in operation" |
+| 40 | a new internal tag `ZZMUX` (SInt) with multiplexing on, index tag `ZZSTD`, the list of tags left empty; in the same save, on purpose, `ZZMEM` became an internal SInt tag |
+| 41 | `ZZMUX`, Multiplexing: the list 0 `ZZABS`, 1 `ZZINT`, 2 `ZZMEM`; its data type became DInt in this save, not by hand: apparently TIA Portal picks a type that holds every entry (Word, Int and SInt need DInt) |
 
 References from TIA Portal, all taken after save 36 unless stated:
 
@@ -208,6 +209,9 @@ References from TIA Portal, all taken after save 36 unless stated:
   empty for `ZZSTD` and `ZZMEM` (symbolic access) and has %MW100 for `ZZABS`.
 - A screenshot of the topology comparison after save 21: `ZZPANEL.IE_CP_1`,
   PROFINET device name `zzpanel`, 192.168.77.3.
+- Screenshots of the Multiplexing page of `ZZMUX`: after save 40 index tag
+  `ZZSTD` (PLC tag `DB_Standard.my_int`, Int) and an empty list; after save
+  41 the list 0 `ZZABS`, 1 `ZZINT`, 2 `ZZMEM`.
 
 The export of the public V19 sample project (github.com/LCC-Automation/
 OpenPID-TIA-SCL, opened in TIA Portal V21) was compared in the same way by
@@ -368,7 +372,29 @@ address set at the device):
 
 References: for each name, the PROFINET device name and the converted name
 that TIA Portal's properties dialog showed (also for `ZZ.PLC`, not saved);
-the network in Main with the MOVE.
+the network in Main with the MOVE; the cross-references of `ZZK` (used by
+Main, "Read only").
+
+Fifth series, in the same file (the settings of interface members, a
+cyclic interrupt OB):
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 57 | new FB `ZZFLAGS`, LAD |
+| 58 | new FB `ZZFLAGS2`, SCL (left empty: the members went into `ZZFLAGS`) |
+| 59 | `ZZFLAGS`, Static: `m1` to `m5`, all Int |
+| 60 | `m1`: "Writable from HMI/OPC UA/Web API" cleared |
+| 61 | `m2`: "Accessible from HMI/OPC UA/Web API" cleared |
+| 62 | `m3`: "Visible in HMI engineering" cleared |
+| 63 | `m4`: Retain |
+| 64 | `m5`: "Setpoint" ticked |
+| 65 | new cyclic interrupt OB `ZZCYC2` (OB30), LAD, cyclic time 250000 µs |
+| 66 | `ZZCYC2`: phase offset 10000 µs |
+
+References: a screenshot of the interface table of `ZZFLAGS` after save 64
+(the check boxes and the Retain column of every member); one of the
+"Cyclic interrupt" page of `ZZCYC2` after save 65; its priority, 11, as
+TIA Portal showed it.
 
 References after save 43: screenshots of `ZZSTD_DB` with its Offset column,
 of the interface of `ZZLAD2`, and of the cross-references of `ZZSCL2`.

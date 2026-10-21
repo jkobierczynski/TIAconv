@@ -453,6 +453,51 @@ is **inferred**.
 | `NodeMacAddress` | `xs:long` | `08-00-06-01-00-0x` in every sample: a placeholder, not the real MAC |
 | `NodePBMpiAddress` | int | PROFIBUS / MPI station address |
 
+### I/O addresses
+
+The input and output addresses of a module (TIA Portal's device overview,
+columns "I address" and "Q address") are on the item that has them: the
+module, a submodule of it (`S71200.SM.IOSubmodule`), or a part of a CPU
+(`OnboardDigitalIO`, `OnboardAnalogIO`, `HSC`, `Pulse`, a signal board).
+
+V14 and later: expando attributes `AM_<n>_AddrData_<m>`, a structure
+
+| field | meaning |
+|---|---|
+| `StartAddress` | start of the range, **in bits** from the start of the input or output area |
+| `Length` | length in bits |
+| `AdditionalInfo` | 2 input, 4 output |
+| `ProcessImagePartNumber` | process image partition; 0 = automatic update |
+| `AlarmObNumber`, `UniqueNumber` | 40 and 0 in every project seen |
+
+V13: an object of its own per range, `AddressObjectData`, relation
+`Parent` to the item, with `IAddressObjectData.StartAddress` **in bytes**,
+`BitAddress`, `Length` in bits, `IoType` 1 input, 2 output, and
+`ProcessImagePartNumber`.
+
+**Verified** against the addresses an S7-1200 gives its I/O by default, in
+four projects (V13, V16, V17, V21) with six CPUs: onboard digital I/O at
+byte 0, onboard analog I/O at 64, high-speed counters from 1000 in steps of
+4, pulse outputs from 1000 in steps of 2, a signal board at 4 (digital) or
+80 (analog output), signal modules in slots 2, 3, 4 at bytes 8, 112 and 128
+(analog modules at 96 in slot 2 of the V13 sample). Not seen: S7-1500
+modules, ET 200 modules, process image partitions other than 0.
+
+### SNMP
+
+Seen on the interface module of an ET 200SP (`IM 155-6 PN ST`, firmware
+V6.4) as expando attributes, written by TIA Portal when the station is
+assigned to an IO controller:
+
+| attribute | meaning |
+|---|---|
+| `SNMPEnabled` | bool: SNMP on |
+| `SNMPEnableReadOnly` | bool: read access only |
+| `SNMPReadOnlyCommunityName`, `SNMPReadWriteCommunityName` | the community names, `public` and `private` in both projects. These are secrets: tiaconv only says whether they are those defaults, and `--objects` writes them as redacted |
+| `SNMPSynchronizeSettings` | bool; on a CPU this is the only one seen (`false`) |
+
+`SNMPEnabled` was `false` in both. Not seen: SNMP on, a CPU's SNMP settings.
+
 ### Automatic PROFINET names
 
 With "Generate PROFINET device name automatically" TIA Portal derives two
@@ -793,7 +838,7 @@ structured type `HmiStructureMemberTagData`, reached through the relation
 | start value | `IHmiTagStructureAttributes.StartValue` |
 | limits | `IHmiTagStructureAttributes.LimitHighType` and `LimitHighConstant` are the Range page's "Upper 2", `LimitLowType` / `LimitLowConstant` its "Lower 2" (compared with TIA Portal V21: 100 and 0 entered there). `LimitHighLow…` and `LimitLowHigh…` are taken to be "Upper 1" and "Lower 1" (not compared). A type is `NoLimit` or `Constant` (the value as text); another type, presumably for a limit given by a tag, is not seen |
 | linear scaling | `IHmiTagStructureAttributes.LinearScaling` (bool) and `ScalingPlcLow`, `ScalingPlcHigh`, `ScalingHmiLow`, `ScalingHmiHigh`; the defaults read 0 / 10 / 0 / 100, as in the export. Switched on with PLC 0 to 27648 and HMI 0 to 100 in V21 |
-| multiplexing | `IHmiTagAttributes.UseMultiplexing` (bool) and relation `IHmiTagAttributes_MultiplexIndex` to the index tag. Where the list of tags it selects from is kept is not known (not seen saved) |
+| multiplexing | `IHmiTagAttributes.UseMultiplexing` (bool) and relation `IHmiTagAttributes_MultiplexIndex` to the index tag. Where the list of tags it selects from: relation `MultiplexEntries`, one `HmiMultiplexEntryData` object per entry (named `Multiplex_entry_1` each time, `IHmiMultiplexEntryAttributes.ListIndex` = -1), whose relation `IHmiMultiplexEntryAttributes_HmiTag` is the tag; the order of the relation is the index, 0 first (`s13_hmi` save 41, three entries, as the Multiplexing page shows them). Adding the entries changed the multiplexed tag's own data type from SInt to DInt without being asked to, apparently to one that holds every entry (Word, Int, SInt) |
 | address | `ITagAddress.LogicalAddress` and `AddressMode`, see below |
 
 In the file the tags of a device are in the order of their object ids, which
@@ -863,7 +908,7 @@ tag still stores `%MW20`.
 `OnDemand` is stored for the acquisition mode "On demand", and the
 acquisition cycle is then removed.
 
-**Not seen**: the list of a multiplexed tag, limits given by a tag,
+**Not seen**: limits given by a tag,
 acquisition modes other than the three above, HMI tags in the older layout,
 PC runtimes, WinCC Unified devices.
 
@@ -906,6 +951,17 @@ library types have something else) as for tags.
 | expando `DBAccessibleFromOPCUA`, `DBAccessibleFromWebserver` | data block: absent while the two "accessible from" boxes are ticked, as on a new block; `false` once unticked. In the V19 sample every data block has the first one as `false` |
 | expando `Unlinked`, `NonRetain` | data block: presumably "Only store in load memory" and the retain setting; **not checked** |
 
+The event of an OB is an object of its own, `ProgramCycleEventData`,
+`CyclicInterruptEventData`, `StartupEventData`, ..., with relation
+`Handler` to the OB and `IOrganizationBlockEventDataAttributes.Priority`
+(1 for program cycle and startup in every project). A cyclic interrupt has
+`ICyclicInterruptEventData.CyclicTime` and `.PhaseShift` in microseconds:
+100000 in both older projects with one, TIA Portal's default of 100 ms.
+**Verified** in V21 (`s14_code_rewritten` saves 65, 66): a cycle of 250000
+µs and a phase offset of 10000 µs as entered, and priority 11 as the OB's
+properties show it. The priorities stored in the other two, 13 (S7-1500)
+and 7 (S7-1200, V17), were not compared.
+
 `FolderData` has `ICoreAttributes.Subtype` `ProgramBlocksFolder` (Program
 blocks), `ProgramBlocksFolder.Subfolder` (a group, named by the user),
 `SystemBlocksFolder` and `ProgramResourcesFolder` (System blocks > Program
@@ -946,6 +1002,34 @@ in the four public samples they lie within the project's lifetime and the two
 places that store them agree). `Modified` and `CodeModified` are not "last
 edited": compiling sets them too (seen on an OB that had only to be
 recompiled).
+
+## Block sources
+
+`tiaconv --sources DIR` writes one file per OB, FB and FC. SCL and STL
+blocks get the source form of TIA Portal's "Generate source from blocks":
+the header (`FUNCTION_BLOCK "name"`, the return type of a function, `TITLE`,
+the access setting, `AUTHOR`, `FAMILY`, `NAME` in single quotes when they
+are not a plain name, `VERSION`, the block comment as `//` lines), the
+declarations, `BEGIN`, the code and `END_...`. Lines end in CR LF, the file
+starts with a UTF-8 byte-order mark (as TIA Portal V21 writes it).
+
+**Verified** byte for byte: the two sources TIA Portal V21 generated for
+`ZZSCL` and `ZZSTL` (`s14_code`), the FB `Block_2` of
+`s08_program/exports/source_from_blocks.awl` (four sections, a quoted name,
+start values and comments), and three of the five SCL sources published
+with the V19 sample (with a title, author, family, comment lines, retain
+sections, structures and the access settings). The other two differ only in
+the eight lines of multi-instances, where TIA Portal also writes
+`S7_SetPoint`, and for instructions `InstructionName` and `LibVersion`, which
+tiaconv does not write (see Interface parts).
+
+Details the sources show: SCL lines are indented by a tab, empty ones too,
+and an empty line at the end of the code is kept; STL statements are
+indented six blanks and end with `;`; an empty `TITLE = ` has a blank after
+the `=`; each `VAR...` line ends with a blank unless it ends with `RETAIN`;
+sections are separated by an empty line, runs of retain and other members
+within a section are not; there is one more empty line before `BEGIN`; the
+last STL network is followed by an empty line when it has statements.
 
 ## Block code
 
@@ -1360,8 +1444,8 @@ in the `Values` part, comments in the `Comments` part. In V21 (the third
 series of `s14_code_rewritten`) an FB's members, sections, data types, a
 default value and a comment read as the editor's interface table shows
 them, and an instance block with standard access has the offsets of TIA
-Portal's Offset column. The editor's Retain column and the other flags
-(accessible from HMI, writable, visible, setpoint) are not read.
+Portal's Offset column. Temp, Constant and Return (`Ret_Val`; type number 0
+for `Void`) are sections like the others.
 
 A root document:
 
@@ -1401,6 +1485,29 @@ A root document:
   are inline or in a part of their own. In a block with standard access the
   section carries a `StdO` too, and its members count from there (seen in
   the V13 sample only).
+- `Remanence="Retain"`: the member keeps its value (Retain column). A source
+  lists such members in sections of their own, `VAR RETAIN`,
+  `VAR_IN_OUT RETAIN`, in declaration order.
+- `MFlags`, a number: the "Accessible from HMI/OPC UA/Web API", "Visible in
+  HMI engineering", "Writable from HMI/OPC UA/Web API" and "Setpoint"
+  settings. Absent on a member whose settings were never changed
+  (accessible, visible, writable, no setpoint). Bit 0 is accessible, bit 1
+  visible, bit 6 set means not writable, bit 9 setpoint; bit 3 is set once
+  any of them was changed. Visible, writable and setpoint are off when the
+  member is not accessible, and a member of a structure has no more than
+  the structure. **Verified** in V21 (`s14_code_rewritten` saves 59 to 64,
+  one setting per save, against the editor's interface table): 79 not
+  writable, 14 not accessible, 13 not visible, 527 setpoint, and
+  `Remanence="Retain"` for Retain. It agrees with the five SCL sources
+  published with the V19 sample (81 members with values 7, 14, 76, 78, 79,
+  588) and with the internal members of IEC timers (`ET` and `Q`, 4183,
+  read only; `ST`, `RU`, 4112, not accessible). Other bits (2, 4, 7, 12, 19)
+  are set as well; their meaning is not known.
+- Members whose type is an instruction (`Filter_PT1`, `TON_TIME`) or a
+  function block get `S7_SetPoint` in the sources TIA Portal generates also
+  when it is `'False'`, and instructions `InstructionName` and `LibVersion`;
+  tiaconv writes `S7_SetPoint := 'True'` only, and the other two not (where
+  the library version is stored is not known).
 - An instance data block's own interface object holds only values; the first
   entry of its list of parts is the root of the function block's interface
   (V14 and later). In V13 the block has a copy of the function block's root.
@@ -1455,7 +1562,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V17 | v14 | 2 637 | 2 516 | a third-party project archive (`.zap17`), not in this repository |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 21 868 | 15 764 | `tests/fixtures` (seventeen project files, in this repository) |
+| V21 | v14 | 22 005 | 15 784 | `tests/fixtures` (seventeen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -1514,6 +1621,10 @@ all three configured items (both CPUs and the signal module) are as decoded.
   uses in expando attributes (`Dyn.ProcessValue.Tag#`).
 - Which relation a relation list without ids belongs to (`Consumer` and
   `Provider` of a link object, in that order, when there are many links).
+- Interface members: the meaning of the other bits of `MFlags`; where the
+  `LibVersion` of an instruction instance is kept.
+- I/O addresses of S7-1500 and ET 200 modules, process image partitions;
+  SNMP of a CPU, and switched on.
 - Blocks: fail-safe blocks, GRAPH and other languages not in the samples,
   blocks that are instances of library types (relation `IsInstanceOf`),
   download times against a real download.

@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "output.hpp"
 
+#include "blocksource.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -120,6 +122,32 @@ std::string joined(const std::vector<std::string>& v) {
 // Security settings of a controller. Only what the project stores is stated
 // as a fact; the rest is listed as not set, because the default depends on
 // the CPU and its firmware.
+// The input and output addresses of a module: on one line when they are all
+// its own, otherwise one line per part.
+void textIoAddresses(std::ostream& out, const Module& m) {
+    if (m.ioAddresses.empty()) return;
+    bool own = true;
+    for (const auto& a : m.ioAddresses)
+        if (a.item != m.name) own = false;
+    if (own) {
+        out << "        I/O addresses: " << ioAddressesText(m.name, m.ioAddresses) << "\n";
+        return;
+    }
+    std::vector<std::pair<std::string, std::vector<IoAddress>>> parts;
+    for (const auto& a : m.ioAddresses) {
+        if (parts.empty() || parts.back().first != a.item) parts.push_back({a.item, {}});
+        parts.back().second.push_back(a);
+    }
+    size_t w = 0;
+    for (const auto& p : parts) w = std::max(w, width(p.first));
+    out << "        I/O addresses:\n";
+    for (const auto& p : parts) {
+        std::vector<IoAddress> own2 = p.second;
+        for (auto& a : own2) a.item.clear();
+        out << "          " << pad(p.first, w + 2) << ioAddressesText(std::string(), own2) << "\n";
+    }
+}
+
 void textSecurity(std::ostream& out, const Module& m) {
     const Security& s = m.security;
     const char* in = "        ";
@@ -239,6 +267,7 @@ std::string blockAddress(const BlockInfo& b) {
 
 std::string blockKind(const BlockInfo& b) {
     if (b.kind == "instance" && !b.instanceOf.empty()) return "instance of " + b.instanceOf;
+    if (b.hasCycle) return (b.kind.empty() ? std::string("-") : b.kind) + " " + microsecondsText(b.cycleMicroseconds);
     return b.kind.empty() ? "-" : b.kind;
 }
 
@@ -482,7 +511,8 @@ void textProgram(std::ostream& out, const ProgramData& prog, const ReportContext
     textHmiTags(out, prog);
 }
 
-void jsonMembers(std::ostream& out, const std::vector<BlockMember>& members, const std::string& indent) {
+void jsonMembers(std::ostream& out, const std::vector<BlockMember>& members, const std::string& indent,
+                 const MemberAccess& outer = MemberAccess()) {
     if (members.empty()) {
         out << "[]";
         return;
@@ -496,9 +526,15 @@ void jsonMembers(std::ostream& out, const std::vector<BlockMember>& members, con
         if (m.hasStartValue) out << ", \"start_value\": " << q(m.startValue);
         if (!m.comment.empty()) out << ", \"comment\": " << q(m.comment);
         if (m.unresolved) out << ", \"unresolved\": true";
+        // settings of the member: retain, and access from HMI, OPC UA and the
+        // Web API (also as limited by an enclosing structure)
+        const MemberAccess a = memberAccess(m, outer);
+        out << ", \"retain\": " << tf(isRetain(m)) << ", \"accessible_from_hmi\": " << tf(a.accessible)
+            << ", \"visible_in_hmi\": " << tf(a.visible) << ", \"writable_from_hmi\": " << tf(a.writable)
+            << ", \"setpoint\": " << tf(a.setpoint);
         if (!m.members.empty()) {
             out << ", \"members\": ";
-            jsonMembers(out, m.members, indent + "  ");
+            jsonMembers(out, m.members, indent + "  ", a);
         }
         out << "}";
     }
@@ -516,7 +552,10 @@ void jsonBlockList(std::ostream& out, const ProgramData& prog) {
         if (b.hasNumber) out << b.number;
         else out << "null";
         out << ", \"name\": " << q(b.name) << ", \"kind\": " << qn(b.kind) << ", \"instance_of\": "
-            << qn(b.instanceOf) << ", \"language\": " << qn(b.language) << ", \"language_stored\": "
+            << qn(b.instanceOf) << ", \"priority\": " << (b.hasPriority ? std::to_string(b.priority) : "null")
+            << ", \"cycle_us\": " << (b.hasCycle ? std::to_string(b.cycleMicroseconds) : "null")
+            << ", \"phase_shift_us\": " << (b.hasCycle ? std::to_string(b.phaseShiftMicroseconds) : "null")
+            << ", \"language\": " << qn(b.language) << ", \"language_stored\": "
             << qn(b.languageStored) << ", \"protection\": " << qn(b.protection) << ", \"protection_stored\": "
             << qn(b.protectionStored) << ", \"copy_protection\": " << qn(b.copyProtection)
             << ", \"copy_protection_stored\": " << qn(b.copyProtectionStored) << ", \"copy_protection_serial\": "
@@ -618,7 +657,9 @@ void jsonProgram(std::ostream& out, const ProgramData& prog) {
             << ", \"limits\": {\"upper_2\": " << qn(t.limitUpper2) << ", \"upper_1\": " << qn(t.limitUpper1)
             << ", \"lower_1\": " << qn(t.limitLower1) << ", \"lower_2\": " << qn(t.limitLower2) << "}"
             << ", \"linear_scaling\": " << qn(t.linearScaling) << ", \"multiplexing\": " << tf(t.multiplexing)
-            << ", \"multiplex_index_tag\": " << qn(t.multiplexIndexTag)
+            << ", \"multiplex_index_tag\": " << qn(t.multiplexIndexTag) << ", \"multiplex_tags\": [";
+        for (size_t i = 0; i < t.multiplexTags.size(); ++i) out << (i ? ", " : "") << q(t.multiplexTags[i]);
+        out << "]"
             << ", \"member_count\": " << t.memberCount << ", \"members\": ";
         jsonHmiMembers(out, t.members);
         out << "}";
@@ -637,12 +678,15 @@ void csvRow(std::ostream& out, std::initializer_list<std::string> cols) {
 }
 
 void csvMembers(std::ostream& out, const DataBlock& b, const std::vector<BlockMember>& members,
-                const std::string& prefix) {
+                const std::string& prefix, const MemberAccess& outer = MemberAccess()) {
     for (const auto& m : members) {
         const std::string path = prefix.empty() ? m.name : prefix + "." + m.name;
+        const MemberAccess a = memberAccess(m, outer);
+        auto yn = [](bool v) { return std::string(v ? "yes" : "no"); };
         csvRow(out, {b.plc, b.hasNumber ? "DB" + std::to_string(b.number) : "", b.name, b.kind, b.instanceOf,
-                     blockAccess(b), m.section, path, m.dataType, formatOffset(m), m.startValue, m.comment});
-        csvMembers(out, b, m.members, path);
+                     blockAccess(b), m.section, path, m.dataType, formatOffset(m), m.startValue, m.comment,
+                     yn(isRetain(m)), yn(a.accessible), yn(a.visible), yn(a.writable), yn(a.setpoint)});
+        csvMembers(out, b, m.members, path, a);
     }
 }
 
@@ -656,14 +700,15 @@ void writeTagsCsv(std::ostream& out, const ProgramData& prog) {
 void writeHmiTagsCsv(std::ostream& out, const ProgramData& prog) {
     out << "hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,comment,"
            "start_value,members,plc_tag_found,plc_data_type,address_stored,upper_limit_2,upper_limit_1,lower_limit_1,"
-           "lower_limit_2,linear_scaling,multiplex_index_tag\r\n";
+           "lower_limit_2,linear_scaling,multiplex_index_tag,multiplex_tags\r\n";
     for (const auto& t : prog.hmiTags)
         csvRow(out, {t.hmi, t.table, t.name, t.dataType, t.access, t.connection, t.plc, t.plcTag, t.address,
                      t.acquisitionCycle, acquisitionModeName(t.acquisitionMode), t.comment, t.startValue,
                      t.memberCount ? std::to_string(t.memberCount) : std::string(),
                      !t.plcTag.empty() && !t.plc.empty() ? (t.plcTagFound ? "yes" : "no") : "", t.plcDataType,
                      t.addressStored, t.limitUpper2, t.limitUpper1, t.limitLower1, t.limitLower2, t.linearScaling,
-                     t.multiplexing ? (t.multiplexIndexTag.empty() ? std::string("?") : t.multiplexIndexTag) : ""});
+                     t.multiplexing ? (t.multiplexIndexTag.empty() ? std::string("?") : t.multiplexIndexTag) : "",
+                     multiplexListText(t.multiplexTags)});
 }
 
 void writeConstantsCsv(std::ostream& out, const ProgramData& prog) {
@@ -677,7 +722,7 @@ void writeBlockListCsv(std::ostream& out, const ProgramData& prog) {
            "compile_needed,folder,system,title,comment,"
            "author,family,user_id,version,optimized_access,created,modified,code_modified,interface_modified,"
            "compiled,downloaded,load_memory,work_memory,networks,write_protected_in_device,only_in_load_memory,"
-           "accessible_from_opc_ua,accessible_from_web_server\r\n";
+           "accessible_from_opc_ua,accessible_from_web_server,priority,cycle_time,phase_shift\r\n";
     for (const auto& b : prog.blockList)
         csvRow(out, {b.plc, b.type, b.hasNumber ? std::to_string(b.number) : "", b.name, b.kind, b.instanceOf,
                      b.language, b.protection, b.copyProtection, b.copyProtectionSerial, b.compileNeeded, b.folder,
@@ -688,7 +733,9 @@ void writeBlockListCsv(std::ostream& out, const ProgramData& prog) {
                      b.hasLoadMemory ? std::to_string(b.loadMemory) : "",
                      b.hasWorkMemory ? std::to_string(b.workMemory) : "",
                      b.hasNetworks ? std::to_string(b.networks) : "", flagCsv(b.writeProtectedInDevice),
-                     flagCsv(b.onlyInLoadMemory), flagCsv(b.accessibleFromOpcUa), flagCsv(b.accessibleFromWebServer)});
+                     flagCsv(b.onlyInLoadMemory), flagCsv(b.accessibleFromOpcUa), flagCsv(b.accessibleFromWebServer),
+                     b.hasPriority ? std::to_string(b.priority) : "", b.hasCycle ? microsecondsText(b.cycleMicroseconds) : "",
+                     b.hasCycle ? microsecondsText(b.phaseShiftMicroseconds) : ""});
 }
 
 namespace {
@@ -761,11 +808,12 @@ void writeCrossReferenceCsv(std::ostream& out, const CodeData& code) {
 }
 
 void writeBlocksCsv(std::ostream& out, const ProgramData& prog) {
-    out << "plc,block,block_name,kind,instance_of,access,section,member,data_type,offset,start_value,comment\r\n";
+    out << "plc,block,block_name,kind,instance_of,access,section,member,data_type,offset,start_value,comment,"
+           "retain,accessible_from_hmi,visible_in_hmi,writable_from_hmi,setpoint\r\n";
     for (const auto& b : prog.blocks) {
         if (b.members.empty())
             csvRow(out, {b.plc, b.hasNumber ? "DB" + std::to_string(b.number) : "", b.name, b.kind, b.instanceOf,
-                         blockAccess(b), "", "", "", "", "", ""});
+                         blockAccess(b), "", "", "", "", "", "", "", "", "", "", ""});
         csvMembers(out, b, b.members, std::string());
     }
 }
@@ -1079,7 +1127,9 @@ std::string blockLabel(const BlockCode& b) {
     return out;
 }
 
-void textCode(std::ostream& out, const CodeData& code) {
+void textCode(std::ostream& out, const CodeData& code, const ProgramData& prog) {
+    std::map<uint64_t, const BlockInfo*> infos;
+    for (const auto& bi : prog.blockList) infos[bi.id] = &bi;
     out << "\nBlock code:\n";
     if (code.blocks.empty()) {
         out << "  (no code blocks)\n";
@@ -1094,6 +1144,14 @@ void textCode(std::ostream& out, const CodeData& code) {
         }
         out << ", " << b.networks.size() << " network" << (b.networks.size() == 1 ? "" : "s") << "\n";
         for (const auto& n : b.notes) out << "    (" << n << ")\n";
+        // the declarations, as a source has them
+        auto info = infos.find(b.blockId);
+        if (info != infos.end() && info->second->declarationsRead) {
+            const std::vector<std::string> decl = declarationLines(*info->second);
+            if (!decl.empty()) out << "    Interface\n";
+            for (const auto& l : decl)
+                if (!l.empty()) out << "    " << l << "\n";
+        }
         // a block written as text is one network without a title
         const bool plain = b.networks.size() == 1 && b.networks[0].title.empty() && b.networks[0].comment.empty() &&
                            b.networks[0].content == "scl";
@@ -1140,7 +1198,9 @@ void jsonStrings(std::ostream& out, const std::vector<std::string>& v) {
     out << "]";
 }
 
-void jsonCode(std::ostream& out, const CodeData& code) {
+void jsonCode(std::ostream& out, const CodeData& code, const ProgramData& prog) {
+    std::map<uint64_t, const BlockInfo*> infos;
+    for (const auto& bi : prog.blockList) infos[bi.id] = &bi;
     out << "  \"code\": [";
     for (size_t bi = 0; bi < code.blocks.size(); ++bi) {
         const BlockCode& b = code.blocks[bi];
@@ -1151,6 +1211,11 @@ void jsonCode(std::ostream& out, const CodeData& code) {
             << tf(b.isProtected) << ", \"protection\": " << qn(b.protection) << ", \"protected_later\": "
             << tf(b.protectedLater) << ", \"notes\": ";
         jsonStrings(out, b.notes);
+        // the interface, every section (Temp, Constant and Return included)
+        out << ", \"declarations\": ";
+        auto info = infos.find(b.blockId);
+        if (info != infos.end() && info->second->declarationsRead) jsonMembers(out, info->second->declarations, "      ");
+        else out << "null";
         out << ", \"networks\": [";
         for (size_t ni = 0; ni < b.networks.size(); ++ni) {
             const Network& n = b.networks[ni];
@@ -1261,6 +1326,8 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
                 if (!i.subnet.empty()) out << "  subnet " << i.subnet;
                 out << "\n";
             }
+            textIoAddresses(out, m);
+            if (m.snmp.stored) out << "        SNMP: " << snmpText(m) << "\n";
             if (!m.ioController.empty())
                 out << "        IO device of " << m.ioController << (m.ioSystem.empty() ? "" : " (" + m.ioSystem + ")") << "\n";
             if (m.kind == "controller") textSecurity(out, m);
@@ -1344,7 +1411,7 @@ void writeText(std::ostream& out, const Inventory& inv, const ProgramData& prog,
         }
     }
     textProgram(out, prog, ctx);
-    if (ctx.code) textCode(out, *ctx.code);
+    if (ctx.code) textCode(out, *ctx.code, prog);
     if (ctx.history) textHistory(out, *ctx.history);
     out << "\n" << inv.stats.liveObjects << " objects in " << inv.stats.blocks << " blocks";
     if (inv.stats.deletedObjects) out << ", " << inv.stats.deletedObjects << " deleted";
@@ -1403,6 +1470,23 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
                 << ", \"author\": " << qn(m.author) << ", \"modified\": " << qn(m.modified);
             if (!m.ioController.empty())
                 out << ", \"io_controller\": " << q(m.ioController) << ", \"io_system\": " << qn(m.ioSystem);
+            out << ", \"io_addresses\": [";
+            for (size_t ai = 0; ai < m.ioAddresses.size(); ++ai) {
+                const IoAddress& a = m.ioAddresses[ai];
+                out << (ai ? ", " : "") << "{\"item\": " << q(a.item) << ", \"area\": " << q(a.input ? "input" : "output")
+                    << ", \"address\": " << q(ioAddressText(a)) << ", \"start_bit\": " << a.startBit
+                    << ", \"length_bits\": " << a.lengthBits << ", \"process_image_partition\": " << a.processImage << "}";
+            }
+            out << "]";
+            if (m.snmp.stored) {
+                out << ", \"snmp\": {\"enabled\": " << tf(m.snmp.on) << ", \"read_only\": ";
+                if (m.snmpReadOnly.stored) out << tf(m.snmpReadOnly.on);
+                else out << "null";
+                out << ", \"default_community_names\": ";
+                if (m.hasSnmpCommunities) out << tf(m.snmpDefaultCommunities);
+                else out << "null";
+                out << "}";
+            }
             if (m.kind == "controller") {
                 out << ", \"security\": ";
                 jsonSecurity(out, m.security);
@@ -1498,7 +1582,7 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
     }
     out << (inv.connections.empty() ? "],\n" : "\n  ],\n");
     jsonProgram(out, prog);
-    if (ctx.code) jsonCode(out, *ctx.code);
+    if (ctx.code) jsonCode(out, *ctx.code, prog);
     if (ctx.history) jsonHistory(out, *ctx.history);
     out << "  \"stats\": {\"decoded_hardware_objects\": " << inv.stats.decodedObjects
         << ", \"objects_with_problems\": " << inv.stats.objectsWithProblems << ", \"unattached_items\": "
@@ -1615,7 +1699,7 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
            "interface,interface_item,ip,mask,router,ip_assigned_elsewhere,ip_set_by_user,bus_address,profinet_name,"
            "profinet_name_auto,subnet,access_level,access_level_name,put_get,web_server,web_server_https_only,"
            "web_server_interfaces,opc_ua_server,ntp_servers,display_protection,access_control,"
-           "legacy_pg_hmi_communication,config_data_protection,io_controller,io_system,access_protection\r\n";
+           "legacy_pg_hmi_communication,config_data_protection,io_controller,io_system,access_protection,io_addresses,snmp\r\n";
     auto row = [&](const Device& d, const Module& m, const Interface* i) {
         const bool ctl = m.kind == "controller";
         const Security& s = m.security;
@@ -1637,7 +1721,7 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
                                     ctl ? settingCsv(s.accessControl) : "",
                                     ctl && s.hasCommunicationMode && s.communicationMode == 0 ? "yes" : "",
                                     ctl ? settingCsv(s.configDataProtection) : "", m.ioController, m.ioSystem,
-                                    ctl ? accessProtection(s) : ""};
+                                    ctl ? accessProtection(s) : "", ioAddressesText(m.name, m.ioAddresses), snmpText(m)};
         bool first = true;
         for (const auto& col : cols) {
             if (!first) out << ',';
@@ -1658,7 +1742,7 @@ void writeCsv(std::ostream& out, const Inventory& inv, const ReportContext& ctx)
 namespace {
 
 bool secretAttribute(const std::string& name) {
-    for (const char* part : {"assword", "Salt", "ProtectionIV", "VerificationTag"})
+    for (const char* part : {"assword", "Salt", "ProtectionIV", "VerificationTag", "CommunityName"})
         if (name.find(part) != std::string::npos) return true;
     return false;
 }
@@ -1745,6 +1829,7 @@ void writeValues(std::ostream& out, const NamedValues& vals) {
 }
 
 }  // namespace
+
 
 void writeObjects(std::ostream& out, const Project& project) {
     const Container& c = project.container();

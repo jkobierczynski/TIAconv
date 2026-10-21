@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "blocksource.hpp"
 #include "code.hpp"
 #include "container.hpp"
 #include "history.hpp"
@@ -166,6 +167,8 @@ const Step kStepsBlocksA[] = {
     {56, "+|device|ZZIO1|ET200SP.Device"},
     {57, "~|module|ZZIO1 / IO device_1|IO controller||ZZBRAVO"},
     {57, "~|module|ZZIO1 / IO device_1|IO system||PROFINET IO-System"},
+    // TIA Portal stored the SNMP settings of the interface module with the assignment
+    {57, "~|module|ZZIO1 / IO device_1|SNMP||off"},
     {57, "~|interface|ZZIO1 / IO device_1 / IE1|IP address|192.168.0.1|192.168.77.1"},
     {57, "~|interface|ZZIO1 / IO device_1 / IE1|subnet||PN/IE_1"},
     {57, "+|IO system|S7-1500/ET200MP station_1 / PROFINET IO-System|IOSystem_PROFINET"},
@@ -288,6 +291,10 @@ const Step kStepsHmi[] = {
     {40, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|PLC|ZZBRAVO|"},
     {40, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|PLC tag|MyInt|"},
     {40, "~|HMI tag|ZZPANEL / Default tag table / ZZMEM|link to the PLC tag|broken|"},
+    // the list of ZZMUX: three entries; TIA Portal changed its data type with them
+    // (not by hand: a type that holds Word, Int and SInt)
+    {41, "~|HMI tag|ZZPANEL / Default tag table / ZZMUX|multiplex list||0 ZZABS; 1 ZZINT; 2 ZZMEM"},
+    {41, "~|HMI tag|ZZPANEL / Default tag table / ZZMUX|data type|SInt|DInt"},
 };
 
 std::string stepText(const tia::HistoryChange& c) {
@@ -485,10 +492,10 @@ void testHistory() {
 // (exports/HMITags.xlsx), two screenshots of "Show all tags" and one of the
 // Inspector window.
 void testHmi() {
-    // the export was made after save 36; the file goes on to save 40
+    // the export was made after save 36; the file goes on to save 41
     Loaded l = load("s13_hmi", 36);
     common(l, "s13_hmi");
-    CHECK(l.saves == 40);  // recorded in the file
+    CHECK(l.saves == 41);  // recorded in the file
 
     // the panel, as added and as the topology view listed it
     const tia::Module* panel = module(l.inv, "ZZPANEL");
@@ -605,7 +612,7 @@ void testHmi() {
         CHECK(o && o->plcTag == "DB_Standard.my_real" && o->address == "%DB1.DBD270" && o->plcDataType == "Real");
     }
 
-    // after save 40: limits (Range page), linear scaling, On demand, multiplexing
+    // at the end: limits (Range page), linear scaling, On demand, multiplexing
     {
         Loaded end = load("s13_hmi");
         const tia::HmiTag *zint = nullptr, *zstd = nullptr, *zmem = nullptr, *zmux = nullptr;
@@ -620,10 +627,14 @@ void testHmi() {
         CHECK(zstd && zstd->linearScaling == "PLC 0 .. 27648 -> HMI 0 .. 100" && zstd->limitUpper2.empty());
         CHECK(zmem && tia::acquisitionModeName(zmem->acquisitionMode) == "On demand" && zmem->acquisitionCycle.empty());
         CHECK(zmux && zmux->multiplexing && zmux->multiplexIndexTag == "ZZSTD" && zmux->access == "internal");
+        // the list as the Multiplexing page showed it (screenshot after save 41)
+        CHECK(zmux && zmux->multiplexTags == (std::vector<std::string>{"ZZABS", "ZZINT", "ZZMEM"}) &&
+              zmux->dataType == "DInt");
+        CHECK(zint && zint->multiplexTags.empty());
     }
 
     const tia::History h = history("s13_hmi");
-    CHECK(h.savesInFile == 40 && h.saves.size() == 40);
+    CHECK(h.savesInFile == 41 && h.saves.size() == 41);
     checkSteps(h, kStepsHmi, 18, {});
     checkTotals(h, load("s13_hmi"));
 }
@@ -842,6 +853,74 @@ std::vector<std::string> sourceBody(const std::string& file) {
     return out;
 }
 
+// A file of the fixtures as it is, and up to the end of its first block.
+std::string fixtureFile(const std::string& file) {
+    std::string text;
+    FILE* f = std::fopen((std::string(TIACONV_FIXTURES) + "/" + file).c_str(), "rb");
+    if (!f) return text;
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+    std::fclose(f);
+    if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);
+    return text;
+}
+
+std::string sourceText(const LoadedCode& l, const std::string& name) {
+    const tia::BlockCode* c = codeOf(l, name);
+    for (const auto& b : l.prog.blockList)
+        if (c && b.id == c->blockId) {
+            std::string out;
+            for (const auto& line : tia::blockSource(b, *c).lines) out += line + "\r\n";
+            return out;
+        }
+    return std::string();
+}
+
+// The block sources against the ones TIA Portal generated for these blocks.
+void testSources() {
+    {
+        // s08_program: FB "Block_2" (STL) with four sections, a quoted name,
+        // start values and comments; the export has its instance block after it
+        const LoadedCode l = loadCode("s08_program");
+        const std::string expected = fixtureFile("s08_program/exports/source_from_blocks.awl");
+        const size_t end = expected.find("END_FUNCTION_BLOCK\r\n\r\n");
+        CHECK(end != std::string::npos && sourceText(l, "Block_2") == expected.substr(0, end + 22));
+    }
+    {
+        // s14_code: ZZSCL and ZZSTL as exported after save 19, before the tag
+        // ZZA was renamed and ZZSCL protected. Read on its own here, as a
+        // copy of the file from before the protection would be.
+        current = "s14_code sources after save 19";
+        tia::LoadedSource src = tia::loadProjectData(std::string(TIACONV_FIXTURES) + "/s14_code");
+        tia::ContainerOptions opt;
+        opt.throughSave = 19;
+        tia::Project p(tia::Container::parse(std::move(src.data), opt));
+        LoadedCode l;
+        l.prog = tia::buildProgramData(p);
+        l.code = tia::buildCode(p, l.prog);
+        CHECK(sourceText(l, "ZZSCL") == fixtureFile("s14_code/exports/ZZSCL.scl"));
+        CHECK(sourceText(l, "ZZSTL") == fixtureFile("s14_code/exports/ZZSTL.awl"));
+    }
+    {
+        // the same file as tiaconv reads it: ZZSCL protected later, so no code
+        const LoadedCode l = loadCode("s14_code", 19);
+        const tia::BlockCode* c = codeOf(l, "ZZSCL");
+        for (const auto& b : l.prog.blockList)
+            if (c && b.id == c->blockId) {
+                const tia::BlockSource s = tia::blockSource(b, *c);
+                CHECK(s.form == "protected" && s.fileName == "ZZSCL.txt" && s.lines.size() == 1 &&
+                      s.lines[0].find("protected later") != std::string::npos);
+            }
+        // LAD: the declarations and the listing
+        const LoadedCode end = loadCode("s14_code_rewritten");
+        const std::string lad = sourceText(end, "ZZLAD2");
+        CHECK(lad.find("FUNCTION_BLOCK \"ZZLAD2\"\r\n{ S7_Optimized_Access := 'TRUE' }\r\nVERSION : 0.1\r\n"
+                       "   VAR_INPUT \r\n      start : Bool;   // start signal\r\n   END_VAR\r\n\r\n"
+                       "   VAR_OUTPUT \r\n      count : DInt := 5;\r\n   END_VAR\r\n\r\n") != std::string::npos);
+    }
+}
+
 void testCode() {
     // The history: every save shows the one action taken before it, and
     // nothing of ZZSCL's code, which was protected at the end.
@@ -1012,8 +1091,8 @@ void testCode() {
             CHECK(declared == 1);
         }
         const tia::History hr = history("s14_code_rewritten");
-        CHECK(hr.saves.size() == 56 && hr.notes.size() == 1);
-        if (hr.saves.size() == 56) {
+        CHECK(hr.saves.size() == 66 && hr.notes.size() == 1);
+        if (hr.saves.size() == 66) {
             CHECK(hr.saves[1].firstState);
             std::multiset<std::string> found;
             for (const auto& c : hr.saves[2].changes)
@@ -1127,7 +1206,7 @@ void testCode() {
             // the fourth series: a user constant in code; the PLC renamed for
             // the PROFINET name rule; the IP address set at the device and back
             std::multiset<std::string> fourth;
-            for (size_t i = 43; i < hr.saves.size(); ++i)
+            for (size_t i = 43; i < 56; ++i)
                 for (const auto& c : hr.saves[i].changes)
                     if (!followsFromSomethingElse(c) && c.kind != "hardware identifier") {
                         const std::string t = stepText(c);
@@ -1167,6 +1246,58 @@ void testCode() {
                 const tia::Interface* i = firstInterface(at.inv, n.plc);
                 CHECK(i && i->profinetNameAuto && i->profinetNameDerived && i->profinetName == n.name &&
                       i->profinetNameConverted == n.converted);
+            }
+            // the fifth series: retain, access and setpoint of the members of
+            // an FB (ZZFLAGS; ZZFLAGS2 stayed empty), a cyclic interrupt OB
+            std::multiset<std::string> fifth;
+            for (size_t i = 56; i < hr.saves.size(); ++i)
+                for (const auto& c : hr.saves[i].changes)
+                    if (!followsFromSomethingElse(c) && c.kind != "hardware identifier") {
+                        const std::string t = stepText(c);
+                        fifth.insert(std::to_string(i + 1) + "|" + t.substr(0, t.find('\n')));
+                    }
+            CHECK(same(fifth, std::multiset<std::string>{
+                "57|+|block|ZZPLC / ZZFLAGS [FB5]|LAD", "58|+|block|ZZPLC / ZZFLAGS2 [FB6]|SCL",
+                "59|+|member|ZZPLC / ZZFLAGS [FB5] / m1|Static, Int", "59|+|member|ZZPLC / ZZFLAGS [FB5] / m2|Static, Int",
+                "59|+|member|ZZPLC / ZZFLAGS [FB5] / m3|Static, Int", "59|+|member|ZZPLC / ZZFLAGS [FB5] / m4|Static, Int",
+                "59|+|member|ZZPLC / ZZFLAGS [FB5] / m5|Static, Int",
+                "60|~|member|ZZPLC / ZZFLAGS [FB5] / m1|external access||not writable",
+                "61|~|member|ZZPLC / ZZFLAGS [FB5] / m2|external access||not accessible",
+                "62|~|member|ZZPLC / ZZFLAGS [FB5] / m3|external access||not visible",
+                "63|~|member|ZZPLC / ZZFLAGS [FB5] / m4|retain||yes",
+                "64|~|member|ZZPLC / ZZFLAGS [FB5] / m5|external access||setpoint",
+                "65|+|block|ZZPLC / ZZCYC2 [OB30]|CyclicInterrupt, LAD",
+                "65|+|system constant|ZZPLC / Default tag table / OB_ZZCYC2|OB_Cyclic = 30",
+                "66|~|block|ZZPLC / ZZCYC2 [OB30]|phase shift|0 ms|10 ms"}));
+            // the interface table of ZZFLAGS after save 64 (screenshot): the
+            // check boxes Accessible, Writable, Visible, Setpoint and Retain
+            {
+                Loaded at = load("s14_code_rewritten");
+                std::vector<std::string> got;
+                for (const auto& b : at.prog.blockList) {
+                    if (b.name != "ZZFLAGS") continue;
+                    for (const auto& m : b.declarations) {
+                        const tia::MemberAccess a = tia::memberAccess(m);
+                        got.push_back(m.name + " " + (tia::isRetain(m) ? "R" : "-") + (a.accessible ? "A" : "-") +
+                                      (a.writable ? "W" : "-") + (a.visible ? "V" : "-") + (a.setpoint ? "S" : "-"));
+                    }
+                    // and as a source writes them
+                    const std::vector<std::string> d = tia::declarationLines(b);
+                    CHECK(d == (std::vector<std::string>{
+                                   "   VAR ", "      m1 { ExternalWritable := 'False'} : Int;",
+                                   "      m2 { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Int;",
+                                   "      m3 { ExternalVisible := 'False'} : Int;", "   END_VAR", "   VAR RETAIN",
+                                   "      m4 : Int;", "   END_VAR", "   VAR ", "      m5 { S7_SetPoint := 'True'} : Int;",
+                                   "   END_VAR", ""}));
+                }
+                CHECK(got == (std::vector<std::string>{"m1 -A-V-", "m2 -----", "m3 -AW--", "m4 RAWV-", "m5 -AWVS"}));
+                // the cyclic interrupt OB: 250000 µs, phase offset 0 (its
+                // properties page after save 65), then 10 ms; the priority as stored
+                const tia::BlockInfo* cyc = nullptr;
+                for (const auto& b : at.prog.blockList)
+                    if (b.name == "ZZCYC2") cyc = &b;
+                CHECK(cyc && cyc->hasCycle && cyc->cycleMicroseconds == 250000 && cyc->phaseShiftMicroseconds == 10000 &&
+                      cyc->hasPriority && cyc->priority == 11);
             }
             // D1: "IP address is set directly at the device"; the address stays stored
             {
@@ -1226,7 +1357,7 @@ void testCode() {
                               "Main 9 call \"ZZSCL2\"", "Main 9 call \"ZZSTL2\"", "Main 9 call \"ZZLAD2\"",
                               "Main 9 single instance \"ZZLAD2_DB\"",
                               "Main 10 call \"ZZSTD\"", "Main 10 single instance \"ZZSTD_DB\"",
-                              "Main 11 read \"ZZK\"", "Main 11 write \"ZZN3\"",  // a user constant
+                              "Main 11 read \"ZZK\"", "Main 11 write \"ZZN3\"",  // a user constant: "Read only" in TIA Portal
                               "ZZLAD2 1 read \"ZZALPHA\"", "ZZLAD2 1 write \"ZZOUT\"",
                               "ZZLAD2 2 read \"ZZB\"", "ZZLAD2 2 write \"ZZC\"", "ZZLAD2 2 read and write #edgeP",
                               "ZZLAD2 3 read \"ZZB\"", "ZZLAD2 3 write \"ZZC\"", "ZZLAD2 3 read and write #memN",
@@ -1360,6 +1491,16 @@ int main() {
         CHECK(ib && ib->ip == "192.168.77.12" && ib->mask == "255.255.255.0" && ib->router.empty());
         CHECK(ib && ib->subnet.empty());  // ZZBRAVO was not attached to the subnet
         CHECK(l.inv.subnets.size() == 1 && l.inv.subnets[0].members.size() == 1);
+        // I/O addresses: the onboard I/O of the CPU 1212C at the addresses an
+        // S7-1200 gives it, the signal module in slot 2 at byte 8
+        if (a)
+            CHECK(tia::ioAddressesText(a->name, a->ioAddresses) ==
+                  "DI 8/DQ 6_1: I 0, Q 0; AI 2_1: I 64...67; HSC_1: I 1000...1003; HSC_2: I 1004...1007; "
+                  "HSC_3: I 1008...1011; HSC_4: I 1012...1015; HSC_5: I 1016...1019; HSC_6: I 1020...1023; "
+                  "Pulse_1: Q 1000...1001; Pulse_2: Q 1002...1003");
+        const tia::Module* sm = module(l.inv, "DI 8x24VDC_1");
+        CHECK(sm && tia::ioAddressesText(sm->name, sm->ioAddresses) == "I 8");
+        CHECK(b && b->ioAddresses.empty());  // a CPU 1511 has no I/O of its own
     }
     {
         // s08_program: tags, data blocks, function blocks. What is checked
@@ -1830,7 +1971,16 @@ int main() {
             CHECK(st.holds(l.inv, subnetMember, ioOf, conn));
         }
         current = "s10_connections, whole file";
-        CHECK(load("s10_connections").saves == 71);
+        const Loaded end = load("s10_connections");
+        CHECK(end.saves == 71);
+        // SNMP as the ET 200SP interface modules store it: off; the CPUs store none
+        for (const char* name : {"IO device_1", "IO device_2"}) {
+            const tia::Module* im = module(end.inv, name);
+            CHECK(im && im->snmp.stored && !im->snmp.on && im->hasSnmpCommunities && im->snmpDefaultCommunities &&
+                  tia::snmpText(*im) == "off");
+        }
+        const tia::Module* zzb = module(end.inv, "ZZBRAVO");
+        CHECK(zzb && !zzb->snmp.stored && tia::snmpText(*zzb).empty());
     }
     {
         // s11_blocks_a: the list of blocks, one action per save, all on
@@ -1859,8 +2009,13 @@ int main() {
             {75, "cyclic interrupt OB added: OB30",
              [](const P& p) {
                  const tia::BlockInfo* b = blockInfo(p, "ZZBRAVO", "ZZCYCLIC");
+                 // with its event: the default cycle of 100 ms, no phase
+                 // shift, and the priority stored with it (not compared)
+                 const tia::BlockInfo* main = blockInfo(p, "ZZBRAVO", "Main");
                  return b && b->type == "OB" && b->number == 30 && b->kind == "CyclicInterrupt" &&
-                        b->language == "LAD" && b->languageStored == "LAD_CLASSIC";
+                        b->language == "LAD" && b->languageStored == "LAD_CLASSIC" && b->hasCycle &&
+                        b->cycleMicroseconds == 100000 && b->phaseShiftMicroseconds == 0 && b->hasPriority &&
+                        b->priority == 13 && main && main->hasPriority && main->priority == 1 && !main->hasCycle;
              }},
             {76, "group added, ZZFC moved into it",
              [](const P& p) {
@@ -2204,6 +2359,7 @@ int main() {
     testHmi();
     testHistory();
     testCode();
+    testSources();
     testDiff();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

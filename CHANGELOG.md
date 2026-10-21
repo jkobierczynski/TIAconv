@@ -1,5 +1,42 @@
 # Changes
 
+## 0.16.0
+
+- Block sources: `--sources DIR` writes one file per OB, FB and FC, in
+  folders per PLC and project-tree folder. SCL and STL blocks as TIA
+  Portal's "Generate source from blocks" writes them (`.scl`, `.awl`):
+  header, declarations, code. Identical byte for byte to the three sources
+  TIA Portal V21 generated for the test projects and to three of the five
+  SCL sources published with the V19 sample; in the other two only the
+  lines of multi-instances differ (`S7_SetPoint`, `InstructionName`,
+  `LibVersion` of instruction instances are not written). LAD and FBD blocks as `.txt` with the
+  declarations and tiaconv's listing; know-how protected blocks as a note.
+- Declarations: the whole interface of OBs, FBs and FCs, Temp, Constant
+  and the return type included, in `--code` (under `Interface`) and in the
+  JSON (`declarations`).
+- Interface and data block members: retain, "accessible from", "visible
+  in" and "writable from HMI/OPC UA/Web API", and "setpoint", in the JSON,
+  as five new columns of `--blocks-csv`, and in the save history. Checked in
+  V21, one setting per save, against the editor's interface table.
+- I/O addresses of modules and CPU parts (`I 64...67`, `Q 8...9`), as TIA
+  Portal's device overview shows them, in the text report, the JSON
+  (`io_addresses`), the CSV (column `io_addresses`) and the history. Read
+  from V13 projects as well.
+- SNMP of a module where the project stores it (ET 200SP interface
+  modules): on or off, read only, and whether the community names are the
+  defaults. The names are never shown; `--objects` redacts them.
+- OBs: the priority of their event and the cycle and phase shift of a
+  cyclic interrupt (checked in V21: 250 ms, 10 ms, priority 11) (`CyclicInterrupt 100 ms` in the block list; JSON
+  `priority`, `cycle_us`, `phase_shift_us`; three new columns of
+  `--block-list-csv`; the history).
+- A function that returns nothing has the return type `Void` instead of
+  `type#0`.
+- The test project `s14_code_rewritten` has a fifth series (saves 57 to
+  66): member settings and a cyclic interrupt OB.
+- Output changes: new lines in the text report (I/O addresses, SNMP), a
+  wider Kind column in the block list, new columns at the end of `--csv`,
+  `--block-list-csv` and `--blocks-csv`, new JSON fields.
+
 ## 0.15.0
 
 - PROFINET names: for a CPU with "generate PROFINET device name
@@ -10,12 +47,17 @@
   are not derived, and the report says so.
 - HMI tags: limits (upper/lower limit 2, and the two others), linear
   scaling, the index tag of a multiplexed tag, and the acquisition mode
-  "On demand", in the JSON, the HMI tags CSV (six new columns at the end)
+  "On demand", in the JSON, the HMI tags CSV (seven new columns at the end)
   and the save history.
+- HMI tags: the list of a multiplexed tag, in order (index 0, 1, ...):
+  JSON `multiplex_tags`, CSV column `multiplex_tags`, and "multiplex list"
+  in the save history. Stored as one `HmiMultiplexEntryData` object per
+  entry, in the order of the tag's relation `MultiplexEntries`.
 - Checked in V21: "IP address is set directly at the device", and a user
-  constant used in code.
+  constant used in code, which TIA Portal's cross-reference list shows as
+  read only, as tiaconv does.
 - The test projects `s14_code_rewritten` (13 more saves, 56 in all) and
-  `s13_hmi` (4 more, 40 in all) hold these steps.
+  `s13_hmi` (5 more, 41 in all) hold these steps.
 - Fixed (since 0.14.0): the save history and `tiaconv diff` could name an
   FB or FC interface member without its block (`member  / io1`) or read
   freed memory; seen in the Windows build. The block's name was taken by

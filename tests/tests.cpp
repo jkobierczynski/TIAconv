@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "bytes.hpp"
+#include "blocksource.hpp"
 #include "code.hpp"
 #include "container.hpp"
 #include "history.hpp"
@@ -1549,15 +1550,15 @@ void testHmiTags() {
     const std::string c = csv.str();
     CHECK(c.find("hmi,table,name,data_type,access,connection,plc,plc_tag,address,acquisition_cycle,acquisition_mode,"
                  "comment,start_value,members,plc_tag_found,plc_data_type,address_stored,upper_limit_2,upper_limit_1,"
-                 "lower_limit_1,lower_limit_2,linear_scaling,multiplex_index_tag\r\n") == 0);
+                 "lower_limit_1,lower_limit_2,linear_scaling,multiplex_index_tag,multiplex_tags\r\n") == 0);
     CHECK(c.find("\r\nHMI_1,HMI tags,Data_Speed,Int,symbolic,HMI_Connection_1,PLC_1,Data.Speed,%DB7.DBW2,1 s,"
-                 "Cyclic in operation,,12,,yes,Int,%DB7.DBW2,,,,,,\r\n") != std::string::npos);
+                 "Cyclic in operation,,12,,yes,Int,%DB7.DBW2,,,,,,,\r\n") != std::string::npos);
     CHECK(c.find("\r\nHMI_1,HMI tags,Lost,Int,symbolic,HMI_Connection_1,PLC_1,\"\"\"Gone.DB\"\".x\",,1 s,Cyclic in operation,,,,"
-                 "no,,%DB1.DBD0,,,,,,\r\n") != std::string::npos);
-    CHECK(c.find("\r\nHMI_1,HMI tags,Internal,UInt,internal,,,,,1 s,Cyclic in operation,,,,,,,,,,,,\r\n") != std::string::npos);
-    CHECK(c.find("\r\nHMI_1,HMI tags,Unnamed,Int,symbolic,HMI_Connection_1,PLC_1,,,1 s,Cyclic in operation,,,,,,%DB1.DBD0,,,,,,\r\n") !=
+                 "no,,%DB1.DBD0,,,,,,,\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Internal,UInt,internal,,,,,1 s,Cyclic in operation,,,,,,,,,,,,,\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Unnamed,Int,symbolic,HMI_Connection_1,PLC_1,,,1 s,Cyclic in operation,,,,,,%DB1.DBD0,,,,,,,\r\n") !=
           std::string::npos);
-    CHECK(c.find("\r\nHMI_1,HMI tags,Struct,MotorUDT,internal,,,,,1 s,Cyclic in operation,,,3,,,,,,,,,\r\n") != std::string::npos);
+    CHECK(c.find("\r\nHMI_1,HMI tags,Struct,MotorUDT,internal,,,,,1 s,Cyclic in operation,,,3,,,,,,,,,,\r\n") != std::string::npos);
 
     tia::ReportContext ctx;
     std::ostringstream text, json;
@@ -2123,6 +2124,130 @@ void testExtraDataFiles() {
 
 // The PROFINET device name TIA Portal V21 generates from a CPU's name, and
 // its converted form, as its properties dialog showed them.
+// The settings of interface members (MFlags, as in the V19 sample's sources)
+// and the declarations a source has for them.
+void testDeclarations() {
+    auto access = [](int64_t flags) {
+        tia::BlockMember m;
+        m.flags = flags;
+        const tia::MemberAccess a = tia::memberAccess(m);
+        return std::string(a.accessible ? "A" : "-") + (a.visible ? "V" : "-") + (a.writable ? "W" : "-") +
+               (a.setpoint ? "S" : "");
+    };
+    CHECK(access(-1) == "AVW");  // not stored: the defaults
+    CHECK(access(7) == "AVW");
+    CHECK(access(79) == "AV-");   // ExternalWritable := 'False'
+    CHECK(access(76) == "---");   // all three 'False'
+    CHECK(access(78) == "---");
+    CHECK(access(14) == "---");
+    CHECK(access(588) == "---");
+    CHECK(access(527) == "AVWS");  // V21: "Setpoint" ticked (ZZFLAGS m5)
+    CHECK(access(14) == "---" && access(13) == "A-W");  // V21: m2 not accessible, m3 not visible
+    CHECK(access(4183) == "AV-");  // ET of an IEC timer
+    CHECK(access(0) == "---");
+
+    tia::BlockInfo info;
+    info.type = "FB";
+    info.name = "ZZ";
+    info.symbolicAccessOnly = true;
+    info.author = "Jacob Holmdahl";
+    info.family = "LLCCA";
+    info.version = "0.0";
+    info.comment = "line 1\nline 2";
+    info.declarationsRead = true;
+    auto member = [](const char* name, const char* type, const char* section, int64_t flags, bool retain) {
+        tia::BlockMember m;
+        m.name = name;
+        m.dataType = type;
+        m.section = section;
+        m.flags = flags;
+        if (retain) m.remanence = "Retain";
+        return m;
+    };
+    info.declarations = {member("in", "Real", "Input", 76, false), member("io1", "Real", "InOut", -1, true),
+                         member("s1", "Bool", "Static", -1, false), member("s2", "Bool", "Static", -1, true),
+                         member("tmp", "Int", "Temp", 76, false)};
+    tia::BlockMember st = member("st", "Struct", "Static", 79, false);
+    st.members = {member("x", "Int", "", -1, false)};
+    info.declarations.push_back(st);
+    info.declarations.push_back(member("666", "DInt", "Static", -1, false));
+    info.declarations.back().hasStartValue = true;
+    info.declarations.back().startValue = "666";
+    info.declarations.back().comment = "c";
+    const std::vector<std::string> d = tia::declarationLines(info);
+    const std::vector<std::string> expected = {
+        "   VAR_INPUT ",
+        "      in { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;",
+        "   END_VAR", "",
+        "   VAR_IN_OUT RETAIN", "      io1 : Real;", "   END_VAR", "",
+        "   VAR ", "      s1 : Bool;", "   END_VAR",
+        "   VAR RETAIN", "      s2 : Bool;", "   END_VAR",
+        "   VAR ", "      st { ExternalWritable := 'False'} : Struct", "         x { ExternalWritable := 'False'} : Int;",
+        "      END_STRUCT;", "      \"666\" : DInt := 666;   // c", "   END_VAR", "",
+        "   VAR_TEMP ", "      tmp : Int;", "   END_VAR", ""};
+    CHECK(d == expected);
+    tia::BlockCode code;
+    const tia::BlockSource s = tia::blockSource(info, code);
+    CHECK(s.lines.size() > 7 && s.lines[0] == "// block in tiaconv's notation (TIA Portal has no source form for it)");
+    info.language = "SCL";
+    const tia::BlockSource scl = tia::blockSource(info, code);
+    CHECK(scl.fileName == "ZZ.scl" && scl.lines.size() > 7 && scl.lines[0] == "FUNCTION_BLOCK \"ZZ\"" &&
+          scl.lines[1] == "{ S7_Optimized_Access := 'TRUE' }" && scl.lines[2] == "AUTHOR : 'Jacob Holmdahl'" &&
+          scl.lines[3] == "FAMILY : LLCCA" && scl.lines[4] == "VERSION : 0.0" && scl.lines[5] == "//line 1" &&
+          scl.lines[6] == "//line 2" && scl.lines.back().empty() && scl.lines[scl.lines.size() - 2] == "END_FUNCTION_BLOCK");
+    CHECK(tia::sourceName("statFilterDT1_du/dt") == "\"statFilterDT1_du/dt\"" && tia::sourceName("_a1") == "_a1");
+}
+
+void testTimes() {
+    CHECK(tia::microsecondsText(100000) == "100 ms");
+    CHECK(tia::microsecondsText(0) == "0 ms");
+    CHECK(tia::microsecondsText(1500) == "1.5 ms");
+    CHECK(tia::microsecondsText(250) == "0.25 ms");
+    CHECK(tia::microsecondsText(2000000) == "2 s");
+}
+
+void testIoAddresses() {
+    auto text = [](bool input, int64_t start, int64_t length, int64_t pip = 0) {
+        tia::IoAddress a;
+        a.input = input;
+        a.startBit = start;
+        a.lengthBits = length;
+        a.processImage = pip;
+        return tia::ioAddressText(a);
+    };
+    CHECK(text(true, 64, 8) == "I 8");
+    CHECK(text(true, 512, 32) == "I 64...67");
+    CHECK(text(false, 8000, 16) == "Q 1000...1001");
+    CHECK(text(true, 33, 2) == "I 4.1...4.2");
+    CHECK(text(true, 32, 1) == "I 4.0");
+    CHECK(text(false, 0, 8, 1) == "Q 0 (PIP 1)");
+    std::vector<tia::IoAddress> v(3);
+    v[0].item = "DI 8/DQ 6_1";
+    v[1] = v[0];
+    v[1].input = false;
+    v[2].item = "AI 2_1";
+    v[2].startBit = 512;
+    v[2].lengthBits = 32;
+    v[0].lengthBits = v[1].lengthBits = 8;
+    CHECK(tia::ioAddressesText("ZZALPHA", v) == "DI 8/DQ 6_1: I 0, Q 0; AI 2_1: I 64...67");
+    v.resize(1);
+    v[0].item = "SM";
+    CHECK(tia::ioAddressesText("SM", v) == "I 0");
+    CHECK(tia::ioAddressesText("SM", {}).empty());
+
+    tia::Module m;
+    CHECK(tia::snmpText(m).empty());
+    m.snmp.stored = true;
+    CHECK(tia::snmpText(m) == "off");
+    m.snmp.on = true;
+    CHECK(tia::snmpText(m) == "on (read and write)");
+    m.snmpReadOnly.stored = m.snmpReadOnly.on = true;
+    m.hasSnmpCommunities = m.snmpDefaultCommunities = true;
+    CHECK(tia::snmpText(m) == "on, read only, community names public/private (TIA Portal's defaults)");
+    m.snmpDefaultCommunities = false;
+    CHECK(tia::snmpText(m) == "on, read only, community names changed");
+}
+
 void testProfinetNames() {
     struct Case { const char* device; const char* name; const char* converted; };
     const Case cases[] = {
@@ -2662,7 +2787,8 @@ void testCodeProject() {
     CHECK(t.find("secret") == std::string::npos && j.find("secret") == std::string::npos);
     CHECK(j.find("\"code\": [") != std::string::npos);
     CHECK(j.find("{\"plc\": \"PLC_1\", \"type\": \"FC\", \"number\": 2, \"name\": \"Recipe\", \"language\": \"SCL\", \"protected\": true, "
-                 "\"protection\": \"know-how\", \"protected_later\": false, \"notes\": [], \"networks\": [], \"references\": []}") !=
+                 "\"protection\": \"know-how\", \"protected_later\": false, \"notes\": [], \"declarations\": null, "
+                 "\"networks\": [], \"references\": []}") !=
           std::string::npos);
     CHECK(j.find("{\"number\": 1, \"network_id\": 9, \"title\": \"Start the pump\", \"comment\": \"runs when asked\", \"language\": \"LAD\", "
                  "\"language_stored\": \"LAD_CLASSIC\", \"content\": \"graphic\", \"notes\": [], \"lines\": [\"1: \\\"Data\\\".Run := \\\"Start\\\"\"], "
@@ -2816,6 +2942,9 @@ int main() {
     testStl();
     testCodeConstructs();
     testProfinetNames();
+    testIoAddresses();
+    testTimes();
+    testDeclarations();
     testExtraDataFiles();
     testGraphicNetworks();
     testCodeProject();

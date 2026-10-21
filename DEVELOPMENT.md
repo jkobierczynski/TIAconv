@@ -5,7 +5,7 @@ what is still unclear or still to do. The user-facing description is in
 [README.md](README.md), the file format in [docs/FORMAT.md](docs/FORMAT.md),
 the releases in [CHANGELOG.md](CHANGELOG.md).
 
-State at the time of writing: version 0.15.0. A STEP 7 Professional V21
+State at the time of writing: version 0.16.0. A STEP 7 Professional V21
 trial licence is available until about 27–29 October 2026; the items marked
 *(trial)* below need it.
 
@@ -35,7 +35,7 @@ added.
 
 | path | what |
 |---|---|
-| `src/` | C++17: container and blocks (`container`), type model (`meta`), objects (`project`), hardware inventory (`inventory`), program (`program`), block code (`code`), save history and diff (`history`), outputs (`output`), command line (`main`), loading folders and archives (`source`), XML (`xml`) |
+| `src/` | C++17: container and blocks (`container`), type model (`meta`), objects (`project`), hardware inventory (`inventory`), program (`program`), block code (`code`), block source files (`blocksource`), save history and diff (`history`), outputs (`output`), command line (`main`), loading folders and archives (`source`), XML (`xml`) |
 | `tests/tests.cpp` | unit tests on small hand-made inputs |
 | `tests/fixtures_test.cpp` | tests against the V21 test projects, compared with what TIA Portal shows |
 | `tests/cli_*.cmake` | the command line |
@@ -100,6 +100,12 @@ because TIA Portal can rewrite the whole file.
   does (0.15.0): the CPU's name in lower case, and the converted name with
   `xa`, `xb`, `xd`, `xh`, `xq` codes and a CRC-16/ARC, or IDNA for letters
   beyond ASCII (FORMAT.md, "Automatic PROFINET names").
+- I/O addresses of modules and CPU parts (0.16.0): expando
+  `AM_<n>_AddrData_<m>` (start and length in bits) from V14 on,
+  `AddressObjectData` objects (start in bytes) in V13; they agree with the
+  S7-1200 defaults in four projects.
+- SNMP of ET 200SP interface modules (0.16.0); the community names are
+  secrets and only compared with the defaults.
 - PROFINET IO systems, port connections (topology), S7 and HMI connections
   including partners outside the project.
 - CPU security settings: access level, PUT/GET, web server, OPC UA server,
@@ -120,7 +126,8 @@ because TIA Portal can rewrite the whole file.
   constants, other system constants.
 - HMI tags of each HMI device, with connection, the PLC at the other end,
   the PLC tag or data block member, address, acquisition cycle and mode,
-  limits, linear scaling and the index tag of a multiplexed tag (0.15.0).
+  limits, linear scaling, and the index tag and list of a multiplexed tag
+  (0.15.0).
 
 ### Save history and diff (0.9.0, 0.12.0)
 
@@ -142,6 +149,19 @@ because TIA Portal can rewrite the whole file.
   know-how protected blocks.
 - Offsets of an instance block with standard access follow from the FB's
   interface: checked against TIA Portal's Offset column.
+
+### Declarations and sources (0.16.0)
+
+- The whole interface of OBs, FBs and FCs is read (Temp, Constant and
+  Return too); `--sources` writes SCL and STL blocks in TIA Portal's
+  generated-source form, LAD and FBD in tiaconv's notation. Byte-identical
+  to the three sources TIA Portal V21 generated here and to three of the
+  five published with the V19 sample.
+- Members carry `Remanence="Retain"` and `MFlags`: bits 0 (accessible), 1
+  (visible), 6 (not writable), 9 (setpoint), worked out from the V19
+  sources and checked one setting per save in V21.
+- An OB's event object (`...EventData`, relation `Handler`) has the priority
+  and, for a cyclic interrupt, cycle and phase shift.
 
 ### Block code (0.11.0 to 0.13.0)
 
@@ -177,8 +197,12 @@ because TIA Portal can rewrite the whole file.
 
 ### Needs TIA Portal *(trial)*
 
-- **The other columns of an interface**: Retain, accessible from HMI,
-  writable, visible, setpoint. Not read.
+- **Member settings in a global data block** (checked in an FB only), and
+  `S7_SetPoint`/`InstructionName`/`LibVersion` of multi-instances in a
+  generated source.
+- **I/O addresses** of an S7-1500 with a signal module and of an ET 200SP
+  with modules; an address changed by hand; a process image partition.
+- **SNMP** switched on, read only, with changed community names.
 - **Instances of library types** (relation `IsInstanceOf`): not read; the
   block list should say which type and version a block is an instance of.
 - **Two projects made apart** with largely the same contents: where
@@ -190,11 +214,8 @@ because TIA Portal can rewrite the whole file.
 - **The automatic PROFINET name** for combinations not seen (an umlaut
   with a space, a dot with characters to convert, a hyphen at the end), for
   IO devices and for CPUs with two PROFINET interfaces.
-- **HMI leftovers**: the list of a multiplexed tag (not found in the file),
-  upper limit 1 and lower limit 1 (assumed); PC runtimes and WinCC Unified;
+- **HMI leftovers**: upper limit 1 and lower limit 1 (assumed); PC runtimes and WinCC Unified;
   HMI tags in V13.
-- **A user constant in TIA Portal's cross-reference list**: tiaconv lists it
-  as read; not compared.
 - **The download state** (TiaProjectParser's two versions of an object) and
   download times: PLCSIM Advanced did not start an instance here.
 - **Technology objects and S7-1500 central modules**: identifier kinds and
@@ -219,14 +240,9 @@ because TIA Portal can rewrite the whole file.
 
 ### Features
 
-- **Declarations.** The interface of FBs and FCs is read and in the history
-  (0.14.0); still to do: in the text report and the JSON, and as the
-  declaration part of a source (`VAR_INPUT ... END_VAR`), so that an SCL or
-  STL block comes out as a complete source like the one TIA Portal
-  generates.
-- **`--code-dir DIR`.** One text file per block, so that a project's code
-  can be kept in git; with `tiaconv diff`, change management without
-  commercial tools. Protected blocks get a file that says so, without code.
+- **Data blocks and PLC data types as sources** (`.db`, `.udt`), next to the
+  code blocks of `--sources`; the samples have published `.db` files to
+  compare with.
 - **Security findings report** (NIS2 / IEC 62443). Brings together what is
   now spread over the report: PUT/GET enabled; no access protection or only
   the default level; web server on HTTP; legacy PG/HMI communication; OPC UA

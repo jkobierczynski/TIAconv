@@ -104,7 +104,8 @@ public:
             const bool listed = isListedBlock(*t);
             const bool constant = isConstant(*t);
             const bool hmiTag = isHmiTag(*t);
-            if (role == 0 && !listed && !constant && !hmiTag) continue;
+            const bool obEvent = isObEvent(*t);
+            if (role == 0 && !listed && !constant && !hmiTag && !obEvent) continue;
             Object o;
             try {
                 if (!project_.decode(b, o)) continue;
@@ -119,11 +120,29 @@ public:
                 continue;
             }
             if (role == 3 || role == 4) noteComments(o);
+            if (obEvent) {
+                // the event an OB handles: its relation Handler is the OB
+                for (const Key& h : targets(o, "Handler")) {
+                    ObEvent e;
+                    int64_t v = 0;
+                    if (attrInt(o, "IOrganizationBlockEventDataAttributes", "Priority", v)) {
+                        e.hasPriority = true;
+                        e.priority = v;
+                    }
+                    if (attrInt(o, "ICyclicInterruptEventData", "CyclicTime", v)) {
+                        e.hasCycle = true;
+                        e.cycle = v;
+                        if (attrInt(o, "ICyclicInterruptEventData", "PhaseShift", v)) e.phase = v;
+                    }
+                    obEvents_[h.second] = e;
+                }
+                continue;
+            }
             if (listed) {
                 if (inProject(o)) {
                     out.blockList.push_back(makeInfo(o));
                     const BlockInfo& info = out.blockList.back();
-                    if ((info.type == "FB" || info.type == "FC") && info.protectionStored != "KnowHowProtection" &&
+                    if ((info.type == "FB" || info.type == "FC" || info.type == "OB") && info.protectionStored != "KnowHowProtection" &&
                         info.protectionStored != "SystemKnowHowProtection" && info.protection.find("know-how") == std::string::npos &&
                         info.protection != "system")
                         pendingInterfaces_.push_back({out.blockList.size() - 1, Key(b.type, b.id)});
@@ -168,6 +187,15 @@ public:
             if (db.members.empty() && !db.notes.empty()) ++out.stats.blocksWithoutInterface;
             out.blocks.push_back(std::move(db));
         }
+        for (auto& b : out.blockList) {
+            auto e = obEvents_.find(b.id);
+            if (b.type != "OB" || e == obEvents_.end()) continue;
+            b.hasPriority = e->second.hasPriority;
+            b.priority = e->second.priority;
+            b.hasCycle = e->second.hasCycle;
+            b.cycleMicroseconds = e->second.cycle;
+            b.phaseShiftMicroseconds = e->second.phase;
+        }
         for (const auto& pi : pendingInterfaces_) {
             const Block* b = project_.live(pi.second.first, pi.second.second);
             Object o;
@@ -182,8 +210,14 @@ public:
             std::string family;
             if (const Value* v = o.expandoValue("TargetFamily"))
                 if (v->type == Value::Type::String) family = v->s;
-            readInterface(o, family, false, info.interfaceMembers, notes);
-            info.interfaceRead = notes.empty() || !info.interfaceMembers.empty();
+            // every section for the declarations; Input to Static for the
+            // members compared in the history (FB and FC)
+            readInterface(o, family, false, info.declarations, notes, true);
+            info.declarationsRead = notes.empty() || !info.declarations.empty();
+            if (info.type == "OB") continue;
+            for (const auto& m : info.declarations)
+                if (m.section != "Temp" && m.section != "Constant" && m.section != "Return") info.interfaceMembers.push_back(m);
+            info.interfaceRead = info.declarationsRead;
         }
         std::stable_sort(out.tags.begin(), out.tags.end(), [](const Tag& a, const Tag& b) {
             if (a.plc != b.plc) return a.plc < b.plc;
@@ -254,7 +288,13 @@ private:
     // data type names by family ("S71200") and number
     std::map<std::string, std::map<uint32_t, std::string>> catalogue_;
     std::vector<Key> pendingBlocks_;
-    std::vector<std::pair<size_t, Key>> pendingInterfaces_;  // FB: position in blockList, object
+    std::vector<std::pair<size_t, Key>> pendingInterfaces_;
+    struct ObEvent {
+        bool hasPriority = false, hasCycle = false;
+        int64_t priority = 0, cycle = 0, phase = 0;
+    };
+    std::map<uint64_t, ObEvent> obEvents_;  // by the id of the OB
+    std::map<uint32_t, bool> obEventTypes_;  // FB: position in blockList, object
 
     // 1 type catalogue entry, 2 tag, 3 data block, 4 anything else with an
     // interface (code blocks, PLC data types): only its comments are of use
@@ -318,6 +358,17 @@ private:
 
     // HMI tags. The tags an HMI device creates itself ("@CurrentUser") are a
     // type of their own and are not listed, as in TIA Portal's tag table.
+    // The objects for the events of OBs (ProgramCycleEventData,
+    // CyclicInterruptEventData, ...).
+    bool isObEvent(const TypeDef& t) {
+        auto it = obEventTypes_.find(t.id);
+        if (it != obEventTypes_.end()) return it->second;
+        const bool yes = meta_.derivesFromShort(t.name, "OrganizationBlockEventData") ||
+                         meta_.derivesFromShort(t.name, "OBEventData");
+        obEventTypes_[t.id] = yes;
+        return yes;
+    }
+
     bool isHmiTag(const TypeDef& t) {
         auto it = hmiTagTypes_.find(t.id);
         if (it != hmiTagTypes_.end()) return it->second;
@@ -433,6 +484,15 @@ private:
         if (attrBool(o, "IHmiTagAttributes", "UseMultiplexing", mux) && mux) {
             t.multiplexing = true;
             for (const Key& k : targets(o, "IHmiTagAttributes_MultiplexIndex")) t.multiplexIndexTag = nameOf(k);
+            // The list: one object per entry (HmiMultiplexEntryData), in the
+            // order of the relation; the position is the index value.
+            for (const Key& k : targets(o, "MultiplexEntries")) {
+                Object entry;
+                std::string tag;
+                if (decodeKey(k, entry))
+                    for (const Key& tk : targets(entry, "IHmiMultiplexEntryAttributes_HmiTag")) tag = nameOf(tk);
+                t.multiplexTags.push_back(tag.empty() ? "?" : tag);
+            }
         }
         for (const Key& k : targets(o, "IHmiTagAttributes_Connection")) {
             t.connection = nameOf(k);
@@ -865,6 +925,8 @@ private:
         // An anonymous structure has no type number; its members follow inline
         // or in a part of their own.
         if (id == 0 && (hasMembers(m) || m.attr("SubPartIndex"))) return "Struct";
+        // the return value of a function that returns nothing
+        if (id == 0) return "Void";
         for (const std::string& scope : {family, std::string("S71500"), std::string("S71200"), std::string("S7300400")}) {
             auto c = catalogue_.find(scope);
             if (c == catalogue_.end()) continue;
@@ -879,6 +941,7 @@ private:
         bool offsets = false;
         const std::map<std::string, std::string>* overrides = nullptr;  // full paths from the block root
         size_t* budget = nullptr;
+        bool allSections = false;  // also Temp, Constant and Return
     };
 
     // Members of `container`. `owner` is the part whose subparts list the
@@ -905,7 +968,7 @@ private:
             // Sections of a function block interface: fixed low IDs, no type.
             const long idNum = std::strtol(id.c_str(), nullptr, 10);
             if (rootLevel && idNum > 0 && idNum < 16 && (!rid || *rid == "0xFFFF")) {
-                if (name == "Temp" || name == "Constant" || name == "Return") continue;
+                if (!ctx.allSections && (name == "Temp" || name == "Constant" || name == "Return")) continue;
                 const XmlNode* inner = &x;
                 std::shared_ptr<Part> innerOwner = owner;
                 std::shared_ptr<Part> held;
@@ -928,6 +991,12 @@ private:
             m.name = name;
             m.section = section;
             m.dataType = typeName(x, ctx.family);
+            if (const std::string* f = x.attr("MFlags")) {
+                char* end = nullptr;
+                const long long v = std::strtoll(f->c_str(), &end, 10);
+                if (end != f->c_str() && v >= 0) m.flags = v;
+            }
+            if (const std::string* r = x.attr("Remanence")) m.remanence = *r;
             const std::string fullPath = path.empty() ? id : path + ":" + id;
             const std::string localPath = local.empty() ? id : local + ":" + id;
             if (ctx.overrides) {
@@ -1053,7 +1122,7 @@ private:
     // The members of a block's interface: of a data block, or of the block
     // an instance data block is an instance of, or of a code block itself.
     void readInterface(const Object& o, const std::string& family, bool offsets, std::vector<BlockMember>& out,
-                       std::vector<std::string>& notes) {
+                       std::vector<std::string>& notes, bool allSections = false) {
         Key iface;
         if (!relInterface_ || !o.relationTarget(relInterface_, iface)) {
             notes.push_back("no interface found");
@@ -1092,6 +1161,7 @@ private:
         ctx.family = family;
         ctx.overrides = &overrides;
         ctx.budget = &budget;
+        ctx.allSections = allSections;
         members(*source->root, source, ctx, std::string(), std::string(), &rootDefaults, commentsOf(source->key), 0,
                 offsets, 0, true, std::string(), out);
         if (budget == 0) notes.push_back("member list cut off");
@@ -1141,6 +1211,42 @@ std::string formatOffset(const BlockMember& m) {
 }
 
 ProgramData buildProgramData(const Project& project) { return Builder(project).run(); }
+
+MemberAccess memberAccess(const BlockMember& m) {
+    MemberAccess a;
+    if (m.flags < 0) return a;
+    a.accessible = (m.flags & 1) != 0;
+    a.visible = a.accessible && (m.flags & 2) != 0;
+    a.writable = a.accessible && (m.flags & 64) == 0;
+    a.setpoint = a.accessible && (m.flags & 512) != 0;
+    return a;
+}
+
+MemberAccess memberAccess(const BlockMember& m, const MemberAccess& outer) {
+    MemberAccess a = memberAccess(m);
+    a.accessible = a.accessible && outer.accessible;
+    a.visible = a.visible && outer.visible;
+    a.writable = a.writable && outer.writable;
+    a.setpoint = a.setpoint && outer.accessible;
+    return a;
+}
+
+bool isRetain(const BlockMember& m) { return m.remanence == "Retain"; }
+
+std::string microsecondsText(int64_t us) {
+    if (us % 1000000 == 0 && us != 0) return std::to_string(us / 1000000) + " s";
+    if (us % 1000 == 0) return std::to_string(us / 1000) + " ms";
+    std::string frac = std::to_string(us % 1000);
+    while (frac.size() < 3) frac.insert(frac.begin(), '0');
+    while (!frac.empty() && frac.back() == '0') frac.pop_back();
+    return std::to_string(us / 1000) + "." + frac + " ms";
+}
+
+std::string multiplexListText(const std::vector<std::string>& tags) {
+    std::string out;
+    for (size_t i = 0; i < tags.size(); ++i) out += (i ? "; " : "") + std::to_string(i) + " " + tags[i];
+    return out;
+}
 
 std::string acquisitionModeName(const std::string& stored) {
     // Both seen in a V21 project: the default, and after "Cyclic continuous"
