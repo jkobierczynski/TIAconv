@@ -2246,6 +2246,8 @@ void testIoAddresses() {
     CHECK(tia::snmpText(m) == "on, read only, community names public/private (TIA Portal's defaults)");
     m.snmpDefaultCommunities = false;
     CHECK(tia::snmpText(m) == "on, read only, community names changed");
+    m.snmpFromController.stored = m.snmpFromController.on = true;
+    CHECK(tia::snmpText(m) == "as the IO controller (stored here: on, read only, community names changed)");
 }
 
 void testProfinetNames() {

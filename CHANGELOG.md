@@ -1,5 +1,26 @@
 # Changes
 
+## 0.17.0
+
+- Checked in TIA Portal V21:
+  - on an S7-1500 with user management (CPU 1511-1 PN, firmware V4.1) the
+    access level follows the rights of the Anonymous user, as on the
+    S7-1200: its role given Read, HMI and Full access and then none
+    (`s13_hmi` saves 42 to 45, 45 in all);
+  - retain, "accessible from", "visible in" and "writable from
+    HMI/OPC UA/Web API" and "setpoint" in a global data block, one setting
+    per save, and a member of a structure that is not writable because the
+    structure is not (`s14_code_rewritten` saves 67 to 74, 74 in all).
+  - SNMP on an ET 200SP and on a CPU 1511 switched on, read only, with a
+    changed community string (`s10_connections` saves 72 to 75, 75 in all).
+- SNMP: an IO device that takes the SNMP settings of its controller
+  ("Synchronize SNMP settings with default values from IO controller")
+  shows `as the IO controller (stored here: ...)` instead of its own stored
+  values; JSON `from_io_controller`. A CPU stores only the community string
+  that was changed; that is now recognised as changed.
+- The test projects carry these steps; README, FORMAT.md and DEVELOPMENT.md
+  no longer list them as unchecked.
+
 ## 0.16.0
 
 - Block sources: `--sources DIR` writes one file per OB, FB and FC, in

@@ -120,7 +120,8 @@ std::string ioAddressText(const IoAddress& a);
 std::string ioAddressesText(const std::string& module, const std::vector<IoAddress>& addresses);
 // "off", "on, read only", "on (read and write)", with ", community names
 // public/private (TIA Portal's defaults)" or ", community names changed";
-// empty when nothing is stored.
+// "as the IO controller (stored here: ...)" for an IO device that takes the
+// settings of its controller; empty when nothing is stored.
 struct Module;
 std::string snmpText(const Module& m);
 
@@ -149,6 +150,9 @@ struct Module {
     // TIA Portal fills in ("public", "private"). The names themselves are
     // secrets and are not kept.
     Setting snmp, snmpReadOnly;
+    // "Synchronize SNMP settings with default values from IO controller":
+    // on an IO device, the controller's settings apply instead
+    Setting snmpFromController;
     bool hasSnmpCommunities = false;
     bool snmpDefaultCommunities = false;
     std::string ioController;  // IO devices: the controller they are assigned to

@@ -1479,7 +1479,8 @@ void writeJson(std::ostream& out, const Inventory& inv, const ProgramData& prog,
             }
             out << "]";
             if (m.snmp.stored) {
-                out << ", \"snmp\": {\"enabled\": " << tf(m.snmp.on) << ", \"read_only\": ";
+                out << ", \"snmp\": {\"enabled\": " << tf(m.snmp.on) << ", \"from_io_controller\": "
+                    << (m.snmpFromController.stored ? tf(m.snmpFromController.on) : "null") << ", \"read_only\": ";
                 if (m.snmpReadOnly.stored) out << tf(m.snmpReadOnly.on);
                 else out << "null";
                 out << ", \"default_community_names\": ";

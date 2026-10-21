@@ -5,7 +5,7 @@ what is still unclear or still to do. The user-facing description is in
 [README.md](README.md), the file format in [docs/FORMAT.md](docs/FORMAT.md),
 the releases in [CHANGELOG.md](CHANGELOG.md).
 
-State at the time of writing: version 0.16.0. A STEP 7 Professional V21
+State at the time of writing: version 0.17.0. A STEP 7 Professional V21
 trial licence is available until about 27–29 October 2026; the items marked
 *(trial)* below need it.
 
@@ -104,8 +104,9 @@ because TIA Portal can rewrite the whole file.
   `AM_<n>_AddrData_<m>` (start and length in bits) from V14 on,
   `AddressObjectData` objects (start in bytes) in V13; they agree with the
   S7-1200 defaults in four projects.
-- SNMP of ET 200SP interface modules (0.16.0); the community names are
-  secrets and only compared with the defaults.
+- SNMP of ET 200SP interface modules and CPUs (0.16.0, 0.17.0); the
+  community names are secrets and only compared with the defaults; an IO
+  device can take its controller's settings.
 - PROFINET IO systems, port connections (topology), S7 and HMI connections
   including partners outside the project.
 - CPU security settings: access level, PUT/GET, web server, OPC UA server,
@@ -197,20 +198,19 @@ because TIA Portal can rewrite the whole file.
 
 ### Needs TIA Portal *(trial)*
 
-- **Member settings in a global data block** (checked in an FB only), and
-  `S7_SetPoint`/`InstructionName`/`LibVersion` of multi-instances in a
+- `S7_SetPoint`/`InstructionName`/`LibVersion` of multi-instances in a
   generated source.
 - **I/O addresses** of an S7-1500 with a signal module and of an ET 200SP
   with modules; an address changed by hand; a process image partition.
-- **SNMP** switched on, read only, with changed community names.
+- **SNMP** on other CPU families and firmware versions (checked: ET 200SP
+  IM 155-6 PN ST V6.4, CPU 1511-1 PN V4.1).
 - **Instances of library types** (relation `IsInstanceOf`): not read; the
   block list should say which type and version a block is an instance of.
 - **Two projects made apart** with largely the same contents: where
   `tiaconv diff` pairs by name; no such pair has been compared.
-- **Security on an S7-1500**: whether the access level follows the
-  Anonymous user's rights as on the S7-1200 (only a new CPU's state was
-  compared). Also unknown: the access level numbers of an S7-1200 with
-  firmware V4.0 to V4.6.
+- **Security**: the access level numbers of an S7-1200 with firmware V4.0
+  to V4.6. (That the level follows the Anonymous user's rights is checked
+  on the S7-1200 and, in 0.16.0, on the S7-1500.)
 - **The automatic PROFINET name** for combinations not seen (an umlaut
   with a space, a dot with characters to convert, a hyphen at the end), for
   IO devices and for CPUs with two PROFINET interfaces.

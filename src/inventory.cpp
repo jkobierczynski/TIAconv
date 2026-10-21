@@ -157,6 +157,9 @@ std::string snmpText(const Module& m) {
     if (m.snmp.on && m.hasSnmpCommunities)
         out += m.snmpDefaultCommunities ? ", community names public/private (TIA Portal's defaults)"
                                         : ", community names changed";
+    // an IO device that takes the settings of its controller
+    if (m.snmpFromController.stored && m.snmpFromController.on)
+        out = "as the IO controller (stored here: " + out + ")";
     return out;
 }
 
@@ -625,13 +628,17 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
             r.ioAddresses = readIoAddresses(o, m.name);
             readSetting(o, "SNMPEnabled", m.snmp);
             readSetting(o, "SNMPEnableReadOnly", m.snmpReadOnly);
+            readSetting(o, "SNMPSynchronizeSettings", m.snmpFromController);
             {
+                // compared with the defaults only; the names are not kept. A
+                // CPU stores only the one that was changed.
                 const Value* ro = o.expandoValue("SNMPReadOnlyCommunityName");
                 const Value* rw = o.expandoValue("SNMPReadWriteCommunityName");
-                if (ro && rw && ro->type == Value::Type::String && rw->type == Value::Type::String) {
-                    // compared with the defaults only; the names are not kept
+                const bool roText = ro && ro->type == Value::Type::String;
+                const bool rwText = rw && rw->type == Value::Type::String;
+                if (roText || rwText) {
                     m.hasSnmpCommunities = true;
-                    m.snmpDefaultCommunities = ro->s == "public" && rw->s == "private";
+                    m.snmpDefaultCommunities = (!roText || ro->s == "public") && (!rwText || rw->s == "private");
                 }
             }
             items[key] = std::move(r);

@@ -168,7 +168,7 @@ const Step kStepsBlocksA[] = {
     {57, "~|module|ZZIO1 / IO device_1|IO controller||ZZBRAVO"},
     {57, "~|module|ZZIO1 / IO device_1|IO system||PROFINET IO-System"},
     // TIA Portal stored the SNMP settings of the interface module with the assignment
-    {57, "~|module|ZZIO1 / IO device_1|SNMP||off"},
+    {57, "~|module|ZZIO1 / IO device_1|SNMP||as the IO controller (stored here: off)"},
     {57, "~|interface|ZZIO1 / IO device_1 / IE1|IP address|192.168.0.1|192.168.77.1"},
     {57, "~|interface|ZZIO1 / IO device_1 / IE1|subnet||PN/IE_1"},
     {57, "+|IO system|S7-1500/ET200MP station_1 / PROFINET IO-System|IOSystem_PROFINET"},
@@ -295,6 +295,12 @@ const Step kStepsHmi[] = {
     // (not by hand: a type that holds Word, Int and SInt)
     {41, "~|HMI tag|ZZPANEL / Default tag table / ZZMUX|multiplex list||0 ZZABS; 1 ZZINT; 2 ZZMEM"},
     {41, "~|HMI tag|ZZPANEL / Default tag table / ZZMUX|data type|SInt|DInt"},
+    // the S7-1500 ZZCHARLIE: its access level follows the rights the role
+    // ZZROLE of the Anonymous user gives on it (screenshots of its access level page)
+    {42, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access level|No access (complete protection)|Read access"},
+    {43, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access level|Read access|HMI access"},
+    {44, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access level|HMI access|Full access (no protection)"},
+    {45, "~|module|S7-1500/ET200MP station_2 / ZZCHARLIE|access level|Full access (no protection)|No access (complete protection)"},
 };
 
 std::string stepText(const tia::HistoryChange& c) {
@@ -495,7 +501,7 @@ void testHmi() {
     // the export was made after save 36; the file goes on to save 41
     Loaded l = load("s13_hmi", 36);
     common(l, "s13_hmi");
-    CHECK(l.saves == 41);  // recorded in the file
+    CHECK(l.saves == 45);  // recorded in the file
 
     // the panel, as added and as the topology view listed it
     const tia::Module* panel = module(l.inv, "ZZPANEL");
@@ -634,7 +640,7 @@ void testHmi() {
     }
 
     const tia::History h = history("s13_hmi");
-    CHECK(h.savesInFile == 41 && h.saves.size() == 41);
+    CHECK(h.savesInFile == 45 && h.saves.size() == 45);
     checkSteps(h, kStepsHmi, 18, {});
     checkTotals(h, load("s13_hmi"));
 }
@@ -1091,8 +1097,8 @@ void testCode() {
             CHECK(declared == 1);
         }
         const tia::History hr = history("s14_code_rewritten");
-        CHECK(hr.saves.size() == 66 && hr.notes.size() == 1);
-        if (hr.saves.size() == 66) {
+        CHECK(hr.saves.size() == 74 && hr.notes.size() == 1);
+        if (hr.saves.size() == 74) {
             CHECK(hr.saves[1].firstState);
             std::multiset<std::string> found;
             for (const auto& c : hr.saves[2].changes)
@@ -1250,7 +1256,7 @@ void testCode() {
             // the fifth series: retain, access and setpoint of the members of
             // an FB (ZZFLAGS; ZZFLAGS2 stayed empty), a cyclic interrupt OB
             std::multiset<std::string> fifth;
-            for (size_t i = 56; i < hr.saves.size(); ++i)
+            for (size_t i = 56; i < 66; ++i)
                 for (const auto& c : hr.saves[i].changes)
                     if (!followsFromSomethingElse(c) && c.kind != "hardware identifier") {
                         const std::string t = stepText(c);
@@ -1269,6 +1275,46 @@ void testCode() {
                 "65|+|block|ZZPLC / ZZCYC2 [OB30]|CyclicInterrupt, LAD",
                 "65|+|system constant|ZZPLC / Default tag table / OB_ZZCYC2|OB_Cyclic = 30",
                 "66|~|block|ZZPLC / ZZCYC2 [OB30]|phase shift|0 ms|10 ms"}));
+            // the sixth series: the same settings in a global data block, and
+            // a structure whose members follow it
+            std::multiset<std::string> sixth;
+            for (size_t i = 66; i < hr.saves.size(); ++i)
+                for (const auto& c : hr.saves[i].changes)
+                    if (!followsFromSomethingElse(c) && c.kind != "hardware identifier") {
+                        const std::string t = stepText(c);
+                        sixth.insert(std::to_string(i + 1) + "|" + t.substr(0, t.find('\n')));
+                    }
+            CHECK(same(sixth, std::multiset<std::string>{
+                "67|+|block|ZZPLC / ZZDB2 [DB7]|global, DB",
+                "68|~|member|ZZPLC / ZZDB2 [DB7] / d1|external access||not writable",
+                "69|~|member|ZZPLC / ZZDB2 [DB7] / d2|external access||not accessible",
+                "70|~|member|ZZPLC / ZZDB2 [DB7] / d3|external access||not visible",
+                "71|~|member|ZZPLC / ZZDB2 [DB7] / d4|retain||yes",
+                "72|~|member|ZZPLC / ZZDB2 [DB7] / d5|external access||setpoint",
+                "73|+|member|ZZPLC / ZZDB2 [DB7] / st|Struct", "73|+|member|ZZPLC / ZZDB2 [DB7] / st.x|Int",
+                "74|~|member|ZZPLC / ZZDB2 [DB7] / st|external access||not writable"}));
+            // ZZDB2 as the editor showed it after save 74 (screenshot): x not
+            // writable because st is not
+            {
+                Loaded at = load("s14_code_rewritten");
+                std::ostringstream csv;
+                tia::writeBlocksCsv(csv, at.prog);
+                std::vector<std::string> got;
+                std::istringstream in(csv.str());
+                std::string line;
+                while (std::getline(in, line))
+                    if (line.find(",ZZDB2,") != std::string::npos) {
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        std::vector<std::string> f;
+                        std::stringstream ls(line);
+                        std::string cell;
+                        while (std::getline(ls, cell, ',')) f.push_back(cell);
+                        if (f.size() >= 17) got.push_back(f[7] + " " + f[12] + f[13] + f[14] + f[15] + f[16]);
+                    }
+                CHECK(got == (std::vector<std::string>{"d1 noyesyesnono", "d2 nonononono", "d3 noyesnoyesno",
+                                                       "d4 yesyesyesyesno", "d5 noyesyesyesyes", "st noyesyesnono",
+                                                       "st.x noyesyesnono"}));
+            }
             // the interface table of ZZFLAGS after save 64 (screenshot): the
             // check boxes Accessible, Writable, Visible, Setpoint and Retain
             {
@@ -1972,13 +2018,29 @@ int main() {
         }
         current = "s10_connections, whole file";
         const Loaded end = load("s10_connections");
-        CHECK(end.saves == 71);
-        // SNMP as the ET 200SP interface modules store it: off; the CPUs store none
-        for (const char* name : {"IO device_1", "IO device_2"}) {
-            const tia::Module* im = module(end.inv, name);
-            CHECK(im && im->snmp.stored && !im->snmp.on && im->hasSnmpCommunities && im->snmpDefaultCommunities &&
-                  tia::snmpText(*im) == "off");
+        CHECK(end.saves == 75);
+        // SNMP (saves 72 to 75, screenshots of the SNMP pages): the first ET
+        // 200SP no longer takes the controller's settings, SNMP on, read only,
+        // the read-only community name changed; the second still takes the
+        // controller's; the CPU ZZCHARLIE stores only what was changed (on,
+        // read only, the read-only name); ZZBRAVO stores nothing
+        const struct { size_t save; const char* text; } io1[] = {
+            {71, "as the IO controller (stored here: off)"},
+            {72, "on (read and write), community names public/private (TIA Portal's defaults)"},
+            {73, "on, read only, community names public/private (TIA Portal's defaults)"},
+            {74, "on, read only, community names changed"}};
+        for (const auto& s : io1) {
+            const Loaded at = load("s10_connections", s.save);
+            const tia::Module* im = module(at.inv, "IO device_1");
+            CHECK(im && tia::snmpText(*im) == s.text);
         }
+        const tia::Module* d2 = module(end.inv, "IO device_2");
+        CHECK(d2 && d2->snmpFromController.on && tia::snmpText(*d2) == "as the IO controller (stored here: off)");
+        const tia::Module* zzc = module(end.inv, "ZZCHARLIE");
+        CHECK(zzc && tia::snmpText(*zzc) == "on, read only, community names changed");
+        const Loaded before = load("s10_connections", 74);
+        const tia::Module* zzc74 = module(before.inv, "ZZCHARLIE");
+        CHECK(zzc74 && !zzc74->snmp.stored && tia::snmpText(*zzc74).empty());
         const tia::Module* zzb = module(end.inv, "ZZBRAVO");
         CHECK(zzb && !zzb->snmp.stored && tia::snmpText(*zzb).empty());
     }

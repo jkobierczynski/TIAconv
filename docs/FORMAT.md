@@ -485,18 +485,27 @@ modules, ET 200 modules, process image partitions other than 0.
 
 ### SNMP
 
-Seen on the interface module of an ET 200SP (`IM 155-6 PN ST`, firmware
-V6.4) as expando attributes, written by TIA Portal when the station is
-assigned to an IO controller:
+Expando attributes on the interface module of an ET 200SP (`IM 155-6 PN
+ST`, firmware V6.4), written in full when the station is assigned to an IO
+controller, and on a CPU (CPU 1511-1 PN, firmware V4.1), where only what
+was changed is stored:
 
 | attribute | meaning |
 |---|---|
-| `SNMPEnabled` | bool: SNMP on |
-| `SNMPEnableReadOnly` | bool: read access only |
-| `SNMPReadOnlyCommunityName`, `SNMPReadWriteCommunityName` | the community names, `public` and `private` in both projects. These are secrets: tiaconv only says whether they are those defaults, and `--objects` writes them as redacted |
-| `SNMPSynchronizeSettings` | bool; on a CPU this is the only one seen (`false`) |
+| `SNMPEnabled` | bool: "Activate SNMP" |
+| `SNMPEnableReadOnly` | bool: "Enable read-only access for SNMP" |
+| `SNMPReadOnlyCommunityName`, `SNMPReadWriteCommunityName` | the community strings, by default `public` and `private`. These are secrets: tiaconv only says whether they are those defaults, and `--objects` writes them as redacted |
+| `SNMPSynchronizeSettings` | bool: "Synchronize SNMP settings with default values from IO controller". While it is on, an IO device has the settings of its controller and the other three cannot be changed; the stored ones stay as they were |
 
-`SNMPEnabled` was `false` in both. Not seen: SNMP on, a CPU's SNMP settings.
+**Verified** in V21 (`s10_connections` saves 72 to 75, with screenshots of
+the SNMP pages): on the first ET 200SP, synchronisation off and SNMP on in
+one save, then read only, then a changed read-only community string; on the
+CPU ZZCHARLIE, whose page showed SNMP off with nothing stored, SNMP on, read
+only and a changed read-only string in one save, after which it stores
+`SNMPEnabled`, `SNMPEnableReadOnly` and the read-only string only. The
+CPU's page also has "SNMP configuration: Set directly in the project"; not
+seen otherwise. Not checked: whether the S7-1500's default (off, nothing
+stored) holds for older firmware.
 
 ### Automatic PROFINET names
 
@@ -696,6 +705,9 @@ On these CPUs (**verified** in TIA Portal V21 on firmware V4.1 and V4.7):
   "Read access" on the CPU changes nothing; assigning that role to the
   Anonymous user sets the level to 2 and TIA Portal shows "Read access";
   changing the role's right to "HMI access" gives 3, to "Full access" 1.
+  The same on an S7-1500 with firmware V4.1 (`s13_hmi` saves 42 to 45): the
+  Anonymous user's role given Read, HMI and Full access on the CPU and then
+  none, and the level TIA Portal showed after each is the one stored.
 
 How this is stored, as far as it is visible without reading anything
 protected:
@@ -1498,7 +1510,10 @@ A root document:
   the structure. **Verified** in V21 (`s14_code_rewritten` saves 59 to 64,
   one setting per save, against the editor's interface table): 79 not
   writable, 14 not accessible, 13 not visible, 527 setpoint, and
-  `Remanence="Retain"` for Retain. It agrees with the five SCL sources
+  `Remanence="Retain"` for Retain. The same in a global data block (saves
+  67 to 74), where a member of a structure that is not writable shows in
+  the editor as not writable too, while it stores no setting of its own. It
+  agrees with the five SCL sources
   published with the V19 sample (81 members with values 7, 14, 76, 78, 79,
   588) and with the internal members of IEC timers (`ET` and `Q`, 4183,
   read only; `ST`, `RU`, 4112, not accessible). Other bits (2, 4, 7, 12, 19)
@@ -1562,7 +1577,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V17 | v14 | 2 637 | 2 516 | a third-party project archive (`.zap17`), not in this repository |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 22 005 | 15 784 | `tests/fixtures` (seventeen project files, in this repository) |
+| V21 | v14 | 22 141 | 15 788 | `tests/fixtures` (seventeen project files, in this repository) |
 
 Checked against statements outside the project files:
 
@@ -1606,8 +1621,8 @@ all three configured items (both CPUs and the signal module) are as decoded.
 - Relation lists beyond the two keyed ones.
 - The `h` attribute of a start value.
 - Access level numbers of an S7-1200 with firmware V4.0 to V4.6 (assumed to
-  be those of V4.7) and of other CPU families; whether the level follows the
-  Anonymous user on an S7-1500 as it does on the S7-1200; other values of `OmsCommunicationMode` and `TimeSyncRole`.
+  be those of V4.7) and of other CPU families; other values of
+  `OmsCommunicationMode` and `TimeSyncRole`.
 - Constants of structured types, if TIA Portal allows them, and system
   constants of kinds not in the samples.
 - Whether anything besides know-how protection makes TIA Portal rewrite the

@@ -25,7 +25,7 @@ endif()
 if(NOT text MATCHES "  Save 64  [^\n]*, 2 of them as deleted\n      - connection S7-1500/ET200MP station_1 / S7_Connection_1 ")
   message(FATAL_ERROR "--history: save 64 should show the connection removed")
 endif()
-if(text MATCHES "\n  Save 65 " OR NOT text MATCHES "Note: covers saves 1 to 64 of 71")
+if(text MATCHES "\n  Save 65 " OR NOT text MATCHES "Note: covers saves 1 to 64 of 75")
   message(FATAL_ERROR "--history --save 64 should stop at save 64 and say so")
 endif()
 
@@ -52,7 +52,7 @@ endif()
 # JSON: the history is one more key, and the text report moves to standard error
 execute_process(COMMAND "${TIACONV}" --history --json - "${PROJECT}"
                 OUTPUT_VARIABLE json ERROR_VARIABLE err RESULT_VARIABLE rc)
-if(NOT rc EQUAL 0 OR NOT json MATCHES "\"history\": {\"saves_in_file\": 71, \"events\": \\[{\"date\": \"2026-10-05T13:00:10.135Z\"")
+if(NOT rc EQUAL 0 OR NOT json MATCHES "\"history\": {\"saves_in_file\": 75, \"events\": \\[{\"date\": \"2026-10-05T13:00:10.135Z\"")
   message(FATAL_ERROR "--history --json: history key missing")
 endif()
 if(NOT json MATCHES "{\"change\": \"added\", \"kind\": \"connection\", \"item\": \"S7-1500/ET200MP station_1 / S7_Connection_2\", \"description\": \"S7 to 192.168.77.99\", \"part_of\": null}")

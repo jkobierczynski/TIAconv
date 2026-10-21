@@ -91,6 +91,10 @@ network: one action per save. Any step can be looked at with
 | 69 | `ZZROLE` assigned to the Anonymous user. The greyed-out access level of ZZDELTA now showed "Read access" |
 | 70 | right of `ZZROLE` on ZZDELTA changed to "HMI access"; the access level showed "HMI access" |
 | 71 | ... changed to "Full access"; the access level showed "Full access (no protection)" |
+| 72 | ZZIO1 / IO device_1, Advanced configuration > SNMP: "Synchronize SNMP settings with default values from IO controller" cleared (needed before the rest can be changed) and "Activate SNMP" ticked |
+| 73 | ... "Enable read-only access for SNMP" ticked |
+| 74 | ... read-only community string changed from `public` to a throwaway name |
+| 75 | ZZCHARLIE, General > SNMP: "Activate SNMP" and "Enable read-only access for SNMP" ticked and the read-only community string changed, in one save. Before, the page showed SNMP off, "SNMP configuration: Set directly in the project" |
 
 `s11_blocks_a` and `s11_blocks` continue from `s10_connections`, for the list
 of blocks. They are **the same project at two moments**: TIA Portal rewrote
@@ -190,6 +194,10 @@ licence for WinCC Advanced.
 | 39 | `ZZMEM`: acquisition mode "On demand"; in the same save, on purpose, `ZZSTD` back to 1 s and "Cyclic in operation" |
 | 40 | a new internal tag `ZZMUX` (SInt) with multiplexing on, index tag `ZZSTD`, the list of tags left empty; in the same save, on purpose, `ZZMEM` became an internal SInt tag |
 | 41 | `ZZMUX`, Multiplexing: the list 0 `ZZABS`, 1 `ZZINT`, 2 `ZZMEM`; its data type became DInt in this save, not by hand: apparently TIA Portal picks a type that holds every entry (Word, Int and SInt need DInt) |
+| 42 | Security settings > Users and roles: role `ZZROLE` (assigned to the Anonymous user) given the runtime right "Read access" on ZZCHARLIE. ZZCHARLIE's greyed-out access level showed "Read access" |
+| 43 | ... changed to "HMI access"; the access level showed "HMI access" |
+| 44 | ... changed to "Full access"; the access level showed "Full access (no protection)", the password cell empty |
+| 45 | the right on ZZCHARLIE removed from `ZZROLE`; the access level showed "No access (complete protection)" again |
 
 References from TIA Portal, all taken after save 36 unless stated:
 
@@ -391,7 +399,22 @@ cyclic interrupt OB):
 | 65 | new cyclic interrupt OB `ZZCYC2` (OB30), LAD, cyclic time 250000 µs |
 | 66 | `ZZCYC2`: phase offset 10000 µs |
 
-References: a screenshot of the interface table of `ZZFLAGS` after save 64
+Sixth series, in the same file (the same settings in a global data block):
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 67 | new global data block `ZZDB2` (DB7), Static: `d1` to `d5`, all Int (`ZZDATA` showed no `<Add new>` row) |
+| 68 | `d1`: "Writable from HMI/OPC UA/Web API" cleared |
+| 69 | `d2`: "Accessible from HMI/OPC UA/Web API" cleared |
+| 70 | `d3`: "Visible in HMI engineering" cleared |
+| 71 | `d4`: Retain |
+| 72 | `d5`: "Setpoint" ticked |
+| 73 | `st`, Struct, with the member `x`, Int |
+| 74 | `st`: "Writable from HMI/OPC UA/Web API" cleared; the box of `x` turned to not writable as well |
+
+References: a screenshot of `ZZDB2` after save 74 with every check box.
+
+References for the fifth series: a screenshot of the interface table of `ZZFLAGS` after save 64
 (the check boxes and the Retain column of every member); one of the
 "Cyclic interrupt" page of `ZZCYC2` after save 65; its priority, 11, as
 TIA Portal showed it.
