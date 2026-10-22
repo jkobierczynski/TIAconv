@@ -2564,6 +2564,85 @@ void testDescribeType() {
     CHECK(levels == 17 && at->kind == "unknown");
 }
 
+// Values as TIA Portal writes them, parsed for the program export.
+std::string valueText(const std::string& text, const char* type = nullptr) {
+    tia::TypeDescriptor t;
+    if (type) t = tia::describeType(type);
+    const tia::ParsedValue v = tia::parseValue(text, type ? &t : nullptr);
+    std::string s = v.kind + " ";
+    if (v.kind == "bool") s += v.boolean ? "true" : "false";
+    else if (v.kind == "int") s += v.unsignedBig ? std::to_string(v.unsignedValue) + "u" : std::to_string(v.integer);
+    else if (v.kind == "real") {
+        char buf[40];
+        std::snprintf(buf, sizeof buf, "%g", v.real);
+        s += buf;
+    } else if (v.kind == "duration" || v.kind == "time_of_day" || v.kind == "date_and_time") s += std::to_string(v.ns);
+    else if (v.kind == "date") s += std::to_string(v.days);
+    else if (v.kind == "string") s += "[" + v.string + "]";
+    else if (v.kind == "char") s += std::to_string(v.integer) + "[" + v.string + "]";
+    return s;
+}
+
+void testParseValue() {
+    // as found in the test projects and samples
+    CHECK_EQ(valueText("true"), "bool true");
+    CHECK_EQ(valueText("FALSE"), "bool false");
+    CHECK_EQ(valueText("False"), "bool false");
+    CHECK_EQ(valueText("16#0B", "Byte"), "int 11");
+    CHECK_EQ(valueText("W#16#8600", "Word"), "int 34304");
+    CHECK_EQ(valueText("DW#16#03000000", "DWord"), "int 50331648");
+    CHECK_EQ(valueText("4294967295 ", "UDInt"), "int 4294967295");
+    CHECK_EQ(valueText("-3.402822E+38", "Real"), "real -3.40282e+38");
+    CHECK_EQ(valueText("0.1", "Real"), "real 0.1");
+    CHECK_EQ(valueText("1", "Real"), "real 1");
+    CHECK_EQ(valueText("D#1990-01-31", "Date"), "date 30");
+    CHECK_EQ(valueText("T#5s", "Time"), "duration 5000000000");
+    CHECK_EQ(valueText("T#2MS"), "duration 2000000");
+    CHECK_EQ(valueText("'Hello world'", "String"), "string [Hello world]");
+    CHECK_EQ(valueText("' '", "Char"), "char 32[ ]");
+    // the rest of the notation
+    CHECK_EQ(valueText("-5"), "int -5");
+    CHECK_EQ(valueText("2#1010_1010"), "int 170");
+    CHECK_EQ(valueText("8#17"), "int 15");
+    CHECK_EQ(valueText("INT#-7"), "int -7");
+    CHECK_EQ(valueText("LW#16#FFFF_FFFF_FFFF_FFFF"), "int 18446744073709551615u");
+    CHECK_EQ(valueText("REAL#2"), "real 2");
+    CHECK_EQ(valueText("1.0E+3"), "real 1000");
+    CHECK_EQ(valueText("LREAL#-1.5e-3"), "real -0.0015");
+    CHECK_EQ(valueText("BOOL#1"), "bool true");
+    CHECK_EQ(valueText("1", "Bool"), "bool true");
+    CHECK_EQ(valueText("T#1D_2H_3M_4S_5MS"), "duration 93784005000000");
+    CHECK_EQ(valueText("T#-1.5S"), "duration -1500000000");
+    CHECK_EQ(valueText("LTIME#10US_5NS"), "duration 10005");
+    CHECK_EQ(valueText("S5T#10S"), "duration 10000000000");
+    CHECK_EQ(valueText("5000", "Time"), "duration 5000000000");
+    CHECK_EQ(valueText("TOD#12:30:15.250"), "time_of_day 45015250000000");
+    CHECK_EQ(valueText("LTOD#00:00:00.000000001"), "time_of_day 1");
+    CHECK_EQ(valueText("DATE#2000-02-29"), "date 3711");
+    CHECK_EQ(valueText("DT#1990-01-01-00:00:00"), "date_and_time 631152000000000000");
+    CHECK_EQ(valueText("LDT#1970-01-01-00:00:01.5"), "date_and_time 1500000000");
+    CHECK_EQ(valueText("'It$'s $$5$N'"), "string [It's $5\n]");
+    CHECK_EQ(valueText("'$41$42'"), "string [AB]");
+    CHECK_EQ(valueText("WSTRING#'$00E9'"), "string [\xC3\xA9]");
+    CHECK_EQ(valueText("CHAR#'A'"), "char 65[A]");
+    // what is not a value of these forms
+    CHECK_EQ(valueText("T#5X"), "unknown ");
+    CHECK_EQ(valueText("16#G"), "unknown ");
+    CHECK_EQ(valueText("D#1990-13-01"), "unknown ");
+    CHECK_EQ(valueText("TOD#25:00:00"), "unknown ");
+    CHECK_EQ(valueText("'open"), "unknown ");
+    CHECK_EQ(valueText("'AB'", "Char"), "unknown ");
+    CHECK_EQ(valueText("99999999999999999999999"), "unknown ");
+    CHECK_EQ(valueText("FOO#1"), "unknown ");
+    CHECK_EQ(valueText("DT#2089-12-31-23:59:59"), "date_and_time 3786911999000000000");
+    CHECK_EQ(valueText("DT#9999-12-31-23:59:59"), "unknown ");
+    CHECK_EQ(valueText("T#999999999D"), "unknown ");
+    CHECK_EQ(valueText("-9223372036854775808"), "int -9223372036854775808");
+    CHECK_EQ(valueText("-9223372036854775809"), "unknown ");
+    CHECK_EQ(valueText(""), "unknown ");
+    CHECK_EQ(tia::parseValue("  16#FF ").text, "16#FF");
+}
+
 void testGraphicNetworks() {
     const std::vector<tia::CodeReference> refs = testReferences();
     std::vector<tia::NetworkElement> elements;
@@ -3141,6 +3220,7 @@ int main() {
     testGraphicNetworks();
     testOperandLinks();
     testDescribeType();
+    testParseValue();
     testCodeProject();
     testCodeProtectionOverTime();
     testCodeCurrentNames();

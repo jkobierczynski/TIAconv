@@ -4,6 +4,10 @@
 #include "programjson.hpp"
 
 #include <cctype>
+#include <climits>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -57,6 +61,18 @@ public:
         out_ << n;
     }
     void value(int n) { value(static_cast<int64_t>(n)); }
+    // the shortest text that reads back as the same double
+    void value(double x) {
+        before();
+        char buf[40];
+        for (int precision = 6; precision <= 17; ++precision) {
+            std::snprintf(buf, sizeof buf, "%.*g", precision, x);
+            if (std::strtod(buf, nullptr) == x) break;
+        }
+        std::string t = buf;
+        if (t.find_first_of(".eE") == std::string::npos) t += ".0";
+        out_ << t;
+    }
     void null() {
         before();
         out_ << "null";
@@ -227,6 +243,356 @@ TypeDescriptor describe(const std::string& dataType, int depth);
 }  // namespace
 
 TypeDescriptor describeType(const std::string& dataType) { return describe(dataType, 0); }
+
+namespace {
+
+std::string upper(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Digits of `base` with "_" between them, into `out`; false when there are
+// none or another character, or the value does not fit 64 bits.
+bool digitsOf(const std::string& t, int base, uint64_t& out) {
+    out = 0;
+    bool any = false;
+    for (char c : t) {
+        if (c == '_') continue;
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return false;
+        if (d >= base) return false;
+        if (out > (UINT64_MAX - static_cast<uint64_t>(d)) / static_cast<uint64_t>(base)) return false;
+        out = out * static_cast<uint64_t>(base) + static_cast<uint64_t>(d);
+        any = true;
+    }
+    return any;
+}
+
+// "16#FF", "2#1010", "123", "-5": a whole number.
+bool wholeOf(std::string t, ParsedValue& v) {
+    bool negative = false;
+    if (!t.empty() && (t[0] == '-' || t[0] == '+')) {
+        negative = t[0] == '-';
+        t = t.substr(1);
+    }
+    int base = 10;
+    const size_t hash = t.find('#');
+    if (hash != std::string::npos) {
+        const std::string b = t.substr(0, hash);
+        if (b == "16") base = 16;
+        else if (b == "8") base = 8;
+        else if (b == "2") base = 2;
+        else return false;
+        t = t.substr(hash + 1);
+    }
+    uint64_t u = 0;
+    if (!digitsOf(t, base, u)) return false;
+    v.kind = "int";
+    if (negative) {
+        if (u > static_cast<uint64_t>(INT64_MAX) + 1) return false;
+        v.integer = u == static_cast<uint64_t>(INT64_MAX) + 1 ? INT64_MIN : -static_cast<int64_t>(u);
+    } else if (u > static_cast<uint64_t>(INT64_MAX)) {
+        v.unsignedBig = true;
+        v.unsignedValue = u;
+    } else {
+        v.integer = static_cast<int64_t>(u);
+    }
+    return true;
+}
+
+bool realOf(const std::string& t, ParsedValue& v) {
+    // a real has a point or an exponent; a whole number too large for 64
+    // bits is not one
+    if (t.empty() || t.find_first_of(".eE") == std::string::npos) return false;
+    std::string c;
+    for (char ch : t)
+        if (ch != '_') c += ch;
+    char* end = nullptr;
+    const double x = std::strtod(c.c_str(), &end);
+    if (end == c.c_str() || *end || !std::isfinite(x)) return false;
+    // only what TIA Portal writes: digits, one point, an exponent
+    for (char ch : c)
+        if (!(std::isdigit(static_cast<unsigned char>(ch)) || ch == '.' || ch == 'e' || ch == 'E' || ch == '+' || ch == '-'))
+            return false;
+    v.kind = "real";
+    v.real = x;
+    return true;
+}
+
+// T#1D_2H_3M_4S_5MS, T#-5s, T#1.5S, LT#10NS: into nanoseconds.
+bool durationOf(std::string t, ParsedValue& v) {
+    bool negative = false;
+    if (!t.empty() && (t[0] == '-' || t[0] == '+')) {
+        negative = t[0] == '-';
+        t = t.substr(1);
+    }
+    const std::string u = upper(t);
+    long double total = 0;
+    size_t i = 0;
+    bool any = false;
+    while (i < u.size()) {
+        if (u[i] == '_') {
+            ++i;
+            continue;
+        }
+        size_t j = i;
+        while (j < u.size() && (std::isdigit(static_cast<unsigned char>(u[j])) || u[j] == '.')) ++j;
+        if (j == i) return false;
+        const long double n = std::strtold(u.substr(i, j - i).c_str(), nullptr);
+        long double unit = 0;
+        if (u.compare(j, 2, "MS") == 0) unit = 1e6L, j += 2;
+        else if (u.compare(j, 2, "US") == 0) unit = 1e3L, j += 2;
+        else if (u.compare(j, 2, "NS") == 0) unit = 1, j += 2;
+        else if (j < u.size() && u[j] == 'D') unit = 86400e9L, j += 1;
+        else if (j < u.size() && u[j] == 'H') unit = 3600e9L, j += 1;
+        else if (j < u.size() && u[j] == 'M') unit = 60e9L, j += 1;
+        else if (j < u.size() && u[j] == 'S') unit = 1e9L, j += 1;
+        else return false;
+        total += n * unit;
+        any = true;
+        i = j;
+    }
+    if (!any || total > 9.2e18L) return false;
+    v.kind = "duration";
+    v.ns = static_cast<int64_t>(total + 0.5L) * (negative ? -1 : 1);
+    return true;
+}
+
+// Days from 1970-01-01 to a date (proleptic Gregorian).
+int64_t daysFromCivil(int64_t y, int64_t m, int64_t d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+bool numberRun(const std::string& t, size_t& i, size_t maxDigits, int64_t& out) {
+    size_t j = i;
+    while (j < t.size() && j - i < maxDigits && std::isdigit(static_cast<unsigned char>(t[j]))) ++j;
+    if (j == i) return false;
+    out = std::strtoll(t.substr(i, j - i).c_str(), nullptr, 10);
+    i = j;
+    return true;
+}
+
+bool dateAt(const std::string& t, size_t& i, int64_t& days) {
+    int64_t y, m, d;
+    if (!numberRun(t, i, 4, y) || i >= t.size() || t[i++] != '-' || !numberRun(t, i, 2, m) || i >= t.size() ||
+        t[i++] != '-' || !numberRun(t, i, 2, d))
+        return false;
+    if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+    days = daysFromCivil(y, m, d);
+    return true;
+}
+
+// hh:mm[:ss[.fraction]] into nanoseconds since midnight
+bool timeAt(const std::string& t, size_t& i, int64_t& ns) {
+    int64_t h, m, s = 0;
+    if (!numberRun(t, i, 2, h) || i >= t.size() || t[i++] != ':' || !numberRun(t, i, 2, m)) return false;
+    if (i < t.size() && t[i] == ':') {
+        ++i;
+        if (!numberRun(t, i, 2, s)) return false;
+    }
+    int64_t frac = 0;
+    if (i < t.size() && t[i] == '.') {
+        ++i;
+        int64_t scale = 100000000;
+        size_t digits = 0;
+        while (i < t.size() && std::isdigit(static_cast<unsigned char>(t[i]))) {
+            if (digits++ < 9) {
+                frac += (t[i] - '0') * scale;
+                scale /= 10;
+            }
+            ++i;
+        }
+        if (!digits) return false;
+    }
+    if (h > 23 || m > 59 || s > 59) return false;
+    ns = ((h * 60 + m) * 60 + s) * 1000000000LL + frac;
+    return true;
+}
+
+// 'text' with $ escapes: $$ $' $L $N $P $R $T and $hh (two hex digits,
+// four for a WString)
+bool stringOf(const std::string& t, bool wide, ParsedValue& v) {
+    if (t.size() < 2 || t.front() != '\'' || t.back() != '\'') return false;
+    std::string out;
+    for (size_t i = 1; i + 1 < t.size(); ++i) {
+        const char c = t[i];
+        if (c == '\'') return false;  // a lone quote inside
+        if (c != '$') {
+            out += c;
+            continue;
+        }
+        if (i + 2 > t.size() - 1) return false;
+        const char e = static_cast<char>(std::toupper(static_cast<unsigned char>(t[++i])));
+        if (e == '$') out += '$';
+        else if (e == '\'') out += '\'';
+        else if (e == 'L' || e == 'N') out += '\n';
+        else if (e == 'P') out += '\f';
+        else if (e == 'R') out += '\r';
+        else if (e == 'T') out += '\t';
+        else {
+            const size_t n = wide ? 4 : 2;
+            if (i + n > t.size() - 1) return false;
+            uint64_t code = 0;
+            if (!digitsOf(t.substr(i, n), 16, code)) return false;
+            i += n - 1;
+            // as UTF-8
+            if (code < 0x80) {
+                out += static_cast<char>(code);
+            } else if (code < 0x800) {
+                out += static_cast<char>(0xC0 | (code >> 6));
+                out += static_cast<char>(0x80 | (code & 0x3F));
+            } else {
+                out += static_cast<char>(0xE0 | (code >> 12));
+                out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                out += static_cast<char>(0x80 | (code & 0x3F));
+            }
+        }
+    }
+    v.kind = "string";
+    v.string = out;
+    return true;
+}
+
+// The code of a one-character string (UTF-8 decoded); -1 when it is not one.
+int64_t charCode(const std::string& s) {
+    if (s.empty()) return -1;
+    const unsigned char c = static_cast<unsigned char>(s[0]);
+    if (c < 0x80) return s.size() == 1 ? c : -1;
+    if ((c & 0xE0) == 0xC0 && s.size() == 2) return ((c & 0x1F) << 6) | (s[1] & 0x3F);
+    if ((c & 0xF0) == 0xE0 && s.size() == 3) return ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+    return -1;
+}
+
+}  // namespace
+
+ParsedValue parseValue(const std::string& text, const TypeDescriptor* type) {
+    ParsedValue v;
+    v.text = trim(text);
+    v.kind = "unknown";
+    std::string t = v.text;
+    // the type the value is for, where it is elementary or a string
+    std::string want;
+    if (type && (type->kind == "elementary" || type->kind == "string")) want = upper(type->name);
+    // a type in front: INT#5, REAL#1.5, W#16#FF, DT#..., T#5S, STRING#'a'
+    std::string prefix;
+    const size_t hash = t.find('#');
+    if (hash != std::string::npos && hash > 0 && t[0] != '\'' && !std::isdigit(static_cast<unsigned char>(t[0])) &&
+        t[0] != '-' && t[0] != '+') {
+        prefix = upper(t.substr(0, hash));
+        t = t.substr(hash + 1);
+    }
+    static const std::set<std::string> durations = {"T", "TIME", "LT", "LTIME", "S5T", "S5TIME"};
+    static const std::set<std::string> bitsOrInts = {
+        "B", "W", "DW", "LW", "BYTE", "WORD", "DWORD", "LWORD", "SINT", "INT", "DINT", "LINT",
+        "USINT", "UINT", "UDINT", "ULINT"};
+    ParsedValue p = v;
+    if (!prefix.empty()) {
+        if (durations.count(prefix)) {
+            if (durationOf(t, p)) return p;
+        } else if (prefix == "D" || prefix == "DATE") {
+            size_t i = 0;
+            int64_t days = 0;
+            if (dateAt(t, i, days) && i == t.size()) {
+                p.kind = "date";
+                p.days = days - daysFromCivil(1990, 1, 1);
+                return p;
+            }
+        } else if (prefix == "TOD" || prefix == "TIME_OF_DAY" || prefix == "LTOD" || prefix == "LTIME_OF_DAY") {
+            size_t i = 0;
+            int64_t ns = 0;
+            if (timeAt(t, i, ns) && i == t.size()) {
+                p.kind = "time_of_day";
+                p.ns = ns;
+                return p;
+            }
+        } else if (prefix == "DT" || prefix == "DATE_AND_TIME" || prefix == "LDT" || prefix == "DTL") {
+            size_t i = 0;
+            int64_t days = 0, ns = 0;
+            // nanoseconds since 1970 hold the years 1677 to 2262 (LDT's range)
+            if (dateAt(t, i, days) && i < t.size() && t[i++] == '-' && timeAt(t, i, ns) && i == t.size() &&
+                days > -106000 && days < 106000) {
+                p.kind = "date_and_time";
+                p.ns = days * 86400000000000LL + ns;
+                return p;
+            }
+        } else if (bitsOrInts.count(prefix)) {
+            if (wholeOf(t, p)) return p;
+        } else if (prefix == "REAL" || prefix == "LREAL") {
+            if (wholeOf(t, p) || realOf(t, p)) {
+                if (p.kind == "int") {
+                    p.real = static_cast<double>(p.integer);
+                    p.kind = "real";
+                }
+                return p;
+            }
+        } else if (prefix == "BOOL") {
+            const std::string u = upper(t);
+            if (u == "TRUE" || u == "1" || u == "FALSE" || u == "0") {
+                p.kind = "bool";
+                p.boolean = u == "TRUE" || u == "1";
+                return p;
+            }
+        } else if (prefix == "STRING" || prefix == "WSTRING" || prefix == "CHAR" || prefix == "WCHAR") {
+            if (stringOf(t, prefix[0] == 'W', p)) {
+                if (prefix == "CHAR" || prefix == "WCHAR") {
+                    const int64_t code = charCode(p.string);
+                    if (code < 0) return v;
+                    p.kind = "char";
+                    p.integer = code;
+                }
+                return p;
+            }
+        }
+        return v;
+    }
+    const std::string u = upper(t);
+    if (u == "TRUE" || u == "FALSE") {
+        p.kind = "bool";
+        p.boolean = u == "TRUE";
+        return p;
+    }
+    if (!t.empty() && t[0] == '\'') {
+        if (!stringOf(t, want == "WSTRING" || want == "WCHAR", p)) return v;
+        if (want == "CHAR" || want == "WCHAR") {
+            const int64_t code = charCode(p.string);
+            if (code < 0) return v;
+            p.kind = "char";
+            p.integer = code;
+        }
+        return p;
+    }
+    if (wholeOf(t, p)) {
+        if (want == "REAL" || want == "LREAL") {
+            p.kind = "real";
+            p.real = p.unsignedBig ? static_cast<double>(p.unsignedValue) : static_cast<double>(p.integer);
+            p.integer = 0;
+            p.unsignedBig = false;
+        } else if (want == "BOOL" && !p.unsignedBig && (p.integer == 0 || p.integer == 1)) {
+            p.kind = "bool";
+            p.boolean = p.integer == 1;
+            p.integer = 0;
+        } else if ((want == "TIME" || want == "S5TIME") && !p.unsignedBig) {
+            p.kind = "duration";  // a number for a Time counts milliseconds
+            p.ns = p.integer * 1000000;
+            p.integer = 0;
+        } else if (want == "LTIME" && !p.unsignedBig) {
+            p.kind = "duration";  // and for an LTime nanoseconds
+            p.ns = p.integer;
+            p.integer = 0;
+        }
+        return p;
+    }
+    if (realOf(t, p)) return p;
+    return v;
+}
 
 namespace {
 
@@ -427,6 +793,95 @@ private:
     std::map<std::string, Found> found_;
 };
 
+void parsedValue(Json& j, const ParsedValue& v) {
+    j.beginObject(true);
+    j.key("kind").value(v.kind);
+    j.key("text").value(v.text);
+    j.key("bool");
+    if (v.kind == "bool") j.value(v.boolean);
+    else j.null();
+    j.key("int");
+    if (v.kind == "int" || v.kind == "char") {
+        if (v.unsignedBig) j.value(v.unsignedValue);
+        else j.value(v.integer);
+    } else {
+        j.null();
+    }
+    j.key("real");
+    if (v.kind == "real") j.value(v.real);
+    else j.null();
+    j.key("ns");
+    if (v.kind == "duration" || v.kind == "time_of_day" || v.kind == "date_and_time") j.value(v.ns);
+    else j.null();
+    j.key("days");
+    if (v.kind == "date") j.value(v.days);
+    else j.null();
+    j.key("string");
+    if (v.kind == "string" || v.kind == "char") j.value(v.string);
+    else j.null();
+    j.endObject();
+}
+
+// The default value of an elementary type or a string; false for others.
+bool defaultValue(const TypeDescriptor& t, ParsedValue& v) {
+    v = ParsedValue();
+    if (t.kind == "string") {
+        v.kind = "string";
+        return true;
+    }
+    if (t.kind != "elementary") return false;
+    const std::string n = t.name;
+    if (n == "Bool") v.kind = "bool";
+    else if (n == "Real" || n == "LReal") v.kind = "real";
+    else if (n == "Time" || n == "LTime" || n == "S5Time") v.kind = "duration";
+    else if (n == "Date") v.kind = "date";
+    else if (n == "Time_Of_Day" || n == "TOD" || n == "LTime_Of_Day" || n == "LTOD") v.kind = "time_of_day";
+    else if (n == "Date_And_Time" || n == "DT") {
+        v.kind = "date_and_time";  // DT#1990-01-01-00:00:00
+        v.ns = 7305LL * 86400000000000LL;
+    } else if (n == "LDT") v.kind = "date_and_time";  // LDT#1970-01-01-00:00:00
+    else if (n == "Char" || n == "WChar") {
+        v.kind = "char";
+        v.string = std::string(1, '\0');
+    } else v.kind = "int";
+    return true;
+}
+
+// Where the value of a named constant comes from: the user constants of the
+// PLC and the local constants of the block.
+struct ConstantValues {
+    std::map<std::string, const Constant*> globals;
+    std::map<std::string, const BlockMember*> locals;
+};
+
+// The value of an operand or reference that is a constant; false for
+// anything else or a constant whose value is not known.
+bool constantValue(const std::string& kind, const std::string& text, const std::string& dataType,
+                   const ConstantValues& cv, ParsedValue& out) {
+    if (kind == "constant") {
+        const TypeDescriptor t = describeType(dataType);
+        out = parseValue(text, &t);
+        return true;
+    }
+    if (kind == "user constant" && text.size() >= 2 && text.front() == '"' && text.back() == '"') {
+        auto it = cv.globals.find(text.substr(1, text.size() - 2));
+        if (it == cv.globals.end()) return false;
+        const TypeDescriptor t = describeType(it->second->dataType);
+        out = parseValue(it->second->value, &t);
+        return true;
+    }
+    if (kind == "local constant" && text.size() >= 2 && text[0] == '#') {
+        auto it = cv.locals.find(text.substr(1));
+        if (it == cv.locals.end()) return false;
+        const TypeDescriptor t = describeType(it->second->dataType);
+        // a constant with the default value of its type has none stored
+        if (!it->second->hasStartValue) return defaultValue(t, out);
+        out = parseValue(it->second->startValue, &t);
+        return true;
+    }
+    return false;
+}
+
 // The local constants of a block's interface: name -> value.
 std::map<std::string, std::string> localConstants(const std::vector<BlockMember>& declarations) {
     std::map<std::string, std::string> out;
@@ -454,6 +909,9 @@ void members(Json& j, const std::vector<BlockMember>& list, Types& types,
         else j.null();
         j.key("start_value");
         if (m.hasStartValue) j.value(m.startValue);
+        else j.null();
+        j.key("start");
+        if (m.hasStartValue) parsedValue(j, parseValue(m.startValue, &d));
         else j.null();
         j.key("retain").value(isRetain(m));
         const MemberAccess a = memberAccess(m, outer);
@@ -515,7 +973,7 @@ std::vector<std::string> reasonsFor(const BlockInfo& info, const BlockCode* code
     return out;
 }
 
-void element(Json& j, const NetworkElement& e) {
+void element(Json& j, const NetworkElement& e, const ConstantValues& cv) {
     j.beginObject();
     j.key("uid").value(static_cast<uint64_t>(e.uid));
     j.key("kind").value(e.kind);
@@ -559,6 +1017,10 @@ void element(Json& j, const NetworkElement& e) {
             j.key("data_block").text(o.dataBlock);
             j.key("address").text(o.address);
             j.key("pin_type").text(o.pinType);
+            j.key("value");
+            ParsedValue pv;
+            if (constantValue(o.kind, o.text, o.dataType, cv, pv)) parsedValue(j, pv);
+            else j.null();
             j.endObject();
         }
         j.endArray();
@@ -568,7 +1030,7 @@ void element(Json& j, const NetworkElement& e) {
     j.endObject();
 }
 
-void blockCode(Json& j, const BlockCode& c) {
+void blockCode(Json& j, const BlockCode& c, const ConstantValues& cv) {
     j.beginObject();
     j.key("networks");
     j.beginArray();
@@ -586,7 +1048,7 @@ void blockCode(Json& j, const BlockCode& c) {
         j.endArray();
         j.key("elements");
         j.beginArray();
-        for (const auto& e : n.elements) element(j, e);
+        for (const auto& e : n.elements) element(j, e, cv);
         j.endArray();
         j.key("notes").strings(n.notes);
         j.endObject();
@@ -602,6 +1064,10 @@ void blockCode(Json& j, const BlockCode& c) {
         j.key("kind_stored").text(r.kindStored);
         j.key("text").value(r.text);
         j.key("data_type").text(r.dataType);
+        j.key("value");
+        ParsedValue pv;
+        if (constantValue(r.kind, r.text, r.dataType, cv, pv)) parsedValue(j, pv);
+        else j.null();
         j.key("data_block").text(r.container);
         j.key("declared_as").text(r.declaredAs);
         j.endObject();
@@ -725,6 +1191,13 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
         j.key("table").text(c.table);
         j.key("data_type").text(c.dataType);
         j.key("value").text(c.value);
+        j.key("parsed");
+        if (!c.value.empty()) {
+            const TypeDescriptor t = describeType(c.dataType);
+            parsedValue(j, parseValue(c.value, &t));
+        } else {
+            j.null();
+        }
         j.key("kind").text(c.kind);
         j.key("system").value(c.system);
         j.key("comment").text(c.comment);
@@ -828,7 +1301,15 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
         }
         else j.null();
         j.key("code");
-        if (open) blockCode(j, *c);
+        if (open) {
+            ConstantValues cv;
+            for (const Constant& k : prog.constants)
+                if (k.plc == plc) cv.globals[k.name] = &k;
+            if (b.declarationsRead)
+                for (const BlockMember& m : b.declarations)
+                    if (m.section == "Constant") cv.locals[m.name] = &m;
+            blockCode(j, *c, cv);
+        }
         else j.null();
         j.endObject();
         if (open)

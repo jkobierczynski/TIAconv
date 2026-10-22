@@ -10,6 +10,11 @@
   read from their definitions, and the system types used (TON_TIME, CTU_INT,
   DTL) with their members. The schema is written by
   `tools/program_schema.py`.
+- Program export: values parsed. Members have `start`, constants
+  `parsed`, constant operands and references `value`: booleans, whole
+  numbers in every base, reals, durations in nanoseconds, dates, times of
+  day, dates and times, strings and characters with their escapes decoded;
+  user and local constants resolved to their values.
 
 - `--program-json DIR`: the program of each PLC as one JSON file
   (`<PLC>.json`), as input for a simulator: tags, constants, data blocks

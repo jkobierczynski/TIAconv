@@ -52,6 +52,31 @@ struct TypeDescriptor {
 
 TypeDescriptor describeType(const std::string& dataType);
 
+// A value as TIA Portal writes it (a start value, a constant, a literal in
+// code), parsed. `kind` is "bool", "int" (also bit strings and characters
+// as their code), "real", "duration" (`ns`), "date" (`days` since
+// 1990-01-01), "time_of_day" (`ns` since midnight), "date_and_time" (`ns`
+// since 1970-01-01), "string", "char" (`string` and its code in `integer`),
+// or "unknown". The type, where known, settles what the text alone does
+// not: "1" for a Real is 1.0, "5000" for a Time is 5 s, 'A' for a Char a
+// character.
+struct ParsedValue {
+    std::string kind;
+    std::string text;  // as written, without blanks around it
+    bool boolean = false;
+    // int: the value; when `unsignedBig` it is above the range of int64_t
+    // and `unsignedValue` holds it (ULInt, LWord)
+    int64_t integer = 0;
+    bool unsignedBig = false;
+    uint64_t unsignedValue = 0;
+    double real = 0;
+    int64_t ns = 0;
+    int64_t days = 0;
+    std::string string;
+};
+
+ParsedValue parseValue(const std::string& text, const TypeDescriptor* type = nullptr);
+
 struct ProgramJsonContext {
     std::string toolVersion;
     std::string source;     // the file read, as given

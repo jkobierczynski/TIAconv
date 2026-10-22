@@ -220,6 +220,7 @@
           "table",
           "data_type",
           "value",
+          "parsed",
           "kind",
           "system",
           "comment"
@@ -244,6 +245,16 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "parsed": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/value"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "kind": {
@@ -558,6 +569,81 @@
       },
       "description": "a data type taken apart"
     },
+    "value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "text",
+        "bool",
+        "int",
+        "real",
+        "ns",
+        "days",
+        "string"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "bool",
+            "int",
+            "real",
+            "duration",
+            "date",
+            "time_of_day",
+            "date_and_time",
+            "string",
+            "char",
+            "unknown"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "description": "as written (empty for the default value of a constant that stores none)"
+        },
+        "bool": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "int": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "int: the value, also of a bit string (16#FF: 255); char: its code"
+        },
+        "real": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "duration in nanoseconds; time_of_day: since midnight; date_and_time: since 1970-01-01"
+        },
+        "days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "date: since 1990-01-01"
+        },
+        "string": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "string, char: the characters, escapes ($', $N, $hh) decoded, as UTF-8"
+        }
+      },
+      "description": "a value parsed"
+    },
     "member": {
       "type": "object",
       "additionalProperties": false,
@@ -569,6 +655,7 @@
         "offset",
         "offset_bits",
         "start_value",
+        "start",
         "retain",
         "accessible_from_hmi",
         "writable_from_hmi",
@@ -619,6 +706,17 @@
           ],
           "description": "as written in the project; null: the default of the type (or of an enclosing structure)"
         },
+        "start": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/value"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "start_value parsed; null with it"
+        },
         "retain": {
           "type": "boolean"
         },
@@ -664,7 +762,8 @@
         "data_type_from_pin",
         "data_block",
         "address",
-        "pin_type"
+        "pin_type",
+        "value"
       ],
       "properties": {
         "text": {
@@ -718,6 +817,17 @@
             "null"
           ],
           "description": "the type the pin takes, where tiaconv knows it"
+        },
+        "value": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/value"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "a constant (literal, local or user constant): its value"
         }
       }
     },
@@ -920,6 +1030,7 @@
         "kind_stored",
         "text",
         "data_type",
+        "value",
         "data_block",
         "declared_as"
       ],
@@ -944,6 +1055,17 @@
             "string",
             "null"
           ]
+        },
+        "value": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/value"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "a constant (literal, local or user constant): its value"
         },
         "data_block": {
           "type": [

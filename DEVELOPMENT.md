@@ -271,7 +271,16 @@ format is only fixed when it is released.
    structured type, `Array[*]`, the sizes of the system number types
    (`Hw_*`, `OB_*`, `Pip`: from the documentation, not from a project).
 2. **Typed values** (about 1 day). Start values and literals parsed:
-   `T#5S` as 5 000 000 µs, `16#FF` as 255, reals, strings, dates.
+   `T#5S` as 5 000 000 000 ns, `16#FF` as 255, reals, strings, dates.
+   *Done (unreleased):* `parseValue` with unit tests for every form of
+   the notation; `start` on members, `parsed` on constants, `value` on
+   literal and constant operands and references (user and local constants
+   resolved). All 1400+ values of the fixtures and of the samples parse;
+   the tests pin those of `User_data_type_1`, the user constants of
+   `s12_constants`, and the literals and the constant `ZZK` in the graphs
+   of `s14_code_rewritten` and `s15_motor`. Durations are in nanoseconds,
+   so LTime fits. Not met in a project yet: TOD, DT, LDT, WString, arrays
+   with start values per element.
 3. **One code tree for SCL, LAD and FBD** (about 4–6 days). Statements and
    expressions with operands as `ref_id`s: SCL from the stored tokens,
    LAD and FBD from the graph in the order the parts are evaluated. STL as

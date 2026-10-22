@@ -1019,6 +1019,56 @@ size_t checkTypes(const jsontest::Value& members, std::vector<std::string>& bad)
     return n;
 }
 
+const jsontest::Value* named(const jsontest::Value& list, const std::string& name) {
+    for (const auto& x : list.items)
+        if (x["name"].s == name) return &x;
+    return nullptr;
+}
+
+// Every parsed value in an export was understood; returns how many there are.
+size_t checkValues(const jsontest::Value& v, std::vector<std::string>& bad, const std::string& key = std::string()) {
+    size_t n = 0;
+    if (v.type == jsontest::Value::Object) {
+        const bool parsed = key == "start" || key == "parsed" || key == "value";
+        if (parsed && v.get("kind") && v.get("text")) {
+            ++n;
+            if (v["kind"].s == "unknown") bad.push_back(key + ": " + v["text"].s);
+        }
+        for (const auto& m : v.members) n += checkValues(m.second, bad, m.first);
+    } else if (v.type == jsontest::Value::Array) {
+        for (const auto& i : v.items) n += checkValues(i, bad);
+    }
+    return n;
+}
+
+// The parsed value of `key` in `v` as "kind:int/real/ns/days/string".
+std::string valueOf(const jsontest::Value& v) {
+    if (v.type != jsontest::Value::Object) return "null";
+    std::string s = v["kind"].s + ":";
+    if (v["int"].type != jsontest::Value::Null) s += std::to_string(v["int"].i());
+    if (v["real"].type != jsontest::Value::Null) s += std::to_string(v["real"].number);
+    if (v["ns"].type != jsontest::Value::Null) s += std::to_string(v["ns"].i());
+    if (v["days"].type != jsontest::Value::Null) s += std::to_string(v["days"].i());
+    if (v["bool"].type != jsontest::Value::Null) s += v["bool"].b ? "true" : "false";
+    if (v["string"].type != jsontest::Value::Null && v["kind"].s == "string") s += v["string"].s;
+    return s;
+}
+
+// The parsed values of the operands of `block`: "network/pin text value".
+std::vector<std::string> operandValues(const jsontest::Value& doc, const std::string& block) {
+    std::vector<std::string> out;
+    const jsontest::Value* b = named(doc["blocks"], block);
+    if (!b) return out;
+    for (const auto& n : (*b)["code"]["networks"].items)
+        for (const auto& e : n["elements"].items)
+            for (const auto& p : e["pins"].items)
+                for (const auto& o : p["operands"].items)
+                    if (o["value"].type == jsontest::Value::Object)
+                        out.push_back(std::to_string(n["number"].i()) + "/" + p["name"].s + " " + o["text"].s + " " +
+                                      valueOf(o["value"]));
+    return out;
+}
+
 std::string readFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     std::ostringstream o;
@@ -1052,11 +1102,6 @@ jsontest::Value exportOf(const ProgramExport& e, const std::string& plc, const s
     return jsontest::parse(o.str());
 }
 
-const jsontest::Value* named(const jsontest::Value& list, const std::string& name) {
-    for (const auto& x : list.items)
-        if (x["name"].s == name) return &x;
-    return nullptr;
-}
 
 void testProgramJson() {
     current = "program schema";
@@ -1080,7 +1125,7 @@ void testProgramJson() {
     for (const auto& d : std::filesystem::directory_iterator(TIACONV_FIXTURES))
         if (d.is_directory()) fixtures.push_back(d.path().filename().string());
     std::sort(fixtures.begin(), fixtures.end());
-    size_t files = 0, operandsSeen = 0, typesSeen = 0;
+    size_t files = 0, operandsSeen = 0, typesSeen = 0, valuesSeen = 0;
     for (const std::string& name : fixtures) {
         const ProgramExport e = loadExport(name);
         for (const std::string& plc : tia::programPlcs(e.prog)) {
@@ -1115,6 +1160,10 @@ void testProgramJson() {
             for (const auto& b : doc["blocks"].items)
                 if (b["interface"].type == jsontest::Value::Array) described += checkTypes(b["interface"], badTypes);
             CHECK(badTypes.empty());
+            std::vector<std::string> badValues;
+            valuesSeen += checkValues(doc, badValues);
+            CHECK(badValues.empty());
+            for (const auto& bv : badValues) std::fprintf(stderr, "    %s\n", bv.c_str());
             for (const auto& bt : badTypes) std::fprintf(stderr, "    %s\n", bt.c_str());
             typesSeen += described;
             for (const auto& b : e.prog.blockList)
@@ -1176,6 +1225,7 @@ void testProgramJson() {
     CHECK(files >= 30);
     CHECK(operandsSeen >= 85);
     CHECK(typesSeen >= 600);
+    CHECK(valuesSeen >= 1400);
 
     // what the TIA Portal sessions set
     {
@@ -1193,6 +1243,10 @@ void testProgramJson() {
         std::vector<std::string> instructions;
         for (const auto& i : doc["instructions"].items) instructions.push_back(i["name"].s + " " + i["version"].s);
         CHECK(instructions == (std::vector<std::string>{"CTU 1.0", "TON 1.0"}));
+        // literals and a user constant at the pins, with their values
+        CHECK(operandValues(doc, "Main") == (std::vector<std::string>{"3/in2 100 int:100", "4/in2 5 int:5",
+                                                                       "5/PT T#5S duration:5000000000",
+                                                                       "11/in \"ZZK\" int:7"}));
         // an operand in the graph, linked
         const jsontest::Value* main = named(doc["blocks"], "Main");
         bool found = false;
@@ -1233,8 +1287,21 @@ void testProgramJson() {
         CHECK(ton && (*ton)["kind"].s == "system_type" &&
               tonMembers == (std::vector<std::string>{"ST Time/32", "PT Time/32", "ET Time/32", "RU Bool/1", "IN Bool/1",
                                                        "Q Bool/1"}));
+        CHECK(operandValues(doc, "MotorLAD") ==
+              (std::vector<std::string>{"2/PT T#5S duration:5000000000", "3/in2 1 int:1"}));
         const jsontest::Value* start = named(doc["tags"], "StartPB");
         CHECK(start && (*start)["type"]["kind"].s == "elementary" && (*start)["type"]["bits"].i() == 1);
+    }
+    {
+        // user constants with their values
+        const ProgramExport e = loadExport("s12_constants");
+        current = "s12_constants program export";
+        const jsontest::Value doc = exportOf(e, "ZZBRAVO", "s12_constants");
+        std::vector<std::string> cs;
+        for (const auto& c : doc["constants"].items)
+            if (!c["system"].b) cs.push_back(c["name"].s + " " + valueOf(c["parsed"]));
+        CHECK(cs == (std::vector<std::string>{"ZZCONST_INT int:43", "ZZCONST_TIME duration:5000000000",
+                                              "ZZCONST_STR string:Hello"}));
     }
     {
         // a PLC data type, read from its definition with its start values
@@ -1251,6 +1318,11 @@ void testProgramJson() {
               ms == (std::vector<std::string>{"memberDate elementary:Date D#1990-01-31",
                                               "memberString string:String 'Hello world'", "memberInt elementary:Int 7",
                                               "memberBolean elementary:Bool -"}));
+        std::vector<std::string> starts;
+        if (udt)
+            for (const auto& m : (*udt)["members"].items) starts.push_back(m["name"].s + " " + valueOf(m["start"]));
+        CHECK(starts == (std::vector<std::string>{"memberDate date:30", "memberString string:Hello world",
+                                                  "memberInt int:7", "memberBolean null"}));
         // a member of that type points to it
         size_t uses = 0;
         std::function<void(const jsontest::Value&)> walk = [&](const jsontest::Value& list) {

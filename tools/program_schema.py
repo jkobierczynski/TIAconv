@@ -29,6 +29,16 @@ defs["type"]=O({
              "high":NI(),"high_text":S()}),"array: one entry per dimension"),
  "element":{"oneOf":[R("type"),{"type":"null"}],"description":"array: the type of an element"},
 },"a data type taken apart")
+defs["value"]=O({
+ "kind":{"enum":["bool","int","real","duration","date","time_of_day","date_and_time","string","char","unknown"]},
+ "text":S("as written (empty for the default value of a constant that stores none)"),
+ "bool":NB(),
+ "int":NI("int: the value, also of a bit string (16#FF: 255); char: its code"),
+ "real":{"type":["number","null"]},
+ "ns":NI("duration in nanoseconds; time_of_day: since midnight; date_and_time: since 1970-01-01"),
+ "days":NI("date: since 1990-01-01"),
+ "string":NS("string, char: the characters, escapes ($', $N, $hh) decoded, as UTF-8"),
+},"a value parsed")
 defs["member"]=O({
  "name":S(),
  "data_type":NS("as TIA Portal writes it: Bool, Int, Array[0..9] of Real, String[20], \"MyUdt\", TON_TIME"),
@@ -37,6 +47,7 @@ defs["member"]=O({
  "offset":NS("byte or byte.bit from the start of the data block or instance, \"12\", \"12.3\"; only with standard (not optimized) access"),
  "offset_bits":NI("the same in bits"),
  "start_value":NS("as written in the project; null: the default of the type (or of an enclosing structure)"),
+ "start":{"oneOf":[R("value"),{"type":"null"}],"description":"start_value parsed; null with it"},
  "retain":B(),
  "accessible_from_hmi":B("Accessible from HMI/OPC UA/Web API, as limited by an enclosing structure"),
  "writable_from_hmi":B("Writable from HMI/OPC UA/Web API, as limited by an enclosing structure"),
@@ -55,6 +66,7 @@ defs["operand"]=O({
  "data_block":NS(),
  "address":NS("a tag's address (%M10.0); a member of a data block with standard access: %DB1.DBX60.0, %DB2.DBW4"),
  "pin_type":NS("the type the pin takes, where tiaconv knows it"),
+ "value":{"oneOf":[R("value"),{"type":"null"}],"description":"a constant (literal, local or user constant): its value"},
 })
 defs["pin"]=O({
  "name":S(),
@@ -84,7 +96,9 @@ defs["network"]=O({
  "notes":A(S()),
 })
 defs["reference"]=O({
- "ref_id":I(),"kind":S(),"kind_stored":NS(),"text":S(),"data_type":NS(),"data_block":NS(),
+ "ref_id":I(),"kind":S(),"kind_stored":NS(),"text":S(),"data_type":NS(),
+ "value":{"oneOf":[R("value"),{"type":"null"}],"description":"a constant (literal, local or user constant): its value"},
+ "data_block":NS(),
  "declared_as":NS("a multi-instance: the member declared with this block as its type"),
 })
 defs["code"]=O({"networks":A(R("network")),"references":A(R("reference"),"what the block's code refers to")})
@@ -111,7 +125,7 @@ schema={
             "process_image":I("0: automatic update"),"text":S("\"I 64...67\"")}),
         "the I/O addresses of the modules of the PLC's station and of the IO devices it controls"),
   "tags":A(O({"name":S(),"table":NS(),"data_type":NS(),"type":R("type"),"address":NS(),"comment":NS()})),
-  "constants":A(O({"name":S(),"table":NS(),"data_type":NS(),"value":NS(),"kind":NS("hardware, ob, pip, user, system"),"system":B(),"comment":NS()})),
+  "constants":A(O({"name":S(),"table":NS(),"data_type":NS(),"value":NS(),"parsed":{"oneOf":[R("value"),{"type":"null"}]},"kind":NS("hardware, ob, pip, user, system"),"system":B(),"comment":NS()})),
   "types":A(O({"name":S(),"kind":{"enum":["plc_type","system_type"]},"members":A(R("member"))}),
             "PLC data types (from their definition where it was read) and the system types met in the members (TON_TIME, DTL), with their members"),
   "data_blocks":A(O({"name":S(),"number":NI(),"kind":NS("global, instance"),"instance_of":NS(),"optimized":NB(),
