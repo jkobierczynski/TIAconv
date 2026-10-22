@@ -294,6 +294,10 @@ public:
         for (const auto& c : e.children) walk(*c, depth + 1);
     }
 
+    // A name as the text shows it: of a block or instruction called, a
+    // variable, a member after a dot.
+    std::string nameOf(const XmlNode& e, bool afterDot = false) { return symbolText(e, afterDot); }
+
     std::vector<std::string> lines() const {
         std::vector<std::string> out;
         size_t from = 0;
@@ -403,6 +407,433 @@ private:
     }
 };
 
+
+// ---- SCL as a tree ----
+
+// The token document of SCL is a syntax tree already: statements and
+// expressions with their kind (SI) and the data type of each expression's
+// result. This turns it into CodeStmt and CodeExpr.
+class SclTree {
+public:
+    SclTree(const SclContext& ctx, std::vector<std::string>& notes) : ctx_(ctx), notes_(notes), names_(ctx, nameNotes_) {}
+
+    void symbols(const XmlNode& table) {
+        names_.symbols(table);
+        for (const auto& s : table.children) {
+            int64_t id = 0;
+            const std::string* sid = s->attr("SymID");
+            if (!sid || !parseInt(*sid, id)) continue;
+            Sym sym;
+            if (const std::string* r = s->attr("RefId")) parseInt(*r, sym.refId);
+            if (const std::string* t = s->attr("TypeSymID")) parseInt(*t, sym.typeSym);
+            sym.name = s->attrOr("Name", s->attrOr("BIName", s->attrOr("BILibName", "")));
+            sym.typ = s->attrOr("Typ", "");
+            sym.kind = s->name == "Symbol" ? s->attrOr("ClID", "") : s->name;
+            symbols_[id] = sym;
+        }
+    }
+
+    void statements(const XmlNode& container, std::vector<CodeStmt>& out, int depth) {
+        if (depth > kMaxTreeDepth) return deep();
+        for (const XmlNode* c : significant(container)) {
+            if (c->name == "Statement") out.push_back(statement(*c, depth + 1));
+            else if (c->name == "Statements") statements(*c, out, depth + 1);
+        }
+    }
+
+private:
+    struct Sym {
+        int64_t refId = 0;
+        int64_t typeSym = 0;
+        std::string name, typ, kind;
+    };
+    static constexpr int kMaxTreeDepth = 200;
+    const SclContext& ctx_;
+    std::vector<std::string>& notes_;
+    std::vector<std::string> nameNotes_;  // the text already says what could not be named
+    SclWriter names_;
+    std::map<int64_t, Sym> symbols_;
+    std::set<std::string> unknown_;
+    bool deep_ = false;
+
+    void deep() {
+        if (!deep_) notes_.push_back("statements nested too deeply, tree incomplete");
+        deep_ = true;
+    }
+    void unknown(const std::string& what) {
+        if (unknown_.insert(what).second) notes_.push_back(what + " not read into the tree");
+    }
+
+    // The children that carry meaning: no blanks, line ends, comments or
+    // the ";" of a statement, and the contents of a Fold in its place.
+    static std::vector<const XmlNode*> significant(const XmlNode& e) {
+        std::vector<const XmlNode*> out;
+        collect(e, out, 0);
+        return out;
+    }
+    static void collect(const XmlNode& e, std::vector<const XmlNode*>& out, int depth) {
+        for (const auto& c : e.children) {
+            const std::string& n = c->name;
+            if (n == "BL" || n == "NL" || n == "LC" || n == "MLC" || n == "BC" || n == "BCE" || n == "BCL" ||
+                n == "FiSt")
+                continue;
+            if (n == "Fold" && depth < 50) collect(*c, out, depth + 1);
+            else out.push_back(c.get());
+        }
+    }
+
+    const Sym* sym(const XmlNode& e) const {
+        int64_t id = 0;
+        const std::string* sy = e.attr("SyId");
+        if (!sy || !parseInt(*sy, id)) return nullptr;
+        auto it = symbols_.find(id);
+        return it == symbols_.end() ? nullptr : &it->second;
+    }
+    int64_t refOf(const XmlNode& e) const {
+        const Sym* s = sym(e);
+        return s ? s->refId : 0;
+    }
+
+    void body(const XmlNode* statements, std::vector<CodeStmt>& out, int depth) {
+        if (statements) this->statements(*statements, out, depth + 1);
+    }
+
+    CodeStmt statement(const XmlNode& st, int depth) {
+        CodeStmt s;
+        if (depth > kMaxTreeDepth) {
+            deep();
+            s.op = "unknown";
+            return s;
+        }
+        const std::string si = st.attrOr("SI", "");
+        const std::vector<const XmlNode*> parts = significant(st);
+        auto exprsOf = [&]() {
+            std::vector<const XmlNode*> v;
+            for (const XmlNode* p : parts)
+                if (p->name == "Expression") v.push_back(p);
+            return v;
+        };
+        auto first = [&](const char* name) -> const XmlNode* {
+            for (const XmlNode* p : parts)
+                if (p->name == name) return p;
+            return nullptr;
+        };
+        if (si == "STAss") {
+            const auto e = exprsOf();
+            s.op = "assign";
+            if (e.size() == 2 && first("OpAs")) {
+                s.exprs.push_back(expr(*e[0], depth));
+                s.exprs.push_back(expr(*e[1], depth));
+            } else {
+                s.op = "unknown";
+                s.name = "assignment";
+                unknown("an assignment of an unknown form");
+            }
+        } else if (si == "STSub") {
+            s.op = "call";
+            for (const XmlNode* p : parts)
+                if (p->name == "InstCa" || p->name == "FctCa") {
+                    s.exprs.push_back(call(*p, depth));
+                    break;
+                }
+            if (s.exprs.empty()) {
+                s.op = "unknown";
+                s.name = "call";
+                unknown("a call of an unknown form");
+            }
+        } else if (si.compare(0, 2, "IF") == 0) {
+            s.op = "if";
+            // cond THEN body { ELSIF cond THEN body } [ ELSE body ] END_IF
+            bool inElse = false;
+            for (const XmlNode* p : parts) {
+                if (p->name == "Expression" && !inElse) {
+                    CodeStmt::Branch b;
+                    b.exprs.push_back(expr(*p, depth));
+                    s.branches.push_back(std::move(b));
+                } else if (p->name == "Statements") {
+                    if (inElse) body(p, s.elseBody, depth);
+                    else if (!s.branches.empty()) body(p, s.branches.back().body, depth);
+                } else if (p->name == "KwELSE") {
+                    inElse = true;
+                    s.hasElse = true;
+                }
+            }
+        } else if (si == "STCAS") {
+            s.op = "case";
+            bool inElse = false;
+            for (const XmlNode* p : parts) {
+                if (p->name == "Expression" && s.exprs.empty()) {
+                    s.exprs.push_back(expr(*p, depth));
+                } else if (p->name == "CaseElem") {
+                    CodeStmt::Branch b;
+                    for (const XmlNode* q : significant(*p)) {
+                        if (q->name == "CaseRange") b.exprs.push_back(caseLabel(*q, depth));
+                        else if (q->name == "Statements") body(q, b.body, depth);
+                    }
+                    s.branches.push_back(std::move(b));
+                } else if (p->name == "KwELSE") {
+                    inElse = true;
+                    s.hasElse = true;
+                } else if (p->name == "Statements" && inElse) {
+                    body(p, s.elseBody, depth);
+                }
+            }
+        } else if (si == "STFOR") {
+            s.op = "for";
+            for (const XmlNode* e : exprsOf()) s.exprs.push_back(expr(*e, depth));
+            body(first("Statements"), s.body, depth);
+        } else if (si == "STWHI") {
+            s.op = "while";
+            for (const XmlNode* e : exprsOf()) s.exprs.push_back(expr(*e, depth));
+            body(first("Statements"), s.body, depth);
+        } else if (si == "STREP") {
+            s.op = "repeat";
+            for (const XmlNode* e : exprsOf()) s.exprs.push_back(expr(*e, depth));
+            body(first("Statements"), s.body, depth);
+        } else if (si == "STRET") {
+            s.op = "return";
+        } else if (si == "STSim") {
+            s.op = "empty";
+        } else if (si == "STRegion") {
+            s.op = "region";
+            if (const XmlNode* c = first("Const")) s.name = c->attrOr("TE", "");
+            body(first("Statements"), s.body, depth);
+        } else {
+            const std::string te = st.attrOr("TE", "");
+            if (te == "EXIT" || te == "CONTINUE") {
+                s.op = te == "EXIT" ? "exit" : "continue";
+            } else {
+                s.op = "unknown";
+                s.name = si.empty() ? te : si;
+                unknown("a statement of the kind '" + s.name + "'");
+            }
+        }
+        return s;
+    }
+
+    CodeExpr caseLabel(const XmlNode& range, int depth) {
+        for (const XmlNode* q : significant(range)) {
+            if (q->name == "CaseSRange") {
+                CodeExpr r;
+                r.op = "range";
+                for (const XmlNode* x : significant(*q))
+                    if (x->name == "Expression") r.args.push_back(expr(*x, depth));
+                return r;
+            }
+            if (q->name == "Expression") return expr(*q, depth);
+        }
+        CodeExpr u;
+        u.op = "unknown";
+        u.name = "case label";
+        return u;
+    }
+
+    static const char* binaryOp(const XmlNode& token) {
+        static const std::pair<const char*, const char*> ops[] = {
+            {"OpPl", "add"}, {"OpMi", "sub"}, {"OpMu", "mul"}, {"OpDi", "div"}, {"OpAND", "and"}, {"OpOR", "or"},
+            {"OpXOR", "xor"}, {"OpE", "eq"}, {"OpU", "ne"}, {"OpG", "gt"}, {"OpL", "lt"}, {"OpGE", "ge"},
+            {"OpLE", "le"}, {"OpMOD", "mod"}, {"OpExp", "pow"}, {"OpPow", "pow"}};
+        for (const auto& o : ops)
+            if (token.name == o.first) return o.second;
+        const std::string te = token.attrOr("TE", "");
+        if (te == "MOD") return "mod";
+        if (te == "XOR") return "xor";
+        if (te == "AND" || te == "&") return "and";
+        if (te == "OR") return "or";
+        if (te == "**") return "pow";
+        return nullptr;
+    }
+
+    CodeExpr unknownExpr(const std::string& what) {
+        CodeExpr u;
+        u.op = "unknown";
+        u.name = what;
+        unknown("an expression of the kind '" + what + "'");
+        return u;
+    }
+
+    CodeExpr expr(const XmlNode& e, int depth) {
+        if (depth > kMaxTreeDepth) {
+            deep();
+            CodeExpr u;
+            u.op = "unknown";
+            return u;
+        }
+        ++depth;
+        if (e.name != "Expression") return operand(e, depth);
+        const std::string si = e.attrOr("SI", "");
+        const std::vector<const XmlNode*> parts = significant(e);
+        std::vector<const XmlNode*> subs;
+        for (const XmlNode* p : parts)
+            if (p->name == "Expression") subs.push_back(p);
+        CodeExpr x;
+        x.type = e.attrOr("Result", "");
+        if (si == "ExprPrimD" || si == "ExprPrimC") {
+            for (const XmlNode* p : parts) {
+                CodeExpr o = operand(*p, depth);
+                if (o.type.empty()) o.type = x.type;
+                return o;
+            }
+            return unknownExpr(si);
+        }
+        if (si == "ExprPrimE") {  // ( ... )
+            if (!subs.empty()) return expr(*subs[0], depth);
+            return unknownExpr(si);
+        }
+        if (si == "ExprDot" || si == "ExprSelSlice" || si == "ExprInd") {
+            if (subs.empty()) return unknownExpr(si);
+            x.args.push_back(expr(*subs[0], depth));
+            const XmlNode* last = nullptr;
+            for (const XmlNode* p : parts)
+                if (p->name == "SymVa") last = p;
+            if (si == "ExprInd") {
+                x.op = "index";
+                for (size_t i = 1; i < subs.size(); ++i) x.args.push_back(expr(*subs[i], depth));
+            } else {
+                x.op = si == "ExprDot" ? "member" : "slice";
+                if (last) x.name = last->attrOr("ODN", names_.nameOf(*last, true));
+            }
+            if (last) x.refId = refOf(*last);
+            return x;
+        }
+        if (si == "ExprUnaryN" || si == "ExprUnaryM") {
+            if (subs.empty()) return unknownExpr(si);
+            bool minus = false;
+            for (const XmlNode* p : parts)
+                if (p->name == "OpMi") minus = true;
+            if (si == "ExprUnaryM" && !minus) return expr(*subs[0], depth);  // a "+" in front
+            x.op = si == "ExprUnaryN" ? "not" : "neg";
+            x.args.push_back(expr(*subs[0], depth));
+            return x;
+        }
+        // a binary operation: operands with the operators between them, left to right
+        if (subs.size() >= 2) {
+            std::vector<const char*> ops;
+            for (const XmlNode* p : parts)
+                if (p->name != "Expression") {
+                    const char* o = binaryOp(*p);
+                    if (!o) return unknownExpr(si + " " + p->name);
+                    ops.push_back(o);
+                }
+            if (ops.size() != subs.size() - 1) return unknownExpr(si);
+            CodeExpr acc = expr(*subs[0], depth);
+            for (size_t i = 1; i < subs.size(); ++i) {
+                CodeExpr b;
+                b.op = ops[i - 1];
+                b.type = i + 1 == subs.size() ? x.type : std::string();
+                b.args.push_back(std::move(acc));
+                b.args.push_back(expr(*subs[i], depth));
+                acc = std::move(b);
+            }
+            return acc;
+        }
+        if (subs.size() == 1) return expr(*subs[0], depth);
+        for (const XmlNode* p : parts)
+            if (p->name == "FctCa" || p->name == "InstCa") return call(*p, depth);
+        return unknownExpr(si);
+    }
+
+    CodeExpr operand(const XmlNode& p, int depth) {
+        CodeExpr x;
+        if (p.name == "FctCa" || p.name == "InstCa") return call(p, depth);
+        if (p.name == "Const") {
+            x.op = "const";
+            x.literal = p.attrOr("TE", "");
+            const Sym* s = sym(p);
+            if (s && !s->typ.empty()) x.literalType = s->typ;
+            else {
+                const std::string si = p.attrOr("SI", "");
+                if (si.compare(0, 5, "Const") == 0) x.literalType = si.substr(5);
+            }
+            x.type = x.literalType;
+            return x;
+        }
+        if (p.name == "SymVa" || p.name == "Sub" || p.name == "SymDB") {
+            const Sym* s = sym(p);
+            if (s && s->kind == "BuiltInVar") {  // ENO of the block itself
+                x.op = "builtin";
+                x.name = s->name.empty() ? p.attrOr("ODN", "") : s->name;
+                return x;
+            }
+            x.op = "ref";
+            x.refId = refOf(p);
+            x.name = p.attrOr("ODN", "");
+            if (x.name.empty()) x.name = names_.nameOf(p);
+            return x;
+        }
+        if (p.name == "Expression") return expr(p, depth);
+        return unknownExpr(p.name);
+    }
+
+    std::string refText(int64_t id) const {
+        if (!ctx_.references) return std::string();
+        for (const CodeReference& r : *ctx_.references)
+            if (r.refId == id) return r.text;
+        return std::string();
+    }
+
+    CodeExpr call(const XmlNode& c, int depth) {
+        CodeExpr x;
+        x.op = "call";
+        const std::vector<const XmlNode*> parts = significant(c);
+        const XmlNode* db = nullptr;
+        const XmlNode* sub = nullptr;
+        for (const XmlNode* p : parts) {
+            if (p->name == "SymDB" && !db) db = p;
+            if (p->name == "Sub" && !sub) sub = p;
+        }
+        if (c.name == "InstCa") {
+            if (db) {
+                // "Instance_DB"(...) or "Instance_DB".TON(...): the data block, then what is called
+                x.instanceRefId = refOf(*db);
+                const Sym* d = sym(*db);
+                if (sub) x.refId = refOf(*sub);
+                if (!x.refId && d)
+                    if (const Sym* t = symbolById(d->typeSym)) x.refId = t->refId;
+            } else if (sub) {
+                // a multi-instance: its symbol is the instance, its type what is called
+                x.instanceRefId = refOf(*sub);
+                if (const Sym* s = sym(*sub))
+                    if (const Sym* t = symbolById(s->typeSym)) x.refId = t->refId;
+            }
+            x.name = x.refId ? refText(x.refId) : std::string();
+            if (x.name.empty() && sub) x.name = sub->attrOr("ODN", "");
+        } else if (sub) {
+            x.refId = refOf(*sub);
+            x.name = names_.nameOf(*sub);
+        }
+        for (const XmlNode* p : parts) {
+            if (p->name == "Param") {
+                CodeExpr a;
+                const std::string si = p->attrOr("SI", "");
+                a.op = si == "ParaOut" ? "out" : si == "ParaInOut" ? "inout" : "in";
+                for (const XmlNode* q : significant(*p)) {
+                    if (q->name == "SymPa") {
+                        a.name = q->attrOr("FormalName", q->attrOr("ODN", ""));
+                        // V13 keeps a name that needs quotes with them
+                        if (a.name.size() >= 2 && a.name.front() == '"' && a.name.back() == '"')
+                            a.name = a.name.substr(1, a.name.size() - 2);
+                    }
+                    else if (q->name == "Expression") a.args.push_back(expr(*q, depth));
+                }
+                x.args.push_back(std::move(a));
+            } else if (p->name == "Expression") {
+                // a parameter given by its position
+                CodeExpr a;
+                a.op = "in";
+                a.args.push_back(expr(*p, depth));
+                x.args.push_back(std::move(a));
+            }
+        }
+        return x;
+    }
+
+    const Sym* symbolById(int64_t id) const {
+        auto it = symbols_.find(id);
+        return it == symbols_.end() ? nullptr : &it->second;
+    }
+};
+
 // ---- LAD and FBD ----
 
 enum Prec { kOr = 1, kXor = 2, kAnd = 3, kCompare = 4, kNot = 5, kAtom = 6 };
@@ -501,6 +932,19 @@ public:
             lines.push_back("open: " + (e.text.empty() ? std::string("TRUE") : e.text));
         }
         for (const GPart& p : parts_) elements.push_back(element(p));
+    }
+
+    // The network as statements, in the order the parts are evaluated: a
+    // part after the parts whose outputs it reads.
+    void tree(std::vector<CodeStmt>& out, std::vector<std::string>& notes) {
+        treeNotes_ = &notes;
+        prepareTree();
+        for (size_t i : evaluationOrder()) {
+            GPart& p = parts_[i];
+            if (p.coil) coilStatement(p, out);
+            else if (p.inlined) sharedStatement(p, out);
+            else boxStatement(p, out);
+        }
     }
 
 private:
@@ -675,8 +1119,17 @@ private:
         return p.negated.count(pin) ? negate(e) : e;
     }
 
-    // What arrives over a wire, as an expression.
+    // What arrives over a wire, as an expression; NOT in front where the
+    // output it comes from is negated.
     Expr expr(const Source& s, int depth) {
+        Expr e = exprOf(s, depth);
+        if (s.type == Source::Pin)
+            if (const GPart* p = find(s.uid))
+                if (p->negated.count(s.pin) && p->outputPins.count(s.pin)) return negate(e);
+        return e;
+    }
+
+    Expr exprOf(const Source& s, int depth) {
         if (s.type == Source::Rail) return Expr{std::string(), kAtom};
         if (s.type == Source::Operand) {
             const std::string t = operandText(s.uid);
@@ -764,6 +1217,472 @@ private:
         lastHead_ = head;
         lastPins_ = pins;
         return s;
+    }
+
+    // ---- the tree ----
+    //
+    // The logic between the boxes (contacts, A, O, X, comparisons) is
+    // written into the expressions of the parts that read it. Logic read by
+    // more than one part is computed once, into a wire, as the PLC computes
+    // it once at the branch: an edge contact must not be evaluated twice,
+    // and a box between the two readers may change an operand it reads.
+    // Logic that leads nowhere is evaluated for its edges.
+
+    std::map<std::pair<uint64_t, std::string>, size_t> readers_;  // an output -> how many inputs read it
+    std::set<uint64_t> nodes_;  // the parts that get statements of their own
+    std::set<std::string> unknownTree_;
+    std::vector<std::string>* treeNotes_ = nullptr;
+
+    void prepareTree() {
+        readers_.clear();
+        nodes_.clear();
+        for (const GPart& p : parts_)
+            for (const auto& in : p.inputs)
+                if (in.second.type == Source::Pin) ++readers_[{in.second.uid, in.second.pin}];
+        for (const GPart& p : parts_) {
+            if (!p.inlined) {
+                nodes_.insert(p.uid);
+                continue;
+            }
+            size_t total = 0;
+            bool shared = false;
+            for (const auto& r : readers_)
+                if (r.first.first == p.uid) {
+                    total += r.second;
+                    if (r.second > 1) shared = true;
+                }
+            if (shared || total == 0) nodes_.insert(p.uid);
+        }
+    }
+    size_t readersOf(uint64_t uid, const std::string& pin) const {
+        auto it = readers_.find({uid, pin});
+        return it == readers_.end() ? 0 : it->second;
+    }
+    bool isNode(const GPart& p) const { return nodes_.count(p.uid) != 0; }
+    static bool negatedOut(const GPart& p, const std::string& pin) {
+        return p.negated.count(pin) && p.outputPins.count(pin);
+    }
+
+    static CodeExpr node(const char* op) {
+        CodeExpr e;
+        e.op = op;
+        return e;
+    }
+    static CodeExpr trueExpr() {
+        CodeExpr e = node("const");
+        e.literal = "TRUE";
+        e.literalType = e.type = "Bool";
+        return e;
+    }
+    static CodeExpr falseExpr() {
+        CodeExpr e = trueExpr();
+        e.literal = "FALSE";
+        return e;
+    }
+    static CodeExpr wire(uint64_t uid, const std::string& pin) {
+        CodeExpr w = node("wire");
+        w.name = std::to_string(uid) + "." + pin;
+        return w;
+    }
+    static bool isTrue(const CodeExpr& e) {
+        if (e.op != "const") return false;
+        std::string l = e.literal;
+        for (char& c : l) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return l == "TRUE" || l == "BOOL#TRUE";
+    }
+    // An edge updates its memory bit: it has to be evaluated
+    static bool sideEffects(const CodeExpr& e) {
+        if (e.op == "edge_pos" || e.op == "edge_neg" || e.op == "call") return true;
+        for (const auto& a : e.args)
+            if (sideEffects(a)) return true;
+        return false;
+    }
+    static CodeExpr unary(const char* op, CodeExpr a) {
+        CodeExpr e = node(op);
+        e.args.push_back(std::move(a));
+        return e;
+    }
+    // AND drops an operand that is always true; OR with one is always true,
+    // unless another operand has an edge to evaluate
+    static CodeExpr logic(const char* op, std::vector<CodeExpr> in) {
+        const bool isOr = std::string(op) == "or";
+        bool anyTrue = false, effects = false;
+        for (const auto& e : in) {
+            anyTrue = anyTrue || isTrue(e);
+            effects = effects || sideEffects(e);
+        }
+        if (isOr && anyTrue && !effects) return trueExpr();
+        std::vector<CodeExpr> kept;
+        for (auto& e : in) {
+            if (isTrue(e) && std::string(op) == "and") continue;
+            kept.push_back(std::move(e));
+        }
+        if (kept.empty()) return trueExpr();
+        CodeExpr acc = std::move(kept[0]);
+        for (size_t i = 1; i < kept.size(); ++i) {
+            CodeExpr b = node(op);
+            b.type = "Bool";
+            b.args.push_back(std::move(acc));
+            b.args.push_back(std::move(kept[i]));
+            acc = std::move(b);
+        }
+        return acc;
+    }
+
+    // The inputs of a part in the order of their pins: in1, in2, ..., in10
+    static std::vector<std::pair<std::string, Source>> pinOrder(const GPart& p) {
+        auto key = [](const std::string& n) {
+            size_t d = n.size();
+            while (d > 0 && std::isdigit(static_cast<unsigned char>(n[d - 1]))) --d;
+            const long num = d < n.size() ? std::strtol(n.c_str() + d, nullptr, 10) : -1;
+            return std::make_pair(n.substr(0, d), num);
+        };
+        std::vector<std::pair<std::string, Source>> v = p.inputs;
+        std::stable_sort(v.begin(), v.end(), [&](const auto& a, const auto& b) { return key(a.first) < key(b.first); });
+        return v;
+    }
+
+    CodeExpr operandExpr(uint64_t uid) const {
+        const std::string text = operandText(uid);
+        if (text.empty()) return node("missing");
+        auto r = operandRefs_.find(uid);
+        const int64_t id = r == operandRefs_.end() ? 0 : r->second;
+        const CodeReference* ref = id ? findRef(index_, refs_, id) : nullptr;
+        CodeExpr e = node("ref");
+        e.refId = id;
+        e.name = text;
+        if (ref) {
+            e.type = ref->dataType;
+            if (ref->kind == "constant") {
+                e.op = "const";
+                e.literal = ref->name.empty() ? text : ref->name;
+                e.literalType = ref->dataType;
+            }
+        }
+        return e;
+    }
+
+    // The value at an output of a part of the logic, from its inputs.
+    CodeExpr partValue(GPart& p, int depth) {
+        const std::string& g = p.name;
+        if (g == "Contact") return logic("and", {pinTree(p, "in", depth), pinTree(p, "operand", depth)});
+        if (g == "Not") return unary("not", pinTree(p, "in", depth));
+        if (g == "PContact" || g == "NContact") {
+            CodeExpr edge = node(g == "PContact" ? "edge_pos" : "edge_neg");
+            edge.type = "Bool";
+            edge.args.push_back(pinTree(p, "operand", depth));
+            edge.args.push_back(pinTree(p, "bit", depth));
+            return logic("and", {pinTree(p, "pre", depth), edge});
+        }
+        if (compareOperator(g)) {
+            static const std::map<std::string, const char*> ops = {{"Eq", "eq"}, {"Ne", "ne"}, {"Gt", "gt"},
+                                                                   {"Lt", "lt"}, {"Ge", "ge"}, {"Le", "le"}};
+            CodeExpr c = node(ops.at(g));
+            c.type = "Bool";
+            c.args.push_back(pinTree(p, "in1", depth));
+            c.args.push_back(pinTree(p, "in2", depth));
+            if (!inputOf(p, "pre")) return c;
+            return logic("and", {pinTree(p, "pre", depth), c});
+        }
+        std::vector<CodeExpr> in;
+        for (const auto& i : pinOrder(p)) in.push_back(pinTree(p, i.first, depth));
+        return logic(g == "O" ? "or" : g == "X" ? "xor" : "and", std::move(in));
+    }
+
+    CodeExpr treeOf(const Source& s, int depth) {
+        if (s.type == Source::Rail) return trueExpr();
+        if (s.type == Source::Operand) return operandExpr(s.uid);
+        if (s.type != Source::Pin) return node("missing");
+        GPart* p = find(s.uid);
+        if (!p) return node("missing");
+        if (depth > kMaxDepth) return node("unknown");
+        CodeExpr e = isNode(*p) ? wire(p->uid, s.pin) : partValue(*p, depth + 1);
+        // a negated output: the wire holds the value before the negation
+        return negatedOut(*p, s.pin) ? unary("not", std::move(e)) : e;
+    }
+
+    CodeExpr pinTree(GPart& p, const std::string& pin, int depth) {
+        const Source* s = inputOf(p, pin);
+        if (!s) return node("missing");
+        CodeExpr e = treeOf(*s, depth + 1);
+        return p.negated.count(pin) && !p.outputPins.count(pin) ? unary("not", std::move(e)) : e;
+    }
+
+    // The parts with statements of their own whose outputs reach `p`.
+    void sourcesOf(const GPart& p, std::set<size_t>& out, int depth) const {
+        if (depth > kMaxDepth) return;
+        for (const auto& in : p.inputs) {
+            if (in.second.type != Source::Pin) continue;
+            auto it = partIndex_.find(in.second.uid);
+            if (it == partIndex_.end()) continue;
+            const GPart& q = parts_[it->second];
+            if (isNode(q)) out.insert(it->second);
+            else sourcesOf(q, out, depth + 1);
+        }
+    }
+
+    // The order on the screen, each part as soon as the parts it reads are
+    // done: always the first such part.
+    std::vector<size_t> evaluationOrder() const {
+        std::vector<size_t> nodes;
+        for (size_t i = 0; i < parts_.size(); ++i)
+            if (isNode(parts_[i])) nodes.push_back(i);
+        std::map<size_t, std::set<size_t>> before;
+        for (size_t i : nodes) {
+            sourcesOf(parts_[i], before[i], 0);
+            before[i].erase(i);
+        }
+        std::vector<size_t> order;
+        std::set<size_t> done;
+        while (order.size() < nodes.size()) {
+            bool picked = false;
+            for (size_t i : nodes) {
+                if (done.count(i)) continue;
+                bool ready = true;
+                for (size_t b : before[i])
+                    if (!done.count(b)) ready = false;
+                if (!ready) continue;
+                order.push_back(i);
+                done.insert(i);
+                picked = true;
+                break;
+            }
+            if (!picked) {  // a loop: the rest in the order on the screen
+                treeNotes_->push_back("the parts form a loop, evaluation order as on the screen");
+                for (size_t i : nodes)
+                    if (!done.count(i)) {
+                        order.push_back(i);
+                        done.insert(i);
+                    }
+            }
+        }
+        return order;
+    }
+
+    static CodeStmt assign(CodeExpr target, CodeExpr value) {
+        CodeStmt s;
+        s.op = "assign";
+        s.exprs.push_back(std::move(target));
+        s.exprs.push_back(std::move(value));
+        return s;
+    }
+
+    // Logic read by several parts, computed once; or leading nowhere,
+    // evaluated for its edges.
+    void sharedStatement(GPart& p, std::vector<CodeStmt>& out) {
+        bool read = false;
+        for (const std::string& pin : p.outputPins)
+            if (readersOf(p.uid, pin)) {
+                out.push_back(assign(wire(p.uid, pin), partValue(p, 0)));
+                read = true;
+                break;  // these parts have one output
+            }
+        if (read) return;
+        CodeExpr v = partValue(p, 0);
+        if (!sideEffects(v)) return;
+        CodeStmt s;
+        s.op = "eval";
+        s.exprs.push_back(std::move(v));
+        out.push_back(std::move(s));
+    }
+
+    void coilStatement(GPart& p, std::vector<CodeStmt>& out) {
+        CodeExpr target = inputOf(p, "operand") ? treeOf(*inputOf(p, "operand"), 0) : node("missing");
+        CodeExpr in = inputOf(p, "in") ? treeOf(*inputOf(p, "in"), 0) : node("missing");
+        if (p.negated.count("in")) in = unary("not", std::move(in));
+        // the power flows on past the coil unchanged: computed once, before
+        // the coil writes its operand
+        if (readersOf(p.uid, "out")) {
+            out.push_back(assign(wire(p.uid, "out"), std::move(in)));
+            in = wire(p.uid, "out");
+        }
+        if (p.name == "Coil") {
+            if (p.negated.count("operand")) in = unary("not", std::move(in));
+            out.push_back(assign(std::move(target), std::move(in)));
+        } else if ((p.name == "SCoil" || p.name == "RCoil") && isTrue(in)) {
+            out.push_back(assign(std::move(target), p.name == "RCoil" ? falseExpr() : trueExpr()));
+        } else if (p.name == "SCoil" || p.name == "RCoil") {
+            CodeStmt s;
+            s.op = "if";
+            CodeStmt::Branch b;
+            b.exprs.push_back(std::move(in));
+            b.body.push_back(assign(std::move(target), p.name == "RCoil" ? falseExpr() : trueExpr()));
+            s.branches.push_back(std::move(b));
+            out.push_back(std::move(s));
+        } else {
+            CodeStmt s;
+            s.op = "unknown";
+            s.name = p.name;
+            if (unknownTree_.insert(p.name).second) treeNotes_->push_back("the coil '" + p.name + "' not read into the tree");
+            out.push_back(std::move(s));
+        }
+    }
+
+    // Where the value of an output goes. `direct` take the value: its
+    // operands and a wire when other parts read it. A negated output goes
+    // into its wire, and its operands get the negation (`after`).
+    void targetsOf(const GPart& p, const std::string& pin, std::vector<CodeExpr>& direct,
+                   std::vector<CodeStmt>& after) const {
+        std::vector<CodeExpr> operands;
+        for (const auto& o : p.outputsToOperand)
+            if (o.first == pin && !operandText(o.second).empty()) operands.push_back(operandExpr(o.second));
+        if (negatedOut(p, pin)) {
+            if (operands.empty() && !readersOf(p.uid, pin)) return;
+            direct.push_back(wire(p.uid, pin));
+            for (auto& o : operands) after.push_back(assign(std::move(o), unary("not", wire(p.uid, pin))));
+            return;
+        }
+        for (auto& o : operands) direct.push_back(std::move(o));
+        if (readersOf(p.uid, pin)) direct.push_back(wire(p.uid, pin));
+    }
+
+    // value -> the first target; the others from it, so the value is
+    // computed once
+    static void assignAll(std::vector<CodeExpr> direct, CodeExpr value, std::vector<CodeStmt>& body) {
+        if (direct.empty()) return;
+        body.push_back(assign(direct[0], std::move(value)));
+        for (size_t i = 1; i < direct.size(); ++i) body.push_back(assign(direct[i], direct[0]));
+    }
+
+    void boxStatement(GPart& p, std::vector<CodeStmt>& out) {
+        static const std::map<std::string, const char*> arithmetic = {
+            {"Add", "add"}, {"Sub", "sub"}, {"Mul", "mul"}, {"Div", "div"}, {"Mod", "mod"}};
+        auto isEn = [](const std::string& n) { return n == "en" || n == "EN"; };
+        auto isEno = [](const std::string& n) { return n == "eno" || n == "ENO"; };
+        const char* enPin = inputOf(p, "en") ? "en" : inputOf(p, "EN") ? "EN" : nullptr;
+        CodeExpr en = enPin ? pinTree(p, enPin, 0) : trueExpr();
+        if (en.op == "missing") en = trueExpr();  // FBD: nothing at EN, the box always runs
+        std::vector<CodeStmt> body;
+        std::vector<std::string> outs(p.outputPins.begin(), p.outputPins.end());
+        for (const auto& o : p.outputsToOperand)
+            if (std::find(outs.begin(), outs.end(), o.first) == outs.end()) outs.push_back(o.first);
+        std::vector<CodeExpr> enoDirect;
+        std::vector<CodeStmt> enoAfter;
+        for (const auto& pin : outs)
+            if (isEno(pin)) targetsOf(p, pin, enoDirect, enoAfter);
+        auto arith = arithmetic.find(p.name);
+        // the boxes written as operations: ENO is TRUE when they ran (an
+        // overflow is not reported); everything else is a call that sets ENO
+        bool operation = false;
+        if (p.kind == "gate" && (p.name == "PBox" || p.name == "NBox")) {
+            // P_TRIG, N_TRIG: the edge of the power flow, with its edge memory
+            operation = true;
+            CodeExpr edge = node(p.name == "PBox" ? "edge_pos" : "edge_neg");
+            edge.type = "Bool";
+            edge.args.push_back(pinTree(p, "in", 0));
+            edge.args.push_back(pinTree(p, "bit", 0));
+            std::vector<CodeExpr> direct;
+            std::vector<CodeStmt> after;
+            for (const auto& pin : outs)
+                if (!isEno(pin)) targetsOf(p, pin, direct, after);
+            if (direct.empty()) {
+                CodeStmt s;
+                s.op = "eval";
+                s.exprs.push_back(std::move(edge));
+                body.push_back(std::move(s));
+            }
+            assignAll(std::move(direct), std::move(edge), body);
+            for (auto& a : after) body.push_back(std::move(a));
+        } else if (p.kind == "gate" && (p.name == "Move" || p.name == "S_Move" || arith != arithmetic.end())) {
+            operation = true;
+            CodeExpr value;
+            if (arith == arithmetic.end()) {
+                value = pinTree(p, "in", 0);
+            } else {
+                bool first = true;
+                for (const auto& in : pinOrder(p)) {
+                    if (isEn(in.first)) continue;
+                    CodeExpr x = pinTree(p, in.first, 0);
+                    if (first) {
+                        value = std::move(x);
+                        first = false;
+                    } else {
+                        CodeExpr b = node(arith->second);
+                        b.type = p.dataType;
+                        b.args.push_back(std::move(value));
+                        b.args.push_back(std::move(x));
+                        value = std::move(b);
+                    }
+                }
+                if (first) value = node("missing");
+            }
+            // Move: each of out1, out2, ... gets the value
+            for (const auto& pin : outs) {
+                if (isEno(pin)) continue;
+                std::vector<CodeExpr> direct;
+                std::vector<CodeStmt> after;
+                targetsOf(p, pin, direct, after);
+                assignAll(std::move(direct), value, body);
+                for (auto& a : after) body.push_back(std::move(a));
+            }
+        } else {
+            // a block, an instruction, or a box tiaconv has no rule for: a call
+            CodeExpr c = node("call");
+            c.name = p.name;
+            if (p.kind != "gate") {
+                c.refId = p.refId;
+                c.instanceRefId = p.instanceRefId;
+            }
+            std::vector<CodeStmt> after;
+            // parameters as stored; for a box with numbered inputs in their order
+            for (const auto& in : p.kind == "gate" ? pinOrder(p) : p.inputs) {
+                if (isEn(in.first)) continue;
+                if (in.second.type == Source::Operand && operandText(in.second.uid).empty()) continue;
+                CodeExpr a = node("in");
+                a.name = in.first;
+                a.args.push_back(pinTree(p, in.first, 0));
+                c.args.push_back(std::move(a));
+            }
+            for (const auto& pin : outs) {
+                if (isEno(pin)) continue;
+                std::vector<CodeExpr> direct;
+                targetsOf(p, pin, direct, after);
+                if (direct.empty()) continue;
+                CodeExpr a = node("out");
+                a.name = pin;
+                a.args.push_back(direct[0]);
+                c.args.push_back(std::move(a));
+                for (size_t i = 1; i < direct.size(); ++i) after.push_back(assign(direct[i], direct[0]));
+            }
+            // the ENO the block or instruction sets
+            if (!enoDirect.empty()) {
+                CodeExpr a = node("out");
+                a.name = "ENO";
+                a.args.push_back(enoDirect[0]);
+                c.args.push_back(std::move(a));
+                for (size_t i = 1; i < enoDirect.size(); ++i) after.push_back(assign(enoDirect[i], enoDirect[0]));
+                for (auto& x : enoAfter) after.push_back(std::move(x));
+            }
+            CodeStmt s;
+            s.op = "call";
+            s.exprs.push_back(std::move(c));
+            body.push_back(std::move(s));
+            for (auto& a : after) body.push_back(std::move(a));
+            if (p.kind == "gate" && unknownTree_.insert(p.name).second)
+                treeNotes_->push_back("the box '" + p.name + "' is written as a call of that name");
+        }
+        if (operation) {
+            std::vector<CodeExpr> d = enoDirect;
+            assignAll(std::move(d), trueExpr(), body);
+            for (auto& x : enoAfter) body.push_back(x);
+        }
+        if (isTrue(en)) {
+            for (auto& b : body) out.push_back(std::move(b));
+            return;
+        }
+        // not run: ENO is FALSE, the outputs keep what they had
+        CodeStmt s;
+        s.op = "if";
+        CodeStmt::Branch b;
+        b.exprs.push_back(std::move(en));
+        b.body = std::move(body);
+        s.branches.push_back(std::move(b));
+        if (!enoDirect.empty()) {
+            s.hasElse = true;
+            assignAll(enoDirect, falseExpr(), s.elseBody);
+            for (auto& x : enoAfter) s.elseBody.push_back(std::move(x));
+        }
+        out.push_back(std::move(s));
     }
 
     NetworkElement::Operand operand(uint64_t uid) const {
@@ -1188,6 +2107,7 @@ private:
             const std::string& doc = documents[i].second;
             if (doc.empty()) {
                 n.content = "empty";
+                n.treeRead = true;  // nothing to run
                 continue;
             }
             content(documents[i].first, doc, code, n);
@@ -1218,17 +2138,20 @@ private:
             ctx.comments = &comments;
             if (sclText(doc, ctx, n.lines, n.notes, &n.trailingEmptyLines)) {
                 n.content = n.lines.empty() ? "empty" : "scl";
+                n.treeRead = sclTree(doc, ctx, n.statements, n.treeNotes);
                 return;
             }
         } else if (graphic) {
-            if (graphicNetwork(doc, code.references, n.elements, n.lines, n.notes)) {
+            if (graphicNetwork(doc, code.references, n.elements, n.lines, n.notes, &n.statements, &n.treeNotes)) {
                 n.content = n.elements.empty() ? "empty" : "graphic";
+                n.treeRead = true;
                 return;
             }
         }
         const bool stl = lt != std::string::npos && doc.compare(lt, 11, "<Statements") == 0;
-        if (stl && stlText(doc, code.references, n.lines, n.notes)) {
+        if (stl && stlText(doc, code.references, n.lines, n.notes, &n.statements)) {
             n.content = n.lines.empty() ? "empty" : "stl";
+            n.treeRead = true;
             return;
         }
         n.content = "unread";
@@ -1424,6 +2347,23 @@ bool sclText(const std::string& xml, const SclContext& ctx, std::vector<std::str
     return true;
 }
 
+bool sclTree(const std::string& xml, const SclContext& ctx, std::vector<CodeStmt>& out,
+             std::vector<std::string>& notes) {
+    std::unique_ptr<XmlNode> root;
+    try {
+        root = parseXml(xml);
+    } catch (const ParseError&) {
+        return false;
+    }
+    if (!root || root->name != "SCLSource") return false;
+    SclTree t(ctx, notes);
+    if (const XmlNode* table = root->child("Symbols")) t.symbols(*table);
+    const XmlNode* statements = root->child("RootStatements");
+    if (!statements) return false;
+    t.statements(*statements, out, 0);
+    return true;
+}
+
 namespace {
 bool hasLabel(const XmlNode& statement) {
     for (const auto& piece : statement.children)
@@ -1433,7 +2373,7 @@ bool hasLabel(const XmlNode& statement) {
 }  // namespace
 
 bool stlText(const std::string& xml, const std::vector<CodeReference>& references, std::vector<std::string>& lines,
-             std::vector<std::string>& notes) {
+             std::vector<std::string>& notes, std::vector<CodeStmt>* tree) {
     std::unique_ptr<XmlNode> root;
     try {
         root = parseXml(xml);
@@ -1464,14 +2404,47 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
             notes.push_back("piece of unknown kind '" + name + "', shown as {?" + name + "}");
         return "{?" + name + "}";
     };
+    // the tree: one statement per line, the instruction in `name` and its
+    // operands in `exprs`; a label as a statement of its own
+    auto refExpr = [&](const XmlNode& piece) {
+        CodeExpr e;
+        int64_t id = 0;
+        const std::string* ref = piece.attr("RefId");
+        if (ref && parseInt(*ref, id)) {
+            e.op = "ref";
+            e.refId = id;
+            if (const CodeReference* r = findRef(index, references, id)) {
+                e.name = r->text;
+                e.type = r->dataType;
+                if (r->kind == "constant") {
+                    e.op = "const";
+                    e.literal = r->name.empty() ? r->text : r->name;
+                    e.literalType = r->dataType;
+                }
+            }
+        } else {
+            e.op = "const";
+            e.literal = piece.attrOr("DispName", piece.attrOr("TE", piece.attrOr("Text", piece.attrOr("Kw", ""))));
+        }
+        return e;
+    };
     for (const auto& st : root->children) {
         if (st->name != "Statement") continue;
         std::string label, line, comment;
         std::vector<std::pair<std::string, std::string>> parameters;  // name, operand
+        CodeStmt stl;
+        stl.op = "stl";
+        bool named = false;
         for (const auto& piece : st->children) {
             if (piece->name == "Label") {
                 for (const auto& c : piece->children)
                     if (c->name == "OpdAccess") label += operand(*c);
+                if (tree) {
+                    CodeStmt l;
+                    l.op = "label";
+                    l.name = label;
+                    tree->push_back(std::move(l));
+                }
                 label += ":";
                 continue;
             }
@@ -1492,6 +2465,12 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
                     std::string value;
                     for (const auto& c : pe->children) value += c->name == "OpdAccess" ? operand(*c) : unknownPiece(c->name);
                     parameters.emplace_back(name, value);
+                    CodeExpr a;
+                    a.op = "in";
+                    a.name = name;
+                    for (const auto& c : pe->children)
+                        if (c->name == "OpdAccess") a.args.push_back(refExpr(*c));
+                    stl.exprs.push_back(std::move(a));
                 }
                 continue;
             }
@@ -1499,6 +2478,12 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
             if (piece->name == "Token" && !piece->attr("DispName") && kw && *kw == ",") {
                 line += ",";  // between the block and its instance: CALL "FB", "DB"
                 continue;
+            }
+            if (!named) {
+                named = true;
+                stl.name = piece->attrOr("DispName", piece->attrOr("TE", piece->attrOr("Text", kw ? *kw : std::string())));
+            } else {
+                stl.exprs.push_back(refExpr(*piece));
             }
             // a labelled statement is written with single blanks: "M001: NOP 0"
             if (!line.empty()) line.append(line.size() < 6 && !hasLabel(*st) ? 6 - line.size() : 1, ' ');
@@ -1520,6 +2505,7 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
         if (!label.empty()) line = line.empty() ? label : label + " " + line;
         if (!comment.empty()) line = line.empty() ? comment : line + " " + comment;
         lines.push_back(std::move(line));
+        if (tree && named) tree->push_back(std::move(stl));
         // the parameters of a CALL as the editor lists them: the names padded
         // to one width, then := and the operand ("in1  :=\"ZZB\"")
         size_t width = 0;
@@ -1533,7 +2519,8 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
 
 bool graphicNetwork(const std::string& xml, const std::vector<CodeReference>& references,
                     std::vector<NetworkElement>& elements, std::vector<std::string>& lines,
-                    std::vector<std::string>& notes) {
+                    std::vector<std::string>& notes, std::vector<CodeStmt>* tree,
+                    std::vector<std::string>* treeNotes) {
     std::unique_ptr<XmlNode> root;
     try {
         root = parseXml(xml);
@@ -1544,6 +2531,8 @@ bool graphicNetwork(const std::string& xml, const std::vector<CodeReference>& re
     Listing l(references, notes);
     l.load(*root);
     l.write(elements, lines);
+    std::vector<std::string> ignored;
+    if (tree) l.tree(*tree, treeNotes ? *treeNotes : ignored);
     return true;
 }
 
@@ -1645,8 +2634,10 @@ public:
     }
 
     void run() {
-        for (Network& n : code_.networks)
+        for (Network& n : code_.networks) {
             for (NetworkElement& e : n.elements) element(e);
+            for (CodeStmt& s : n.statements) directions(s, 0);
+        }
     }
 
 private:
@@ -1657,6 +2648,66 @@ private:
     const CodeReference* ref(int64_t id) const {
         auto it = index_.find(id);
         return it == index_.end() ? nullptr : &code_.references[it->second];
+    }
+
+    // A LAD or FBD call wires an in-out parameter like an input: the called
+    // block's interface says which it is.
+    void directions(CodeStmt& s, int depth) {
+        if (depth > 200) return;
+        // STL: CALL "FB", "DB" with its parameters
+        if (s.op == "stl" && s.name == "CALL" && !s.exprs.empty() && s.exprs[0].op == "ref")
+            setDirections(s.exprs[0].refId, s.exprs);
+        for (CodeExpr& e : s.exprs) directions(e, depth + 1);
+        for (auto& b : s.branches) {
+            for (CodeExpr& e : b.exprs) directions(e, depth + 1);
+            for (CodeStmt& x : b.body) directions(x, depth + 1);
+        }
+        for (CodeStmt& x : s.body) directions(x, depth + 1);
+        for (CodeStmt& x : s.elseBody) directions(x, depth + 1);
+    }
+    void directions(CodeExpr& e, int depth) {
+        if (depth > 200) return;
+        for (CodeExpr& a : e.args) directions(a, depth + 1);
+        if (e.op != "call" || !e.refId) return;
+        setDirections(e.refId, e.args, e.instanceRefId);
+    }
+    // From the called block's interface; for an instruction, which has
+    // none in the project, from the members of its instance.
+    void setDirections(int64_t calledRef, std::vector<CodeExpr>& params, int64_t instanceRef = 0) {
+        const std::vector<BlockMember>* members = nullptr;
+        if (const CodeReference* called = ref(calledRef)) {
+            const std::string& name = called->dataType.empty() ? called->name : called->dataType;
+            for (const BlockInfo& b : prog_.blockList)
+                if (b.plc == code_.plc && b.name == name && b.declarationsRead) members = &b.declarations;
+        }
+        if (!members && instanceRef) members = instanceMembers(instanceRef);
+        if (!members) return;
+        for (CodeExpr& a : params) {
+            if (a.op != "in") continue;
+            for (const BlockMember& m : *members)
+                if (sameName(m.name, a.name)) {
+                    if (m.section == "InOut") a.op = "inout";
+                    else if (m.section == "Output") a.op = "out";
+                }
+        }
+    }
+    // The members of an instance: of an instance data block, or of a
+    // multi-instance in this block's interface.
+    const std::vector<BlockMember>* instanceMembers(int64_t instanceRef) const {
+        const CodeReference* r = ref(instanceRef);
+        if (!r) return nullptr;
+        if (r->kind == "instance data block") {
+            const std::string name = r->name.empty() ? r->text : r->name;
+            for (const DataBlock& d : prog_.blocks)
+                if (d.plc == code_.plc && (d.name == name || "\"" + d.name + "\"" == name)) return &d.members;
+            return nullptr;
+        }
+        const std::string member = !r->path.empty() ? r->path[0].name : r->name;
+        for (const BlockInfo& b : prog_.blockList)
+            if (b.id == code_.blockId && b.declarationsRead)
+                for (const BlockMember& m : b.declarations)
+                    if (m.name == member) return &m.members;
+        return nullptr;
     }
 
     static bool isConstant(const NetworkElement::Operand& o) {

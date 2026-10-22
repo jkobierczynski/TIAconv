@@ -836,18 +836,25 @@ and the return value.
 `--program-json DIR` writes `DIR/<PLC>.json` for each PLC: everything the
 project holds that a simulator needs, in one file with a documented form
 (`schema_version` 2, [docs/PROGRAM-JSON.md](docs/PROGRAM-JSON.md) and the
-JSON Schema [docs/program.schema.json](docs/program.schema.json)): the
-tags, constants and data blocks with offsets, start values and retain,
-every data type taken apart (size, string length, array bounds) and the PLC
-data types and system types with their members; the
-I/O addresses of the station and of the IO devices; the OBs with event,
-priority, cycle and phase shift; every OB, FB and FC with its whole
-interface and its code, as SCL or STL text or as the LAD/FBD graph with each
-operand linked to what it names; the instructions used, with their library
-versions; and a list of what cannot be simulated from the file
-(`not_simulatable`): know-how protected blocks, which have neither
-interface nor code in it, instructions from Siemens libraries, GRAPH and
-fail-safe blocks, networks that could not be read.
+JSON Schema [docs/program.schema.json](docs/program.schema.json)):
+
+- the tags, constants and data blocks with offsets, start values and
+  retain; every data type taken apart (size, string length, array bounds)
+  and the PLC data types and system types with their members; every value
+  parsed (`T#5S` as 5 000 000 000 ns, `16#FF` as 255);
+- the I/O addresses of the station and of the IO devices;
+- the OBs with event, priority, cycle and phase shift;
+- every OB, FB and FC with its whole interface and its code: as text (SCL,
+  STL), as the LAD/FBD graph with each operand linked to what it names,
+  and as one tree for all languages, statements and expressions with every
+  operand as a reference, ready for an interpreter;
+- the instructions used, with their library versions;
+- what cannot be simulated from the file (`not_simulatable`): know-how
+  protected blocks, which have neither interface nor code in it,
+  instructions from Siemens libraries, GRAPH and fail-safe blocks, networks
+  that could not be read.
+
+`tools/program_tree.py` prints the trees of such a file as SCL-like text.
 
 
 This is `tiaconv --save 15 tests/fixtures/s12_constants`, the rows of one PLC:

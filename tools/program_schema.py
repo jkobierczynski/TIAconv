@@ -85,6 +85,27 @@ defs["element"]=O({
  "options":A(O({"name":S(),"value":S()}),"what the part was set to: SrcType, Card (number of inputs), DisableENO, negated (a negated pin), AutomaticTyped"),
  "pins":A(R("pin")),
 })
+defs["expr"]=O({
+ "op":{"enum":["ref","const","member","index","slice","not","neg","add","sub","mul","div","mod","pow","and","or","xor",
+               "eq","ne","lt","le","gt","ge","call","in","out","inout","edge_pos","edge_neg","wire","range","builtin",
+               "missing","unknown"]},
+ "ref_id":NI("ref, const: the entry of the block's references; member, index: the entry for the whole access; call: the block or instruction called"),
+ "instance_ref_id":NI("call: the instance (data block or multi-instance)"),
+ "name":NS("member: the member; slice: %X3, %B1, ...; call: the name of what is called; in, out, inout: the parameter; wire: <uid>.<pin>; builtin: ENO; unknown: what it is"),
+ "type":NS("the data type of the result, where the project gives it"),
+ "value":{"oneOf":[R("value"),{"type":"null"}],"description":"const: the literal parsed"},
+ "args":A(R("expr"),"the operands, in order"),
+},"an expression of the code tree")
+defs["branch"]=O({"exprs":A(R("expr"),"if: the condition; case: the labels"),"body":A(R("stmt"))})
+defs["stmt"]=O({
+ "op":{"enum":["assign","call","if","case","for","while","repeat","return","exit","continue","label","region",
+               "empty","eval","stl","unknown"]},
+ "name":NS("region, label: the name; stl: the instruction; unknown: what it is"),
+ "exprs":A(R("expr"),"assign: target, value; call: the call; eval: an expression evaluated for its edges; case: the selector; for: variable, from, to, [by]; while, repeat: the condition; stl: the operands"),
+ "branches":A(R("branch"),"if: one per IF/ELSIF; case: one per list of labels"),
+ "body":A(R("stmt"),"for, while, repeat, region"),
+ "else":{"oneOf":[A(R("stmt")),{"type":"null"}],"description":"if, case: the ELSE part; null without one"},
+},"a statement of the code tree")
 defs["network"]=O({
  "number":I("position in the block, 1 = first"),
  "network_id":I("the number the project knows it by"),
@@ -93,6 +114,8 @@ defs["network"]=O({
  "content":{"enum":["scl","stl","graphic","empty","unread"]},
  "lines":A(S(),"scl, stl: the source text; graphic: tiaconv's listing of the elements"),
  "elements":A(R("element"),"graphic: the parts and their wires"),
+ "statements":{"oneOf":[A(R("stmt")),{"type":"null"}],"description":"the code as a tree: SCL, LAD, FBD and STL; null when the network could not be read"},
+ "tree_notes":A(S(),"what of the tree could not be read or is written in a way of its own"),
  "notes":A(S()),
 })
 defs["reference"]=O({

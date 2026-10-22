@@ -1069,6 +1069,164 @@ std::vector<std::string> operandValues(const jsontest::Value& doc, const std::st
     return out;
 }
 
+
+// The code tree of a block as SCL-like text, operands by the text of their
+// reference entry (as tools/program_tree.py prints it).
+struct TreeText {
+    std::map<int64_t, std::string> refs;
+    std::vector<std::string> lines;
+
+    std::string expr(const jsontest::Value& e) {
+        static const std::map<std::string, std::string> ops = {
+            {"add", "+"}, {"sub", "-"}, {"mul", "*"}, {"div", "/"}, {"mod", "MOD"}, {"and", "AND"}, {"or", "OR"},
+            {"xor", "XOR"}, {"eq", "="}, {"ne", "<>"}, {"lt", "<"}, {"le", "<="}, {"gt", ">"}, {"ge", ">="}};
+        const std::string& op = e["op"].s;
+        std::vector<std::string> a;
+        for (const auto& x : e["args"].items) a.push_back(expr(x));
+        auto ref = [&](const jsontest::Value& id, const std::string& fallback) {
+            if (id.type == jsontest::Value::Null) return fallback;
+            auto it = refs.find(id.i());
+            return it == refs.end() ? "{no ref " + std::to_string(id.i()) + "}" : it->second;
+        };
+        if (op == "ref") return ref(e["ref_id"], "{no ref}");
+        if (op == "const") return e["value"]["text"].s;
+        auto o = ops.find(op);
+        if (o != ops.end() && a.size() == 2) return "(" + a[0] + " " + o->second + " " + a[1] + ")";
+        if (op == "not") return "NOT " + a.at(0);
+        if (op == "neg") return "-" + a.at(0);
+        if (op == "member") return a.at(0) + "." + e["name"].s;
+        if (op == "slice") return a.at(0) + "." + e["name"].s;
+        if (op == "index") {
+            std::string t = a.at(0) + "[";
+            for (size_t i = 1; i < a.size(); ++i) t += (i > 1 ? ", " : "") + a[i];
+            return t + "]";
+        }
+        if (op == "call") {
+            std::string t = e["instance_ref_id"].type == jsontest::Value::Null ? "" : ref(e["instance_ref_id"], "") + "/";
+            t += ref(e["ref_id"], e["name"].s) + "(";
+            for (size_t i = 0; i < a.size(); ++i) t += (i ? ", " : "") + a[i];
+            return t + ")";
+        }
+        if (op == "in" || op == "inout")
+            return (e["name"].type == jsontest::Value::Null ? "" : e["name"].s + (op == "in" ? " := " : " :=: ")) + a.at(0);
+        if (op == "out") return e["name"].s + " => " + a.at(0);
+        if (op == "edge_pos" || op == "edge_neg") return (op == "edge_pos" ? "P(" : "N(") + a.at(0) + ", " + a.at(1) + ")";
+        if (op == "wire") return "<" + e["name"].s + ">";
+        if (op == "range") return a.at(0) + ".." + a.at(1);
+        if (op == "builtin") return e["name"].s;
+        return "{" + op + "}";
+    }
+
+    void stmts(const jsontest::Value& list, const std::string& in) {
+        for (const auto& st : list.items) stmt(st, in);
+    }
+
+    void stmt(const jsontest::Value& st, const std::string& in) {
+        const std::string& op = st["op"].s;
+        const auto& x = st["exprs"].items;
+        if (op == "assign") lines.push_back(in + expr(x.at(0)) + " := " + expr(x.at(1)) + ";");
+        else if (op == "call") lines.push_back(in + expr(x.at(0)) + ";");
+        else if (op == "if") {
+            const auto& b = st["branches"].items;
+            for (size_t i = 0; i < b.size(); ++i) {
+                lines.push_back(in + (i ? "ELSIF " : "IF ") + expr(b[i]["exprs"].items.at(0)) + " THEN");
+                stmts(b[i]["body"], in + "  ");
+            }
+            if (st["else"].type == jsontest::Value::Array) {
+                lines.push_back(in + "ELSE");
+                stmts(st["else"], in + "  ");
+            }
+            lines.push_back(in + "END_IF;");
+        } else if (op == "case") {
+            lines.push_back(in + "CASE " + expr(x.at(0)) + " OF");
+            for (const auto& b : st["branches"].items) {
+                std::string labels;
+                for (const auto& l : b["exprs"].items) labels += (labels.empty() ? "" : ", ") + expr(l);
+                lines.push_back(in + "  " + labels + ":");
+                stmts(b["body"], in + "    ");
+            }
+            if (st["else"].type == jsontest::Value::Array) {
+                lines.push_back(in + "  ELSE");
+                stmts(st["else"], in + "    ");
+            }
+            lines.push_back(in + "END_CASE;");
+        } else if (op == "for") {
+            lines.push_back(in + "FOR " + expr(x.at(0)) + " := " + expr(x.at(1)) + " TO " + expr(x.at(2)) +
+                            (x.size() > 3 ? " BY " + expr(x[3]) : "") + " DO");
+            stmts(st["body"], in + "  ");
+            lines.push_back(in + "END_FOR;");
+        } else if (op == "while") {
+            lines.push_back(in + "WHILE " + expr(x.at(0)) + " DO");
+            stmts(st["body"], in + "  ");
+            lines.push_back(in + "END_WHILE;");
+        } else if (op == "repeat") {
+            lines.push_back(in + "REPEAT");
+            stmts(st["body"], in + "  ");
+            lines.push_back(in + "UNTIL " + expr(x.at(0)) + " END_REPEAT;");
+        } else if (op == "region") {
+            lines.push_back(in + "REGION " + st["name"].s);
+            stmts(st["body"], in + "  ");
+            lines.push_back(in + "END_REGION");
+        } else if (op == "stl") {
+            std::string t = in + st["name"].s;
+            for (size_t i = 0; i < x.size(); ++i) t += (i ? ", " : " ") + expr(x[i]);
+            lines.push_back(t);
+        } else if (op == "label") {
+            lines.push_back(in + st["name"].s + ":");
+        } else {
+            lines.push_back(in + "{" + op + " " + st["name"].s + "}");
+        }
+    }
+};
+
+bool sameTree(const jsontest::Value& doc, const std::string& block, const std::vector<std::string>& expected);
+
+// The tree of each network of `block`, "#<number>" before each network.
+std::vector<std::string> treeOf(const jsontest::Value& doc, const std::string& block) {
+    const jsontest::Value* b = named(doc["blocks"], block);
+    if (!b || b->get("code") == nullptr || (*b)["code"].type != jsontest::Value::Object) return {"(no code)"};
+    TreeText t;
+    for (const auto& r : (*b)["code"]["references"].items) t.refs[r["ref_id"].i()] = r["text"].s;
+    for (const auto& n : (*b)["code"]["networks"].items) {
+        t.lines.push_back("#" + std::to_string(n["number"].i()));
+        t.stmts(n["statements"], "");
+    }
+    return t.lines;
+}
+
+// The tree of `block` as expected; prints what it is when not.
+bool sameTree(const jsontest::Value& doc, const std::string& block, const std::vector<std::string>& expected) {
+    const std::vector<std::string> t = treeOf(doc, block);
+    if (t == expected) return true;
+    std::fprintf(stderr, "  tree of %s:\n", block.c_str());
+    for (const auto& l : t) std::fprintf(stderr, "        \"%s\",\n", l.c_str());
+    return false;
+}
+
+// Every node of the tree below `v` is known and every ref_id points into
+// `refs`; returns the number of nodes.
+size_t checkTree(const jsontest::Value& v, const std::set<int64_t>& refs, std::vector<std::string>& bad) {
+    size_t n = 0;
+    if (v.type == jsontest::Value::Array) {
+        for (const auto& x : v.items) n += checkTree(x, refs, bad);
+        return n;
+    }
+    if (v.type != jsontest::Value::Object) return 0;
+    if (const jsontest::Value* op = v.get("op")) {
+        ++n;
+        if (op->s == "unknown" || op->s == "missing") bad.push_back(op->s + " " + v["name"].s);
+        for (const char* k : {"ref_id", "instance_ref_id"})
+            if (const jsontest::Value* id = v.get(k))
+                if (id->type != jsontest::Value::Null && !refs.count(id->i()))
+                    bad.push_back(std::string(k) + " " + std::to_string(id->i()) + " not in the references");
+        if (op->s == "ref" && v["ref_id"].type == jsontest::Value::Null) bad.push_back("ref without ref_id " + v["name"].s);
+    }
+    for (const auto& m : v.members)
+        if (m.first != "value") n += checkTree(m.second, refs, bad);
+    return n;
+}
+
+
 std::string readFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     std::ostringstream o;
@@ -1125,7 +1283,7 @@ void testProgramJson() {
     for (const auto& d : std::filesystem::directory_iterator(TIACONV_FIXTURES))
         if (d.is_directory()) fixtures.push_back(d.path().filename().string());
     std::sort(fixtures.begin(), fixtures.end());
-    size_t files = 0, operandsSeen = 0, typesSeen = 0, valuesSeen = 0;
+    size_t files = 0, operandsSeen = 0, typesSeen = 0, valuesSeen = 0, treeNodes = 0;
     for (const std::string& name : fixtures) {
         const ProgramExport e = loadExport(name);
         for (const std::string& plc : tia::programPlcs(e.prog)) {
@@ -1206,6 +1364,19 @@ void testProgramJson() {
                 if (!open) continue;
                 const auto& nets = (*jb)["code"]["networks"].items;
                 CHECK(nets.size() == c->networks.size());
+                // the tree: every network that was read has one, of known nodes
+                std::set<int64_t> refIds;
+                for (const auto& r : (*jb)["code"]["references"].items) refIds.insert(r["ref_id"].i());
+                for (const auto& n : nets) {
+                    const bool read = n["content"].s != "unread";
+                    CHECK((n["statements"].type == jsontest::Value::Array) == read);
+                    std::vector<std::string> badTree;
+                    treeNodes += checkTree(n["statements"], refIds, badTree);
+                    CHECK(badTree.empty() && n["tree_notes"].items.empty());
+                    for (const auto& bt : badTree)
+                        std::fprintf(stderr, "    %s network %lld: %s\n", b.name.c_str(),
+                                     static_cast<long long>(n["number"].i()), bt.c_str());
+                }
                 for (size_t i = 0; i < nets.size() && i < c->networks.size(); ++i) {
                     std::vector<std::string> lines;
                     for (const auto& l : nets[i]["lines"].items) lines.push_back(l.s);
@@ -1226,6 +1397,7 @@ void testProgramJson() {
     CHECK(operandsSeen >= 85);
     CHECK(typesSeen >= 600);
     CHECK(valuesSeen >= 1400);
+    CHECK(treeNodes >= 380);
 
     // what the TIA Portal sessions set
     {
@@ -1348,6 +1520,35 @@ void testProgramJson() {
                                               "HSC_2 I 1004...1007", "HSC_3 I 1008...1011", "HSC_4 I 1012...1015",
                                               "HSC_5 I 1016...1019", "HSC_6 I 1020...1023", "Pulse_1 Q 1000...1001",
                                               "Pulse_2 Q 1002...1003", "DI 8x24VDC_1 I 8"}));
+    }
+}
+
+// The code tree: the same logic in LAD and in SCL gives the same tree, and
+// the constructs of s14_code_rewritten as TIA Portal shows them.
+void testCodeTree() {
+    {
+        const ProgramExport e = loadExport("s15_motor");
+        current = "s15_motor code tree";
+        const jsontest::Value doc = exportOf(e, "MOTORPLC", "s15_motor");
+        const std::vector<std::string> lad = treeOf(doc, "MotorLAD"), scl = treeOf(doc, "MotorSCL");
+        CHECK(sameTree(doc, "MotorLAD", std::vector<std::string>{"#1", "#run := (((#start OR #run) AND #stop) AND #interlock);", "#2", "#delay/TON(IN := #run, PT := T#5S, Q => <22.Q>);", "#motor := <22.Q>;", "#3", "IF P(#run, #runEdge) THEN", "  \"MotorData\".starts := (\"MotorData\".starts + 1);", "END_IF;", "#4"}));
+        CHECK(sameTree(doc, "MotorSCL", std::vector<std::string>{"#1", "#run := (((#start OR #run) AND #stop) AND #interlock);", "#delay/TON(IN := #run, PT := T#5S);", "#motor := #delay.Q;", "IF (#run AND NOT #runOld) THEN", "  \"MotorData\".starts := (\"MotorData\".starts + 1);", "END_IF;", "#runOld := #run;"}));
+        // the seal-in: one network of LAD, one statement of SCL, one tree
+        CHECK(lad.size() > 1 && scl.size() > 1 && lad[1] == scl[1]);
+        CHECK(sameTree(doc, "Main", {"#1", "\"MotorLAD_DB\"/\"MotorLAD\"(start := \"StartPB\", stop := \"StopPB\", interlock := \"Guard\", motor => \"MotorLadOut\");", "#2", "\"MotorSCL_DB\"/\"MotorSCL\"(start := \"StartPB\", stop := \"StopPB\", interlock := \"Guard\", motor => \"MotorSclOut\");", "#3"}));
+    }
+    {
+        const ProgramExport e = loadExport("s14_code_rewritten");
+        current = "s14_code_rewritten code tree";
+        const jsontest::Value doc = exportOf(e, "ZZPLC", "s14_code_rewritten");
+        CHECK(sameTree(doc, "Main", {"#1", "\"ZZOUT\" := (\"ZZALPHA\" AND NOT \"ZZC\");", "#2", "\"ZZOUT\" := \"ZZC\";", "#3", "IF (\"ZZN1\" > 100) THEN", "  \"ZZDATA\".speed := \"ZZN2\";", "END_IF;", "#4", "\"ZZN3\" := (\"ZZN1\" + 5);", "#5", "\"IEC_Timer_0_DB\"/TON(IN := \"ZZALPHA\", PT := T#5S, Q => <25.Q>);", "\"ZZC\" := <25.Q>;", "#6", "\"ZZFB_DB\"/\"ZZFB\"(in1 := \"ZZALPHA\", io1 :=: \"ZZN2\", out1 => \"ZZC\");", "#7", "\"ZZFBD\"(ENO => <23.eno>);", "IF <23.eno> THEN", "  \"ZZSCL\"(ENO => <25.eno>);", "ELSE", "  <25.eno> := FALSE;", "END_IF;", "IF <25.eno> THEN", "  \"ZZSTL\"();", "END_IF;", "#8", "\"ZZOUTER_DB\"/\"ZZOUTER\"();", "#9", "\"ZZSCL2\"(ENO => <23.eno>);", "IF <23.eno> THEN", "  \"ZZSTL2\"(ENO => <25.eno>);", "ELSE", "  <25.eno> := FALSE;", "END_IF;", "IF <25.eno> THEN", "  \"ZZLAD2_DB\"/\"ZZLAD2\"();", "END_IF;", "#10", "\"ZZSTD_DB\"/\"ZZSTD\"();", "#11", "\"ZZN3\" := \"ZZK\";", "#12"}));
+        CHECK(sameTree(doc, "ZZLAD2", {"#1", "\"ZZOUT\" := NOT \"ZZALPHA\";", "#2", "\"ZZC\" := P(\"ZZB\", #edgeP);", "#3", "\"ZZC\" := N(\"ZZB\", #memN);", "#4", "#IEC_Counter_0_Instance/CTU(CU := \"ZZALPHA\", R := \"ZZB\", PV := 10, CV => \"ZZN3\", Q => <22.Q>);", "\"ZZOUT\" := <22.Q>;", "#5", "#IEC_Timer_0_Instance/TON(IN := \"ZZALPHA\", PT := T#2S, Q => <22.Q>);", "\"ZZOUT\" := <22.Q>;", "#6"}));
+        CHECK(sameTree(doc, "ZZFBD", {"#1", "\"ZZDATA\".run := (\"ZZALPHA\" AND NOT \"ZZB\");", "#2"}));
+        CHECK(sameTree(doc, "ZZOUTER", {"#1", "#inner/\"ZZFB\"(in1 := \"ZZB\", io1 :=: \"ZZN1\", out1 => \"ZZOUT\");", "#2"}));
+        CHECK(sameTree(doc, "ZZSCL2", {"#1", "WHILE (\"ZZN1\" < 10) DO", "  \"ZZN1\" := (\"ZZN1\" + 1);", "END_WHILE;", "REPEAT", "  \"ZZN2\" := (\"ZZN2\" + 1);", "UNTIL (\"ZZN2\" > 5) END_REPEAT;", "CASE \"ZZN3\" OF", "  1..5:", "    \"ZZOUT\" := TRUE;", "  6, 8:", "    \"ZZOUT\" := FALSE;", "  ELSE", "    \"ZZC\" := TRUE;", "END_CASE;"}));
+        CHECK(sameTree(doc, "ZZSTL", {"#1", "A \"ZZALPHA\"", "AN \"ZZB\"", "= \"ZZOUT\"", "#2", "L \"ZZN1\"", "L 5", "+I", "T \"ZZN3\""}));
+        CHECK(sameTree(doc, "ZZSTL2", {"#1", "A \"ZZALPHA\"", "JC M001", "L 1", "T \"ZZN1\"", "M001:", "NOP 0", "#2", "CALL \"ZZFBD\"", "#3", "CALL \"ZZFB\", \"ZZFB_DB\", in1 := \"ZZB\", out1 => \"ZZC\", io1 :=: \"ZZN2\""}));
+        CHECK(sameTree(doc, "ZZSCL", {"(no code)"}));
     }
 }
 
@@ -2980,6 +3181,7 @@ int main() {
     testMotor();
     testOperands();
     testProgramJson();
+    testCodeTree();
     testDiff();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

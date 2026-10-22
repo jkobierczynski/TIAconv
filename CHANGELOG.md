@@ -10,6 +10,12 @@
   read from their definitions, and the system types used (TON_TIME, CTU_INT,
   DTL) with their members. The schema is written by
   `tools/program_schema.py`.
+- Program export: the code as a tree. Every network has `statements`, the
+  same form for SCL, LAD, FBD and STL: assignments, calls with their
+  parameters, IF, CASE, FOR, WHILE, REPEAT, regions; expressions with every
+  operand as a `ref_id`; LAD and FBD in evaluation order with wires between
+  the parts and EN/ENO; STL one statement per line. The same logic in LAD
+  and in SCL gives the same tree. `tools/program_tree.py` prints it.
 - Program export: values parsed. Members have `start`, constants
   `parsed`, constant operands and references `value`: booleans, whole
   numbers in every base, reals, durations in nanoseconds, dates, times of

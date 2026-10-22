@@ -949,6 +949,205 @@
         }
       }
     },
+    "expr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "ref_id",
+        "instance_ref_id",
+        "name",
+        "type",
+        "value",
+        "args"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "ref",
+            "const",
+            "member",
+            "index",
+            "slice",
+            "not",
+            "neg",
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "mod",
+            "pow",
+            "and",
+            "or",
+            "xor",
+            "eq",
+            "ne",
+            "lt",
+            "le",
+            "gt",
+            "ge",
+            "call",
+            "in",
+            "out",
+            "inout",
+            "edge_pos",
+            "edge_neg",
+            "wire",
+            "range",
+            "builtin",
+            "missing",
+            "unknown"
+          ]
+        },
+        "ref_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "ref, const: the entry of the block's references; member, index: the entry for the whole access; call: the block or instruction called"
+        },
+        "instance_ref_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "call: the instance (data block or multi-instance)"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "member: the member; slice: %X3, %B1, ...; call: the name of what is called; in, out, inout: the parameter; wire: <uid>.<pin>; builtin: ENO; unknown: what it is"
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the data type of the result, where the project gives it"
+        },
+        "value": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/value"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "const: the literal parsed"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/expr"
+          },
+          "description": "the operands, in order"
+        }
+      },
+      "description": "an expression of the code tree"
+    },
+    "branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exprs",
+        "body"
+      ],
+      "properties": {
+        "exprs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/expr"
+          },
+          "description": "if: the condition; case: the labels"
+        },
+        "body": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/stmt"
+          }
+        }
+      }
+    },
+    "stmt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "name",
+        "exprs",
+        "branches",
+        "body",
+        "else"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "assign",
+            "call",
+            "if",
+            "case",
+            "for",
+            "while",
+            "repeat",
+            "return",
+            "exit",
+            "continue",
+            "label",
+            "region",
+            "empty",
+            "eval",
+            "stl",
+            "unknown"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "region, label: the name; stl: the instruction; unknown: what it is"
+        },
+        "exprs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/expr"
+          },
+          "description": "assign: target, value; call: the call; eval: an expression evaluated for its edges; case: the selector; for: variable, from, to, [by]; while, repeat: the condition; stl: the operands"
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/branch"
+          },
+          "description": "if: one per IF/ELSIF; case: one per list of labels"
+        },
+        "body": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/stmt"
+          },
+          "description": "for, while, repeat, region"
+        },
+        "else": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/stmt"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "if, case: the ELSE part; null without one"
+        }
+      },
+      "description": "a statement of the code tree"
+    },
     "network": {
       "type": "object",
       "additionalProperties": false,
@@ -961,6 +1160,8 @@
         "content",
         "lines",
         "elements",
+        "statements",
+        "tree_notes",
         "notes"
       ],
       "properties": {
@@ -1012,6 +1213,27 @@
             "$ref": "#/$defs/element"
           },
           "description": "graphic: the parts and their wires"
+        },
+        "statements": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/stmt"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the code as a tree: SCL, LAD, FBD and STL; null when the network could not be read"
+        },
+        "tree_notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "what of the tree could not be read or is written in a way of its own"
         },
         "notes": {
           "type": "array",

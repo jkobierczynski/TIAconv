@@ -131,6 +131,68 @@ struct NetworkElement {
     std::vector<Pin> pins;
 };
 
+// The code as a tree, the same for SCL, LAD and FBD: statements whose
+// expressions name operands by their entry in the block's reference table.
+//
+// An expression's `op` is one of
+//   ref      an operand (`refId`)
+//   const    a literal (`literal`, `literalType`; `refId` where the table has it)
+//   member   `args[0]`.`name`; `refId`: the entry for the whole access where there is one
+//   index    `args[0]`[`args[1]`, ...]; `refId` as for member
+//   slice    a part of `args[0]`: `name` is %X3, %B1, ...
+//   not neg  unary
+//   add sub mul div mod pow and or xor eq ne lt le gt ge    binary, `args` left to right
+//   call     a block or instruction: `name`, `refId` (the block or instruction),
+//            `instanceRefId` (its instance); `args` are its parameters
+//   in out inout   a parameter of a call: `name`, `args[0]` the operand
+//   edge_pos edge_neg   the edge of `args[0]` with the edge memory `args[1]` (LAD, FBD)
+//   wire     the value of a pin of another part of the network, `name` "<uid>.<pin>"
+//            (LAD, FBD: set by an earlier statement of the same network)
+//   range    `args[0]`..`args[1]` (labels of CASE)
+//   builtin  `name` ENO: the block's own ENO (SCL)
+//   missing  nothing entered;  unknown: `name` says what
+// An interpreter evaluates every operand of and/or: an edge in one of them
+// updates its memory bit.
+// `type` is the data type of the result where the project gives it (SCL).
+struct CodeExpr {
+    std::string op;
+    int64_t refId = 0;
+    int64_t instanceRefId = 0;
+    std::string name;
+    std::string type;
+    std::string literal, literalType;
+    std::vector<CodeExpr> args;
+};
+
+// A statement's `op` is one of
+//   assign   `exprs[0]` := `exprs[1]`
+//   call     `exprs[0]` (a call)
+//   if       `branches`: condition in `exprs[0]`, then `body`; `elseBody` when `hasElse`
+//   case     `exprs[0]` the selector; `branches`: labels in `exprs`, `body`; ELSE as for if
+//   for      `exprs`: variable, from, to, [by]; `body`
+//   while    `exprs[0]` the condition; `body`
+//   repeat   `body`, until `exprs[0]`
+//   return exit continue empty
+//   eval     `exprs[0]` evaluated for its edges (LAD, FBD: logic that leads nowhere)
+//   label    `name`: an STL label
+//   region   `name`, `body`
+//   stl      one STL statement: the instruction in `name` ("A", "L", "JC",
+//            "CALL"), its operands in `exprs` (a CALL's parameters as `in`)
+//   unknown  `name` says what
+struct CodeStmt {
+    std::string op;
+    std::string name;
+    std::vector<CodeExpr> exprs;
+    struct Branch {
+        std::vector<CodeExpr> exprs;
+        std::vector<CodeStmt> body;
+    };
+    std::vector<Branch> branches;
+    std::vector<CodeStmt> body;
+    bool hasElse = false;
+    std::vector<CodeStmt> elseBody;
+};
+
 struct Network {
     uint64_t id = 0;
     size_t number = 0;      // position in the block, 1 = first
@@ -148,6 +210,10 @@ struct Network {
     // source has them
     size_t trailingEmptyLines = 0;
     std::vector<NetworkElement> elements;
+    // The code as a tree (`treeRead`): SCL, LAD, FBD, STL
+    bool treeRead = false;
+    std::vector<CodeStmt> statements;
+    std::vector<std::string> treeNotes;  // what of the tree could not be read
     std::vector<std::string> notes;
 };
 
@@ -215,16 +281,22 @@ struct SclContext {
 bool sclText(const std::string& xml, const SclContext& ctx, std::vector<std::string>& lines,
              std::vector<std::string>& notes, size_t* trailingEmptyLines = nullptr);
 
+// The statements of an SCL network from its stored token document. Returns
+// false when the document is not SCL tokens.
+bool sclTree(const std::string& xml, const SclContext& ctx, std::vector<CodeStmt>& out,
+             std::vector<std::string>& notes);
+
 // The lines of an STL network from its stored document. Returns false when
 // the document is not STL statements.
 bool stlText(const std::string& xml, const std::vector<CodeReference>& references, std::vector<std::string>& lines,
-             std::vector<std::string>& notes);
+             std::vector<std::string>& notes, std::vector<CodeStmt>* tree = nullptr);
 
 // The parts of a LAD or FBD network from its stored document, and the
 // listing. Returns false when the document is not such a network.
 bool graphicNetwork(const std::string& xml, const std::vector<CodeReference>& references,
                     std::vector<NetworkElement>& elements, std::vector<std::string>& lines,
-                    std::vector<std::string>& notes);
+                    std::vector<std::string>& notes, std::vector<CodeStmt>* tree = nullptr,
+                    std::vector<std::string>* treeNotes = nullptr);
 
 // Completes the operands of the LAD and FBD networks of `code` with what
 // `prog` knows: the address of a tag or data block member, the type of each

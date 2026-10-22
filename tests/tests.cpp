@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -2643,6 +2644,242 @@ void testParseValue() {
     CHECK_EQ(tia::parseValue("  16#FF ").text, "16#FF");
 }
 
+// SCL as a tree, from a token document of the form TIA Portal stores.
+std::string treeLine(const tia::CodeExpr& e) {
+    std::string s = e.op;
+    if (e.refId) s += "#" + std::to_string(e.refId);
+    if (e.instanceRefId) s += "@" + std::to_string(e.instanceRefId);
+    if (!e.name.empty()) s += ":" + e.name;
+    if (!e.literal.empty()) s += "=" + e.literal + "/" + e.literalType;
+    if (!e.args.empty()) {
+        s += "(";
+        for (size_t i = 0; i < e.args.size(); ++i) s += (i ? " " : "") + treeLine(e.args[i]);
+        s += ")";
+    }
+    return s;
+}
+void treeLines(const std::vector<tia::CodeStmt>& list, const std::string& in, std::vector<std::string>& out) {
+    for (const auto& st : list) {
+        std::string l = in + st.op;
+        if (!st.name.empty()) l += " " + st.name;
+        for (const auto& e : st.exprs) l += " " + treeLine(e);
+        out.push_back(l);
+        for (const auto& b : st.branches) {
+            std::string h = in + " |";
+            for (const auto& e : b.exprs) h += " " + treeLine(e);
+            out.push_back(h);
+            treeLines(b.body, in + "   ", out);
+        }
+        treeLines(st.body, in + "  ", out);
+        if (st.hasElse) {
+            out.push_back(in + " else");
+            treeLines(st.elseBody, in + "   ", out);
+        }
+    }
+}
+
+void testSclTree() {
+    const char doc[] =
+        "<SCLSource><Symbols>"
+        "<LocalTag SymID=\"1\" RefId=\"11\"/><LocalTag SymID=\"2\" RefId=\"12\"/><LocalTag SymID=\"3\" RefId=\"13\"/>"
+        "<LocalStructuredTag SymID=\"4\" RefId=\"14\" ParentSymID=\"3\"/><LocalTag SymID=\"5\" RefId=\"15\"/>"
+        "<LocalTag SymID=\"6\" RefId=\"16\"/><LiteralConst SymID=\"7\" Name=\"10\" Typ=\"Int\"/>"
+        "<Instruction SymID=\"8\" Name=\"ABS\"/><BuiltInVar SymID=\"9\" BIName=\"ENO\"/>"
+        "<Instance SymID=\"20\" RefId=\"30\" TypeSymID=\"21\"/><Instruction SymID=\"21\" RefId=\"31\" Name=\"TON\"/>"
+        "</Symbols><RootStatements>"
+        // IF #a AND NOT #b THEN #s.x := -#i; ELSIF #i > 10 THEN ; ELSE ENO := FALSE; END_IF;
+        "<Statement SI=\"IFEIE\" TE=\"IF\"><Fold><BL/>"
+        "<Expression SI=\"ExprAnd\" Result=\"Bool\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"1\" ODN=\"#a\"/></Expression>"
+        "<BL/><OpAND/><BL/><Expression SI=\"ExprUnaryN\"><OpNOT/><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"2\" ODN=\"#b\"/></Expression></Expression></Expression>"
+        "<KwTHEN/><NL/><Statements><Statement SI=\"STAss\">"
+        "<Expression SI=\"ExprDot\" Result=\"Int\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"VarStruct\" SyId=\"3\" ODN=\"#s\"/></Expression><Dot/><SymVa SI=\"Var\" SyId=\"4\" ODN=\"x\"/></Expression>"
+        "<OpAs/><Expression SI=\"ExprUnaryM\"><OpMi/><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"5\" ODN=\"#i\"/></Expression></Expression><FiSt/></Statement></Statements>"
+        "<KwELSIF/><Expression SI=\"ExprEquG\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"5\" ODN=\"#i\"/></Expression><OpG/>"
+        "<Expression SI=\"ExprPrimC\"><Const TE=\"10\" SI=\"ConstInt\" SyId=\"7\"/></Expression></Expression><KwTHEN/>"
+        "<Statements><Statement SI=\"STSim\"><FiSt/></Statement></Statements>"
+        "<KwELSE/><Statements><Statement SI=\"STAss\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"9\"/></Expression><OpAs/>"
+        "<Expression SI=\"ExprPrimC\"><Const TE=\"FALSE\" SI=\"ConstBool\"/></Expression><FiSt/></Statement></Statements>"
+        "<KwENDIF/><FiSt/></Fold></Statement>"
+        // FOR #i := 1 TO 10 BY 2 DO #r := ABS(#r - (#i * 2)); END_FOR;
+        "<Statement SI=\"STFOR\" TE=\"FOR\"><Fold><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"5\" ODN=\"#i\"/></Expression><OpAs/>"
+        "<Expression SI=\"ExprPrimC\"><Const TE=\"1\" SI=\"ConstInt\"/></Expression><KwTO/>"
+        "<Expression SI=\"ExprPrimC\"><Const TE=\"10\" SI=\"ConstInt\" SyId=\"7\"/></Expression><KwBY/>"
+        "<Expression SI=\"ExprPrimC\"><Const TE=\"2\" SI=\"ConstInt\"/></Expression><KwDO/><Statements>"
+        "<Statement SI=\"STAss\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"6\" ODN=\"#r\"/></Expression><OpAs/>"
+        "<Expression SI=\"ExprPrimD\"><FctCa><Sub SI=\"Instruction\" SyId=\"8\" ODN=\"ABS\"/><BracO/><Fold>"
+        "<Param SI=\"ParaIn\"><SymPa V=\"0\" FormalName=\"IN\"/><Expression SI=\"ExprSub\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"6\" ODN=\"#r\"/></Expression>"
+        "<OpMi/><Expression SI=\"ExprPrimE\"><BracO/><Expression SI=\"ExprTermM\"><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"5\" ODN=\"#i\"/></Expression>"
+        "<OpMu/><Expression SI=\"ExprPrimC\"><Const TE=\"2\" SI=\"ConstInt\"/></Expression></Expression><BracC/></Expression></Expression></Param>"
+        "<BracC/></Fold></FctCa></Expression><FiSt/></Statement></Statements><KwENDFOR/><FiSt/></Fold></Statement>"
+        // #t(IN := #a, Q => #b); and a statement of a kind not known
+        "<Statement SI=\"STSub\"><InstCa><Sub SI=\"DB\" SyId=\"20\" ODN=\"#t\"/><BracO/><Fold>"
+        "<Param SI=\"ParaIn\"><SymPa FormalName=\"IN\"/><OpAs/><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"1\" ODN=\"#a\"/></Expression></Param><Comma/>"
+        "<Param SI=\"ParaOut\"><SymPa FormalName=\"Q\"/><OpPa/><Expression SI=\"ExprPrimD\"><SymVa SI=\"Var\" SyId=\"2\" ODN=\"#b\"/></Expression></Param>"
+        "<BracC/></Fold></InstCa><FiSt/></Statement>"
+        "<Statement SI=\"STGOTO\" TE=\"GOTO\"><FiSt/></Statement>"
+        "</RootStatements></SCLSource>";
+    std::vector<tia::CodeReference> refs;
+    tia::SclContext ctx;
+    ctx.references = &refs;
+    std::vector<tia::CodeStmt> tree;
+    std::vector<std::string> notes;
+    CHECK(tia::sclTree(doc, ctx, tree, notes));
+    std::vector<std::string> lines;
+    treeLines(tree, "", lines);
+    const std::vector<std::string> expected = {
+        "if",
+        " | and(ref#11:#a not(ref#12:#b))",
+        "   assign member#14:x(ref#13:#s) neg(ref#15:#i)",
+        " | gt(ref#15:#i const=10/Int)",
+        "   empty",
+        " else",
+        "   assign builtin:ENO const=FALSE/Bool",
+        "for ref#15:#i const=1/Int const=10/Int const=2/Int",
+        "  assign ref#16:#r call:ABS(in:IN(sub(ref#16:#r mul(ref#15:#i const=2/Int))))",
+        "call call#31@30:#t(in:IN(ref#11:#a) out:Q(ref#12:#b))",
+        "unknown STGOTO",
+    };
+    CHECK(lines == expected);
+    if (lines != expected)
+        for (const auto& l : lines) std::fprintf(stderr, "  %s\n", l.c_str());
+    CHECK(notes == (std::vector<std::string>{"a statement of the kind 'STGOTO' not read into the tree"}));
+    // not a token document
+    CHECK(!tia::sclTree("<FlgNet/>", ctx, tree, notes));
+    // nesting too deep for the tree: cut off with a note, not a crash
+    std::string deep = "<SCLSource><RootStatements><Statement SI=\"STAss\"><Expression SI=\"ExprPrimD\"><SymVa SyId=\"1\"/></Expression><OpAs/>";
+    // deeper than the tree follows, not as deep as the XML reader refuses
+    for (int i = 0; i < 230; ++i) deep += "<Expression SI=\"ExprPrimE\">";
+    deep += "<Expression SI=\"ExprPrimC\"><Const TE=\"1\"/></Expression>";
+    for (int i = 0; i < 230; ++i) deep += "</Expression>";
+    deep += "</Statement></RootStatements></SCLSource>";
+    tree.clear();
+    notes.clear();
+    CHECK(tia::sclTree(deep, ctx, tree, notes));
+    CHECK(tree.size() == 1 && notes == (std::vector<std::string>{"statements nested too deeply, tree incomplete"}));
+}
+
+// LAD as a tree: the network of the edge contacts above, statements in the
+// order the parts are evaluated.
+void testGraphicTree() {
+    const std::vector<tia::CodeReference> refs = testReferences();
+    const char lad[] =
+        "<FlgNet><Parts><Part UId=\"20\" Gate=\"Contact\" /><Part UId=\"23\" Gate=\"PContact\" /><Part UId=\"29\" Gate=\"Coil\" />"
+        "<Part UId=\"40\" Gate=\"NContact\" /><Part UId=\"41\" Gate=\"Coil\"><Negated PinName=\"operand\" /></Part>"
+        "<ORef UId=\"24\" RefId=\"12\" /><ORef UId=\"26\" RefId=\"14\" /><ORef UId=\"30\" RefId=\"6\" /><ORef UId=\"31\" RefId=\"9\" />"
+        "</Parts><Wires>"
+        "<Wire><Powerrail /><PCon UId=\"20\" PinName=\"in\" /><PCon UId=\"40\" PinName=\"pre\" /></Wire>"
+        "<Wire><OCon UId=\"31\" /><PCon UId=\"20\" PinName=\"operand\" /></Wire>"
+        "<Wire><PCon UId=\"20\" PinName=\"out\" /><PCon UId=\"23\" PinName=\"pre\" /></Wire>"
+        "<Wire><OCon UId=\"26\" /><PCon UId=\"23\" PinName=\"bit\" /><PCon UId=\"40\" PinName=\"bit\" /></Wire>"
+        "<Wire><OCon UId=\"24\" /><PCon UId=\"23\" PinName=\"operand\" /><PCon UId=\"40\" PinName=\"operand\" /></Wire>"
+        "<Wire><PCon UId=\"23\" PinName=\"out\" /><PCon UId=\"29\" PinName=\"in\" /></Wire>"
+        "<Wire><OCon UId=\"30\" /><PCon UId=\"29\" PinName=\"operand\" /><PCon UId=\"41\" PinName=\"operand\" /></Wire>"
+        "<Wire><PCon UId=\"40\" PinName=\"out\" /><PCon UId=\"41\" PinName=\"in\" /></Wire>"
+        "</Wires></FlgNet>";
+    std::vector<tia::NetworkElement> elements;
+    std::vector<std::string> lines, notes, treeNotes;
+    std::vector<tia::CodeStmt> tree;
+    CHECK(tia::graphicNetwork(lad, refs, elements, lines, notes, &tree, &treeNotes));
+    std::vector<std::string> t;
+    treeLines(tree, "", t);
+    const std::vector<std::string> expected = {
+        "assign ref#6:{?6} and(ref#9:{?9} edge_pos(ref#12:\"Data\".\"my buffer\"[2, #index] ref#14:{?14}))",
+        "assign ref#6:{?6} not(edge_neg(ref#12:\"Data\".\"my buffer\"[2, #index] ref#14:{?14}))",
+    };
+    CHECK(t == expected);
+    if (t != expected)
+        for (const auto& l : t) std::fprintf(stderr, "  %s\n", l.c_str());
+    CHECK(treeNotes.empty());
+
+    // evaluation order: the Add reads the Move's output, so it comes after
+    // the Move although it is first on the screen; ENO wired on
+    const char order[] =
+        "<FlgNet><Parts><Part UId=\"50\" Gate=\"Add\"><TemplateValue Name=\"SrcType\" Type=\"Type\">Int</TemplateValue></Part>"
+        "<Part UId=\"51\" Gate=\"Move\" /><ORef UId=\"60\" RefId=\"12\" /><ORef UId=\"61\" RefId=\"14\" /><ORef UId=\"62\" RefId=\"6\" />"
+        "</Parts><Wires>"
+        "<Wire><Powerrail /><PCon UId=\"51\" PinName=\"en\" /></Wire>"
+        "<Wire><OCon UId=\"60\" /><PCon UId=\"51\" PinName=\"in\" /></Wire>"
+        "<Wire><PCon UId=\"51\" PinName=\"out1\" /><PCon UId=\"50\" PinName=\"in1\" /></Wire>"
+        "<Wire><PCon UId=\"51\" PinName=\"eno\" /><PCon UId=\"50\" PinName=\"en\" /></Wire>"
+        "<Wire><OCon UId=\"61\" /><PCon UId=\"50\" PinName=\"in2\" /></Wire>"
+        "<Wire><PCon UId=\"50\" PinName=\"out\" /><OCon UId=\"62\" /></Wire>"
+        "</Wires></FlgNet>";
+    elements.clear();
+    lines.clear();
+    notes.clear();
+    tree.clear();
+    CHECK(tia::graphicNetwork(order, refs, elements, lines, notes, &tree, &treeNotes));
+    t.clear();
+    treeLines(tree, "", t);
+    const std::vector<std::string> expected2 = {
+        "assign wire:51.out1 ref#12:\"Data\".\"my buffer\"[2, #index]",
+        "assign wire:51.eno const=TRUE/Bool",
+        "if",
+        " | wire:51.eno",
+        "   assign ref#6:{?6} add(wire:51.out1 ref#14:{?14})",
+    };
+    CHECK(t == expected2);
+    if (t != expected2)
+        for (const auto& l : t) std::fprintf(stderr, "  %s\n", l.c_str());
+}
+
+// LAD as a tree, the cases a review found: logic read by two parts
+// computed once (an edge evaluated once, a value read before a box writes
+// it), the power past a coil, inputs in the order of their pins, a negated
+// output, an OR that must keep its edge, a P_TRIG leading nowhere.
+void testGraphicTreeCases() {
+    std::vector<tia::CodeReference> refs;
+    for (const auto& r : std::vector<std::pair<int64_t, const char*>>{
+             {1, "#a"}, {2, "#b"}, {4, "#x"}, {5, "#y"}, {6, "#m"}, {10, "#i10"}, {11, "#i11"}, {12, "#i12"}, {13, "#k"}}) {
+        tia::CodeReference c;
+        c.refId = r.first;
+        c.kind = "local";
+        c.text = r.second;
+        refs.push_back(c);
+    }
+    const std::vector<std::pair<const char*, const char*>> cases = {
+        {"t1", "<FlgNet><Parts><Part UId=\"23\" Gate=\"PContact\"/><Part UId=\"29\" Gate=\"SCoil\"/><Part UId=\"31\" Gate=\"RCoil\"/><ORef UId=\"24\" RefId=\"1\"/><ORef UId=\"26\" RefId=\"6\"/><ORef UId=\"30\" RefId=\"4\"/><ORef UId=\"32\" RefId=\"5\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"pre\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"operand\"/></Wire><Wire UId=\"3\"><OCon UId=\"26\"/><PCon UId=\"23\" PinName=\"bit\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><PCon UId=\"29\" PinName=\"in\"/><PCon UId=\"31\" PinName=\"in\"/></Wire><Wire UId=\"5\"><OCon UId=\"30\"/><PCon UId=\"29\" PinName=\"operand\"/></Wire><Wire UId=\"6\"><OCon UId=\"32\"/><PCon UId=\"31\" PinName=\"operand\"/></Wire></Wires></FlgNet>"},
+        {"t2", "<FlgNet><Parts><Part UId=\"23\" Gate=\"Contact\"><Negated PinName=\"operand\"/></Part><Part UId=\"29\" Gate=\"Coil\"/><Part UId=\"31\" Gate=\"Coil\"/><ORef UId=\"24\" RefId=\"4\"/><ORef UId=\"30\" RefId=\"4\"/><ORef UId=\"32\" RefId=\"5\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"in\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"operand\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><PCon UId=\"29\" PinName=\"in\"/></Wire><Wire UId=\"7\"><PCon UId=\"29\" PinName=\"out\"/><PCon UId=\"31\" PinName=\"in\"/></Wire><Wire UId=\"5\"><OCon UId=\"30\"/><PCon UId=\"29\" PinName=\"operand\"/></Wire><Wire UId=\"6\"><OCon UId=\"32\"/><PCon UId=\"31\" PinName=\"operand\"/></Wire></Wires></FlgNet>"},
+        {"t3", "<FlgNet><Parts><Part UId=\"23\" Gate=\"Sub\"><TemplateValue Name=\"Card\" Type=\"Cardinality\">2</TemplateValue><TemplateValue Name=\"SrcType\" Type=\"Type\">Int</TemplateValue></Part><ORef UId=\"24\" RefId=\"10\"/><ORef UId=\"25\" RefId=\"11\"/><ORef UId=\"26\" RefId=\"12\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"en\"/></Wire><Wire UId=\"3\"><OCon UId=\"25\"/><PCon UId=\"23\" PinName=\"in2\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"in1\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><OCon UId=\"26\"/></Wire></Wires></FlgNet>"},
+        {"t4", "<FlgNet><Parts><Part UId=\"20\" Gate=\"Move\"/><Part UId=\"23\" Gate=\"Contact\"/><Part UId=\"31\" Gate=\"Coil\"/><ORef UId=\"24\" RefId=\"10\"/><ORef UId=\"21\" RefId=\"13\"/><ORef UId=\"22\" RefId=\"10\"/><ORef UId=\"32\" RefId=\"5\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"in\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"operand\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><PCon UId=\"20\" PinName=\"en\"/><PCon UId=\"31\" PinName=\"in\"/></Wire><Wire UId=\"5\"><OCon UId=\"21\"/><PCon UId=\"20\" PinName=\"in\"/></Wire><Wire UId=\"7\"><PCon UId=\"20\" PinName=\"out1\"/><OCon UId=\"22\"/></Wire><Wire UId=\"6\"><OCon UId=\"32\"/><PCon UId=\"31\" PinName=\"operand\"/></Wire></Wires></FlgNet>"},
+        {"t5", "<FlgNet><Parts><Part UId=\"20\" Gate=\"A\"><Negated PinName=\"out\"/></Part><Part UId=\"31\" Gate=\"Coil\"/><ORef UId=\"24\" RefId=\"1\"/><ORef UId=\"25\" RefId=\"2\"/><ORef UId=\"32\" RefId=\"5\"/></Parts><Wires><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"20\" PinName=\"in1\"/></Wire><Wire UId=\"3\"><OCon UId=\"25\"/><PCon UId=\"20\" PinName=\"in2\"/></Wire><Wire UId=\"4\"><PCon UId=\"20\" PinName=\"out\"/><PCon UId=\"31\" PinName=\"in\"/></Wire><Wire UId=\"6\"><OCon UId=\"32\"/><PCon UId=\"31\" PinName=\"operand\"/></Wire></Wires></FlgNet>"},
+        {"t6", "<FlgNet><Parts><Part UId=\"23\" Gate=\"PContact\"/><Part UId=\"25\" Gate=\"O\"/><Part UId=\"29\" Gate=\"Coil\"/><ORef UId=\"24\" RefId=\"1\"/><ORef UId=\"26\" RefId=\"6\"/><ORef UId=\"30\" RefId=\"4\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"pre\"/><PCon UId=\"25\" PinName=\"in2\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"operand\"/></Wire><Wire UId=\"3\"><OCon UId=\"26\"/><PCon UId=\"23\" PinName=\"bit\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><PCon UId=\"25\" PinName=\"in1\"/></Wire><Wire UId=\"7\"><PCon UId=\"25\" PinName=\"out\"/><PCon UId=\"29\" PinName=\"in\"/></Wire><Wire UId=\"5\"><OCon UId=\"30\"/><PCon UId=\"29\" PinName=\"operand\"/></Wire></Wires></FlgNet>"},
+        {"t7", "<FlgNet><Parts><Part UId=\"20\" Gate=\"PBox\"/><Part UId=\"23\" Gate=\"Contact\"/><ORef UId=\"24\" RefId=\"1\"/><ORef UId=\"26\" RefId=\"6\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"in\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"operand\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><PCon UId=\"20\" PinName=\"in\"/></Wire><Wire UId=\"3\"><OCon UId=\"26\"/><PCon UId=\"20\" PinName=\"bit\"/></Wire></Wires></FlgNet>"},
+    };
+    const std::map<std::string, std::vector<std::string>> expected = {
+        // -|P| a, m-+-(S)- x  and  +-(R)- y: the edge once, both coils see it
+        {"t1", {"assign wire:23.out edge_pos(ref#1:#a ref#6:#m)", "if", " | wire:23.out",
+                "   assign ref#4:#x const=TRUE/Bool", "if", " | wire:23.out", "   assign ref#5:#y const=FALSE/Bool"}},
+        // -|/ x|-( x )-( y ): y gets what went into the first coil
+        {"t2", {"assign wire:29.out not(ref#4:#x)", "assign ref#4:#x wire:29.out", "assign ref#5:#y wire:29.out"}},
+        // SUB with the wire of in2 stored first: in1 - in2
+        {"t3", {"assign ref#12:#i12 sub(ref#10:#i10 ref#11:#i11)"}},
+        // -| i10 |-+-[MOVE k -> i10]  and  +-( y ): y gets i10 from before the MOVE
+        {"t4", {"assign wire:23.out ref#10:#i10", "if", " | wire:23.out", "   assign ref#10:#i10 ref#13:#k",
+                "assign ref#5:#y wire:23.out"}},
+        // an A box with its output negated
+        {"t5", {"assign ref#5:#y not(and(ref#1:#a ref#2:#b))"}},
+        // an O with the power rail at one input keeps the edge at the other
+        {"t6", {"assign ref#4:#x or(edge_pos(ref#1:#a ref#6:#m) const=TRUE/Bool)"}},
+        // a P_TRIG whose output goes nowhere still updates its edge memory
+        {"t7", {"eval edge_pos(ref#1:#a ref#6:#m)"}},
+    };
+    for (const auto& c : cases) {
+        std::vector<tia::NetworkElement> elements;
+        std::vector<std::string> lines, notes, treeNotes, t;
+        std::vector<tia::CodeStmt> tree;
+        CHECK(tia::graphicNetwork(c.second, refs, elements, lines, notes, &tree, &treeNotes));
+        treeLines(tree, "", t);
+        CHECK(t == expected.at(c.first) && treeNotes.empty());
+        // the listing negates the negated output too
+        if (std::string(c.first) == "t5") CHECK(joinLines(lines) == "1: #y := NOT (#a AND #b)\n");
+        if (t != expected.at(c.first)) {
+            std::fprintf(stderr, "%s\n", c.first);
+            for (const auto& l : t) std::fprintf(stderr, "  \"%s\",\n", l.c_str());
+        }
+    }
+}
+
 void testGraphicNetworks() {
     const std::vector<tia::CodeReference> refs = testReferences();
     std::vector<tia::NetworkElement> elements;
@@ -3221,6 +3458,9 @@ int main() {
     testOperandLinks();
     testDescribeType();
     testParseValue();
+    testSclTree();
+    testGraphicTree();
+    testGraphicTreeCases();
     testCodeProject();
     testCodeProtectionOverTime();
     testCodeCurrentNames();

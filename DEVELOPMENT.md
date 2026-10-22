@@ -285,6 +285,23 @@ format is only fixed when it is released.
    expressions with operands as `ref_id`s: SCL from the stored tokens,
    LAD and FBD from the graph in the order the parts are evaluated. STL as
    structured statements (an STL machine is the simulator's matter, later).
+   *Done (unreleased):* `statements` in every network: SCL from the stored
+   syntax tree (FORMAT.md "SCL as a tree"), LAD and FBD from the graph
+   (evaluation order, wires for outputs read by other parts, EN/ENO as
+   `if`, in-out parameters from the called block's interface), STL as one
+   `stl` statement per line. Every network of the fixtures and samples has
+   a tree with no unknown node and every `ref_id` in the reference table;
+   the tests pin the trees of `s15_motor` and `s14_code_rewritten` and
+   check that `MotorLAD` and `MotorSCL` give the same seal-in statement.
+   An independent review of the LAD/FBD conversion found seven defects
+   (logic at a branch evaluated per reader, the power past a coil read
+   again, inputs in wire order, negated outputs, ENO of calls, an OR that
+   dropped an edge, a P_TRIG leading nowhere); all are fixed and each has a
+   unit test (`testGraphicTreeCases`). Not met yet: GOTO in SCL, labels and
+   jumps in LAD, PCoil/NCoil and other coils, LAD boxes other than those
+   listed in PROGRAM-JSON.md, an overflow clearing ENO of an arithmetic
+   box, the parameter directions of instructions without an instance
+   (RUNTIME in LAD).
 4. **Resolved calls** (about 1 day). Target block, instance (data block or
    multi-instance path) and the mapping of parameters to operands.
 5. **Run-time model** (about 1 day). Startup and cyclic OBs, process image

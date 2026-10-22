@@ -1030,6 +1030,68 @@ void element(Json& j, const NetworkElement& e, const ConstantValues& cv) {
     j.endObject();
 }
 
+void exprJson(Json& j, const CodeExpr& e) {
+    j.beginObject(e.args.empty());
+    j.key("op").value(e.op);
+    j.key("ref_id");
+    if (e.refId) j.value(e.refId);
+    else j.null();
+    j.key("instance_ref_id");
+    if (e.instanceRefId) j.value(e.instanceRefId);
+    else j.null();
+    j.key("name").text(e.name);
+    j.key("type").text(e.type);
+    j.key("value");
+    if (e.op == "const") {
+        const TypeDescriptor t = describeType(e.literalType);
+        parsedValue(j, parseValue(e.literal, &t));
+    } else {
+        j.null();
+    }
+    j.key("args");
+    j.beginArray();
+    for (const auto& a : e.args) exprJson(j, a);
+    j.endArray();
+    j.endObject();
+}
+
+void stmtsJson(Json& j, const std::vector<CodeStmt>& list);
+
+void stmtJson(Json& j, const CodeStmt& s) {
+    j.beginObject();
+    j.key("op").value(s.op);
+    j.key("name").text(s.name);
+    j.key("exprs");
+    j.beginArray();
+    for (const auto& e : s.exprs) exprJson(j, e);
+    j.endArray();
+    j.key("branches");
+    j.beginArray();
+    for (const auto& b : s.branches) {
+        j.beginObject();
+        j.key("exprs");
+        j.beginArray();
+        for (const auto& e : b.exprs) exprJson(j, e);
+        j.endArray();
+        j.key("body");
+        stmtsJson(j, b.body);
+        j.endObject();
+    }
+    j.endArray();
+    j.key("body");
+    stmtsJson(j, s.body);
+    j.key("else");
+    if (s.hasElse) stmtsJson(j, s.elseBody);
+    else j.null();
+    j.endObject();
+}
+
+void stmtsJson(Json& j, const std::vector<CodeStmt>& list) {
+    j.beginArray();
+    for (const auto& s : list) stmtJson(j, s);
+    j.endArray();
+}
+
 void blockCode(Json& j, const BlockCode& c, const ConstantValues& cv) {
     j.beginObject();
     j.key("networks");
@@ -1050,6 +1112,10 @@ void blockCode(Json& j, const BlockCode& c, const ConstantValues& cv) {
         j.beginArray();
         for (const auto& e : n.elements) element(j, e, cv);
         j.endArray();
+        j.key("statements");
+        if (n.treeRead) stmtsJson(j, n.statements);
+        else j.null();
+        j.key("tree_notes").strings(n.treeNotes);
         j.key("notes").strings(n.notes);
         j.endObject();
     }

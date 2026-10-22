@@ -124,6 +124,8 @@ block is listed under `not_simulatable`.
 | `content` | `scl`, `stl`, `graphic` (LAD, FBD), `empty`, `unread` |
 | `lines` | SCL, STL: the source text, as the editor shows it; graphic: tiaconv's listing (README) |
 | `elements` | graphic: the parts and their wires |
+| `statements` | the code as a tree, the same form for SCL, LAD, FBD and STL (below); null when the network was not read |
+| `tree_notes` | what of the tree could not be read (none in the test projects and samples) |
 | `notes` | why something was not read |
 
 An element is a part of a LAD or FBD network: `uid`, `kind` (`gate`: a
@@ -157,6 +159,95 @@ How each of these is derived is in [FORMAT.md](FORMAT.md) ("Operand links").
 an operand), `data_block`, `declared_as` (a
 multi-instance: the member declared with this block as its type). The
 `ref_id` of an operand or element points into it.
+
+### The code tree
+
+`statements` is what an interpreter runs: the code of the network as
+statements and expressions, the same for every language, with every
+operand named by its `ref_id` in the block's `references`. A statement is
+
+`{"op", "name", "exprs", "branches", "body", "else"}`
+
+| op | meaning |
+|---|---|
+| `assign` | `exprs[0]` := `exprs[1]` |
+| `call` | `exprs[0]`, a call |
+| `if` | `branches`, one per IF and ELSIF, each `{"exprs": [condition], "body"}`; `else` the ELSE part (null without one) |
+| `case` | `exprs[0]` the selector; `branches` with the labels in `exprs` (a `range` for `1..5`) and their `body`; `else` |
+| `for` | `exprs`: the variable, from, to and, when given, by; `body` |
+| `while` | `exprs[0]` the condition; `body` |
+| `repeat` | `body`, until `exprs[0]` |
+| `return`, `exit`, `continue`, `empty` | |
+| `eval` | `exprs[0]` evaluated for its edges: LAD or FBD logic that leads nowhere |
+| `region` | `name` and `body`: only a grouping |
+| `stl` | one STL statement: `name` the instruction (`A`, `AN`, `=`, `L`, `T`, `+I`, `JC`, `CALL`), `exprs` its operands; a CALL's parameters as `in`, `out`, `inout` |
+| `label` | `name`: an STL label, before the statement it marks |
+| `unknown` | `name` says what (not met in the test projects and samples) |
+
+An expression is `{"op", "ref_id", "instance_ref_id", "name", "type", "value", "args"}`:
+
+| op | meaning |
+|---|---|
+| `ref` | an operand: `ref_id` |
+| `const` | a literal: `value` parsed (see Values) |
+| `member` | `args[0]`.`name`; `ref_id`: the entry for the whole access (`#delay.Q`), so an interpreter can take either |
+| `index` | `args[0]`[`args[1]`, ...]; `ref_id` as for `member` |
+| `slice` | a part of `args[0]`, `name` `%X3`, `%B1`, `%W0` |
+| `not`, `neg` | one operand |
+| `add` `sub` `mul` `div` `mod` `pow` `and` `or` `xor` `eq` `ne` `lt` `le` `gt` `ge` | two operands, left to right |
+| `call` | `name`; `ref_id` the block or instruction called (null for a built-in function such as `INT_TO_WORD` or `ABS`); `instance_ref_id` its instance data block or multi-instance; `args` its parameters |
+| `in`, `out`, `inout` | a parameter: `name` (null when given by position), `args[0]` the operand |
+| `edge_pos`, `edge_neg` | LAD and FBD: the rising or falling edge of `args[0]`, with `args[1]` the edge memory bit it updates |
+| `wire` | LAD and FBD: the value of a pin of another part, `name` `<uid>.<pin>`, set by an earlier statement of the same network |
+| `range` | `args[0]`..`args[1]`, in CASE labels |
+| `builtin` | `ENO` of the block itself |
+| `missing` | nothing entered; `unknown`: `name` says what |
+
+`type` is the data type of the result where the project stores it (every
+expression of SCL).
+
+**SCL** is stored as a syntax tree already, with the kind of each statement
+and expression; the tree is taken from it as it is (FORMAT.md, "SCL as a
+tree").
+
+**LAD and FBD** become statements in the order the parts are evaluated:
+the order on the screen (the order the project stores the parts in), each
+part as soon as the parts whose outputs it reads are done.
+
+- Contacts, `A`, `O`, `X`, `Not`, comparisons and edge contacts become
+  expressions in the statement of the part that reads them. Logic read by
+  more than one part is computed once, into a `wire`, as the PLC computes
+  it once at the branch: an edge must not be evaluated twice, and a box on
+  one branch may change an operand the other branch reads. Logic that
+  leads nowhere becomes `eval` when it has an edge to update.
+- A coil is an `assign` (with NOT for a negated coil), `S` and `R` coils an
+  `if` that sets the operand TRUE or FALSE. The power that flows on past a
+  coil is its input as it was before the coil wrote: a `wire`.
+- `Move` and `S_Move` become `assign`s, `Add`, `Sub`, `Mul`, `Div`, `Mod`
+  an `assign` of the operation with the inputs in the order of their pins
+  (`in1`, `in2`, ...), `PBox` and `NBox` (P_TRIG, N_TRIG) an edge. Their
+  ENO is TRUE when they ran: an overflow is not reported.
+- Calls of blocks and instructions become `call`, with the direction of
+  each parameter from the called block's interface or, for an
+  instruction, from the members of its instance. Their ENO is a parameter
+  `out ENO`: what the block or instruction sets.
+- A box with an EN runs inside an `if`; when it does not run its ENO is
+  FALSE and its outputs keep their values. A negated output goes into its
+  wire as it is; its readers and operands get NOT.
+- A box tiaconv has no rule for is written as a `call` with that box's name
+  and a note in `tree_notes` (none in the test projects and samples).
+
+For an interpreter: wires belong to one network (their names repeat from
+network to network); a wire read before it was written in this run of the
+network has no defined value in the PLC either (TIA Portal keeps it in
+temporary memory). `and` and `or` must evaluate every operand, as an edge
+in one of them updates its memory bit.
+
+The same logic gives the same tree: network 1 of `MotorLAD` (LAD) and the
+first statement of `MotorSCL` (SCL) in `s15_motor` are both
+`#run := (((#start OR #run) AND #stop) AND #interlock)`.
+
+`tools/program_tree.py` prints the trees of a file as SCL-like text.
 
 ### Values
 

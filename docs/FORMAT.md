@@ -1253,6 +1253,48 @@ Int; the other pins Bool). A comparison can take operands of another type
 (`Eq[UInt]` with a USInt member in the V15.1 sample): `data_type` and
 `pin_type` then differ.
 
+### SCL as a tree
+
+The token document of an SCL network (`<SCLSource>`) is a syntax tree, not
+a token list. `RootStatements` and `Statements` hold `Statement` elements;
+statements and expressions are grouped in `Fold`, and blanks, line ends
+and comments (`BL`, `NL`, `LC`, `MLC`, `BC`, `BCE`, `BCL`) sit between the
+pieces. The kind is in `SI`:
+
+| element, SI | what | pieces |
+|---|---|---|
+| `Statement STAss` | assignment | Expression, `OpAs`, Expression, `FiSt` |
+| `Statement STSub` | call | `InstCa` or `FctCa` |
+| `Statement IF`, `IFE`, `IFEI`, `IFEIE` | IF; with ELSE, ELSIF, both | Expression `KwTHEN` Statements { `KwELSIF` Expression `KwTHEN` Statements } [ `KwELSE` Statements ] `KwENDIF` |
+| `Statement STCAS` | CASE | Expression `KwOF` `CaseElem`* [ `KwELSE SI=ECASE` Statements ] `KwENDC`; a `CaseElem` is `CaseRange` {`Comma` `CaseRange`} `Colon` Statements; a `CaseRange` an Expression or a `CaseSRange` (Expression `LDots` Expression) |
+| `Statement STFOR` | FOR | Expression `OpAs` Expression `KwTO` Expression [`KwBY` Expression] `KwDO` Statements `KwENDFOR` |
+| `Statement STWHI`, `STREP` | WHILE, REPEAT | condition `KwDO` Statements `KwENDW`; Statements `KwUNTIL` condition `KwENDR` |
+| `Statement STRET`, `STSim` | RETURN; the empty statement | |
+| `Statement STRegion` | REGION | `Const SI=ConstRegion` (the name), Statements, `KwEndRegion` |
+| `Expression ExprPrimD` | an operand | `SymVa` (`SI` `Var`, `VarDB`, `VarStruct`, `VarArray`, `VarAbs`, `ConstInt`... for a local constant), or a `FctCa` |
+| `Expression ExprPrimC` | a literal | `Const TE="T#5S" SI=ConstTime` |
+| `Expression ExprPrimE` | ( ... ) | `BracO` Expression `BracC` |
+| `Expression ExprDot` | member | Expression `Dot` `SymVa`; the last `SymVa`'s symbol names the whole access |
+| `Expression ExprInd` | array element | Expression `BoxO` Expression {`Comma` Expression} `BoxC` `SymVa SI=VarElem` (the whole access) |
+| `Expression ExprSelSlice` | slice | Expression `Dot` `SymVa SI=VarAbs` (`%B3`) |
+| `Expression ExprAdd`, `ExprSub`, `ExprTermM`, `ExprTermD`, `ExprAnd`, `ExprOr`, `ExprCompE`, `ExprCompU`, `ExprEquG`, `ExprEquL`, `ExprEquEG`, `ExprEquLE` | binary operations | Expression, operator (`OpPl`, `OpMi`, `OpMu`, `OpDi`, `OpAND`, `OpOR`, `OpE`, `OpU`, `OpG`, `OpL`, `OpGE`, `OpLE`), Expression |
+| `Expression ExprUnaryN`, `ExprUnaryM` | NOT, minus | `OpNOT` or `OpMi`, Expression |
+| `InstCa` | call of an FB or instruction with an instance | `Sub SI=FB/DB` (a multi-instance) or `SymDB` [`Dot` `Sub SI=InstructionInstance`] (a data block), `BracO`, `Param`s, `BracC` |
+| `FctCa` | call of an FC or a function instruction | `Sub SI=FC/Instruction`, `BracO`, `Param`s or Expressions, `BracC` |
+| `Param ParaIn`, `ParaOut`, `ParaInOut` | a parameter | `SymPa FormalName=...` (`V="0"`: not shown in the text), `OpAs` or `OpPa`, Expression |
+
+Every `Expression` has `Result`, the data type of its value. The `SyId` of
+a piece points into `Symbols`: `LocalTag`, `GlobalTag`, `LocalStructuredTag`,
+`DBBlock`, `Instance` (with `TypeSymID`, the FB or instruction), `Instruction`,
+`LocalConst` have the `RefId` of the reference table; `LiteralConst` has the
+literal and its type (`Typ`); `BuiltInVar` (`BIName="ENO"`) the block's ENO;
+`LibraryParameter` the parameters of an instruction. V13 keeps the same in
+`Symbol` elements with `ClID` (`LinkedSymbol`, `InstanceDB`, `CodeBlock`,
+`Instruction`, `TempConstSymbol`, `PseudoSymbol`). Seen in all 18 SCL
+networks of the test projects and samples (V13, V19, V21); tiaconv's tree
+(`--program-json`) is made from this, and none of them has a piece it does
+not know.
+
 ### The reference table
 
 The XML of a network names operands and blocks by number. The names are in a
