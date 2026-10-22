@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <cstdio>
 #include <map>
@@ -995,6 +996,29 @@ size_t countMembers(const jsontest::Value& ms) {
     return n;
 }
 
+// Every type descriptor below `members` was understood: none "unknown", no
+// quoted name that is neither a PLC data type nor an FB, every array bound
+// known. Returns the number of descriptors looked at.
+size_t checkTypes(const jsontest::Value& members, std::vector<std::string>& bad) {
+    size_t n = 0;
+    std::function<void(const jsontest::Value&, const std::string&)> type = [&](const jsontest::Value& t,
+                                                                                const std::string& where) {
+        ++n;
+        const std::string& k = t["kind"].s;
+        if (k == "unknown" || k == "named") bad.push_back(where + ": " + k + " " + t["name"].s);
+        if (k == "elementary" && t["bits"].type == jsontest::Value::Null) bad.push_back(where + ": no size");
+        for (const auto& d : t["dims"].items)
+            if (d["low"].type == jsontest::Value::Null || d["high"].type == jsontest::Value::Null)
+                bad.push_back(where + ": bound " + d["low_text"].s + ".." + d["high_text"].s);
+        if (t["element"].type == jsontest::Value::Object) type(t["element"], where);
+    };
+    for (const auto& m : members.items) {
+        type(m["type"], m["name"].s + " " + m["data_type"].s);
+        n += checkTypes(m["members"], bad);
+    }
+    return n;
+}
+
 std::string readFile(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     std::ostringstream o;
@@ -1042,7 +1066,7 @@ void testProgramJson() {
     // the check itself finds what does not fit
     {
         jsontest::Value bad = jsontest::parse(
-            "{\"format\": \"tiaconv-program\", \"schema_version\": 2, \"extra\": 1}");
+            "{\"format\": \"tiaconv-program\", \"schema_version\": 99, \"extra\": 1}");
         const auto errors = validator.check(bad, 100);
         auto has = [&](const std::string& what) {
             for (const auto& e : errors)
@@ -1056,7 +1080,7 @@ void testProgramJson() {
     for (const auto& d : std::filesystem::directory_iterator(TIACONV_FIXTURES))
         if (d.is_directory()) fixtures.push_back(d.path().filename().string());
     std::sort(fixtures.begin(), fixtures.end());
-    size_t files = 0, operandsSeen = 0;
+    size_t files = 0, operandsSeen = 0, typesSeen = 0;
     for (const std::string& name : fixtures) {
         const ProgramExport e = loadExport(name);
         for (const std::string& plc : tia::programPlcs(e.prog)) {
@@ -1083,6 +1107,21 @@ void testProgramJson() {
             for (const auto& d : doc["data_blocks"].items)
                 docDbs.push_back(d["name"].s + "|" + std::to_string(countMembers(d["members"])));
             CHECK(dbs == docDbs);
+            // the types: every descriptor understood; every PLC data type
+            // whose definition was read is in the table
+            std::vector<std::string> badTypes;
+            size_t described = checkTypes(doc["tags"], badTypes) + checkTypes(doc["types"], badTypes);
+            for (const auto& d : doc["data_blocks"].items) described += checkTypes(d["members"], badTypes);
+            for (const auto& b : doc["blocks"].items)
+                if (b["interface"].type == jsontest::Value::Array) described += checkTypes(b["interface"], badTypes);
+            CHECK(badTypes.empty());
+            for (const auto& bt : badTypes) std::fprintf(stderr, "    %s\n", bt.c_str());
+            typesSeen += described;
+            for (const auto& b : e.prog.blockList)
+                if (b.plc == plc && b.type == "UDT" && b.declarationsRead) {
+                    const jsontest::Value* t = named(doc["types"], b.name);
+                    CHECK(t && (*t)["kind"].s == "plc_type" && countMembers((*t)["members"]) == countMembers(b.declarations));
+                }
             // organization blocks and code blocks as in the block list
             std::map<uint64_t, const tia::BlockCode*> codeOf;
             for (const auto& c : e.code.blocks) codeOf[c.blockId] = &c;
@@ -1136,6 +1175,7 @@ void testProgramJson() {
     current = "program export";
     CHECK(files >= 30);
     CHECK(operandsSeen >= 85);
+    CHECK(typesSeen >= 600);
 
     // what the TIA Portal sessions set
     {
@@ -1181,6 +1221,48 @@ void testProgramJson() {
                                                   "Static delay TON_TIME"}));
         const jsontest::Value* db = named(doc["data_blocks"], "MotorData");
         CHECK(db && (*db)["number"].i() == 1 && (*db)["optimized"].b);
+        // the TON of MotorSCL: a multi-instance of the system type TON_TIME,
+        // whose members are in the types table
+        const jsontest::Value* delay = scl ? named((*scl)["interface"], "delay") : nullptr;
+        CHECK(delay && (*delay)["type"]["kind"].s == "system_type" && (*delay)["type"]["name"].s == "TON_TIME");
+        const jsontest::Value* ton = named(doc["types"], "TON_TIME");
+        std::vector<std::string> tonMembers;
+        if (ton)
+            for (const auto& m : (*ton)["members"].items)
+                tonMembers.push_back(m["name"].s + " " + m["type"]["name"].s + "/" + std::to_string(m["type"]["bits"].i()));
+        CHECK(ton && (*ton)["kind"].s == "system_type" &&
+              tonMembers == (std::vector<std::string>{"ST Time/32", "PT Time/32", "ET Time/32", "RU Bool/1", "IN Bool/1",
+                                                       "Q Bool/1"}));
+        const jsontest::Value* start = named(doc["tags"], "StartPB");
+        CHECK(start && (*start)["type"]["kind"].s == "elementary" && (*start)["type"]["bits"].i() == 1);
+    }
+    {
+        // a PLC data type, read from its definition with its start values
+        const ProgramExport e = loadExport("s08_program");
+        current = "s08_program program export";
+        const jsontest::Value doc = exportOf(e, "ZZBRAVO", "s08_program");
+        const jsontest::Value* udt = named(doc["types"], "User_data_type_1");
+        std::vector<std::string> ms;
+        if (udt)
+            for (const auto& m : (*udt)["members"].items)
+                ms.push_back(m["name"].s + " " + m["type"]["kind"].s + ":" + m["type"]["name"].s + " " +
+                             (m["start_value"].type == jsontest::Value::Null ? "-" : m["start_value"].s));
+        CHECK(udt && (*udt)["kind"].s == "plc_type" &&
+              ms == (std::vector<std::string>{"memberDate elementary:Date D#1990-01-31",
+                                              "memberString string:String 'Hello world'", "memberInt elementary:Int 7",
+                                              "memberBolean elementary:Bool -"}));
+        // a member of that type points to it
+        size_t uses = 0;
+        std::function<void(const jsontest::Value&)> walk = [&](const jsontest::Value& list) {
+            for (const auto& m : list.items) {
+                if (m["data_type"].s == "\"User_data_type_1\"")
+                    uses += m["type"]["kind"].s == "plc_type" && m["type"]["name"].s == "User_data_type_1" &&
+                            m["members"].items.size() == 4;
+                walk(m["members"]);
+            }
+        };
+        for (const auto& d : doc["data_blocks"].items) walk(d["members"]);
+        CHECK(uses >= 1);
     }
     {
         const ProgramExport e = loadExport("s10_connections");

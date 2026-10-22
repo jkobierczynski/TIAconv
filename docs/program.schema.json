@@ -14,6 +14,7 @@
     "io",
     "tags",
     "constants",
+    "types",
     "data_blocks",
     "organization_blocks",
     "blocks",
@@ -25,7 +26,7 @@
       "const": "tiaconv-program"
     },
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "tool": {
       "type": "object",
@@ -171,6 +172,7 @@
           "name",
           "table",
           "data_type",
+          "type",
           "address",
           "comment"
         ],
@@ -189,6 +191,9 @@
               "string",
               "null"
             ]
+          },
+          "type": {
+            "$ref": "#/$defs/type"
           },
           "address": {
             "type": [
@@ -259,6 +264,36 @@
           }
         }
       }
+    },
+    "types": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "kind",
+          "members"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "plc_type",
+              "system_type"
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/member"
+            }
+          }
+        }
+      },
+      "description": "PLC data types (from their definition where it was read) and the system types met in the members (TON_TIME, DTL), with their members"
     },
     "data_blocks": {
       "type": "array",
@@ -424,12 +459,112 @@
     }
   },
   "$defs": {
+    "type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "bits",
+        "length",
+        "dims",
+        "element"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "elementary",
+            "string",
+            "array",
+            "struct",
+            "plc_type",
+            "system_type",
+            "instance",
+            "parameter",
+            "void",
+            "named",
+            "unknown"
+          ],
+          "description": "named: a quoted name that is not a PLC data type or FB of this PLC"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Int, String, Array, Struct, the name of the PLC data type, system type or FB, Variant, ..."
+        },
+        "bits": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "elementary: the size in bits"
+        },
+        "length": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "string: the maximum number of characters"
+        },
+        "dims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "low",
+              "low_text",
+              "high",
+              "high_text"
+            ],
+            "properties": {
+              "low": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "null when not known: a variable bound (*) or a constant not found"
+              },
+              "low_text": {
+                "type": "string",
+                "description": "as written: 0, #MAX, \"MAX\", *"
+              },
+              "high": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "high_text": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "array: one entry per dimension"
+        },
+        "element": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/type"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "array: the type of an element"
+        }
+      },
+      "description": "a data type taken apart"
+    },
     "member": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "name",
         "data_type",
+        "type",
         "section",
         "offset",
         "offset_bits",
@@ -452,6 +587,9 @@
             "null"
           ],
           "description": "as TIA Portal writes it: Bool, Int, Array[0..9] of Real, String[20], \"MyUdt\", TON_TIME"
+        },
+        "type": {
+          "$ref": "#/$defs/type"
         },
         "section": {
           "type": [

@@ -243,6 +243,47 @@ simulated from it outside TIA Portal. Three steps, in this order.
    `AutomaticTyped` and no type: the simulator has to derive it from the
    operands wired to the box, as TIA Portal does ("Auto (Int)").
 
+## Objectives: the export as input of an interpreter (schema version 2)
+
+The C++ PLC simulator that is being built loads the program export at run
+time and interprets it. Version 2 of the format takes the parsing off the
+simulator: everything tiaconv knows comes out structured, so the simulator
+never parses TIA Portal's notation for types, values or code. The steps,
+in this order; `schema_version` is 2 from the first of them on, and the
+format is only fixed when it is released.
+
+1. **Types** (about 1–2 days). A `type` descriptor next to every
+   `data_type` (members, interfaces, tags): kind (elementary, string,
+   array, struct, PLC data type, system type, instance, parameter), size
+   in bits of an elementary type, maximum length of a string, the bounds of
+   each array dimension with constants resolved, the element type. A
+   `types` table with the members of every PLC data type, read from its
+   definition, and of the system types used (TON_TIME, IEC_TIMER, DTL).
+   Done when: every data type of the fixtures and samples gets a
+   descriptor other than "unknown", and the tests pin the descriptors of
+   the fixtures.
+   *Done (unreleased):* `describeType` with unit tests; every descriptor of
+   the fixtures (670+) checked as understood with all bounds known; the
+   samples (40 files) likewise, with the bounds `#TIME_LAG_MAX` (250) and
+   `#UNITS` (31) of the V19 sample taken from the FB of the multi-instance.
+   The definitions of PLC data types are read now (`User_data_type_1` of
+   `s08_program`, with its start values). Not checked: an array of a
+   structured type, `Array[*]`, the sizes of the system number types
+   (`Hw_*`, `OB_*`, `Pip`: from the documentation, not from a project).
+2. **Typed values** (about 1 day). Start values and literals parsed:
+   `T#5S` as 5 000 000 µs, `16#FF` as 255, reals, strings, dates.
+3. **One code tree for SCL, LAD and FBD** (about 4–6 days). Statements and
+   expressions with operands as `ref_id`s: SCL from the stored tokens,
+   LAD and FBD from the graph in the order the parts are evaluated. STL as
+   structured statements (an STL machine is the simulator's matter, later).
+4. **Resolved calls** (about 1 day). Target block, instance (data block or
+   multi-instance path) and the mapping of parameters to operands.
+5. **Run-time model** (about 1 day). Startup and cyclic OBs, process image
+   partitions of the I/O addresses.
+6. **Reference behaviour** (one TIA Portal session, if the trial has
+   S7-PLCSIM). Input and output sequences of `s15_motor` recorded in
+   PLCSIM, kept as test data for the simulator.
+
 ## What is still unclear or to do
 
 ### Needs TIA Portal *(trial)*

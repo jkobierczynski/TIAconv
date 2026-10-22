@@ -22,22 +22,28 @@ save of the block), and no passwords.
 
 ## Versions
 
-`schema_version` is 1. It goes up with every change of the format, also
+`schema_version` is 2. It goes up with every change of the format, also
 when a key is only added, since the schema allows no unknown keys. The
 changes are listed in the CHANGELOG.
+
+Version 2 is being extended toward a format an interpreter can load
+without parsing TIA Portal's notation (DEVELOPMENT.md, "Objectives: the
+export as input of an interpreter"); it is fixed when it is released. So
+far it adds type descriptors and the `types` table to version 1.
 
 ## The file
 
 | key | what |
 |---|---|
 | `format` | always `"tiaconv-program"` |
-| `schema_version` | `1` |
+| `schema_version` | `2` |
 | `tool` | `name` (`"tiaconv"`) and `version` |
 | `source` | `file` as given, `project` name, `save` (null: the project as it is now) |
 | `plc` | `name`, `station`, the CPU's `type`, `order_number`, `firmware` |
 | `io` | the I/O addresses of the modules in the PLC's station and in the IO devices it controls |
-| `tags` | the PLC tags: `name`, `table`, `data_type`, `address` (`%I0.0`, `%MW20`), `comment` |
+| `tags` | the PLC tags: `name`, `table`, `data_type`, `type` (below), `address` (`%I0.0`, `%MW20`), `comment` |
 | `constants` | user constants and the system constants TIA Portal creates (`system`, `kind`: `hardware`, `ob`, `pip`, `user`, `system`) |
+| `types` | the PLC data types and the system types the members use, with their members |
 | `data_blocks` | global and instance data blocks with their members |
 | `organization_blocks` | each OB with its `event`, `priority`, and for a cyclic interrupt `cycle_us` and `phase_shift_us` (microseconds) |
 | `blocks` | every OB, FB and FC with its interface and its code |
@@ -63,6 +69,7 @@ Data block members and block interfaces have the same form:
 | key | what |
 |---|---|
 | `name`, `data_type` | `Array[0..9] of Int`, `String[20]`, `"MyUdt"`, `TON_TIME` as TIA Portal writes them |
+| `type` | the data type taken apart (below) |
 | `section` | `Input`, `Output`, `InOut`, `Static`, `Temp`, `Constant`, `Return`; null in a global data block and below the top level |
 | `offset`, `offset_bits` | `"12.3"` and 99, only for standard (not optimized) access |
 | `start_value` | as written in the project; null: the default |
@@ -72,10 +79,30 @@ Data block members and block interfaces have the same form:
 | `comment` | |
 | `members` | of a structure, a PLC data type, a multi-instance |
 
-PLC data types are not listed apart: a member of such a type has its
-members. Arrays are not expanded into their elements: the data type gives
-the bounds and the element type (`Array[1..16] of Byte`); an array of a
+A member of a PLC data type, a system type or an FB (a multi-instance)
+has its members as well, so a data block can be laid out without the
+`types` table. Arrays are not expanded into their elements: the members of
+an array of a structured type are those of one element; an array of a
 structured type has not been seen in a test project yet.
+
+### Types
+
+`type` takes `data_type` apart, so that a simulator does not parse it:
+
+| key | what |
+|---|---|
+| `kind` | `elementary`, `string`, `array`, `struct` (an anonymous structure: the members are in the member), `plc_type` (a PLC data type, in `types`), `system_type` (a type the system provides: `TON_TIME`, `DTL`, `IEC_TIMER`, also in `types` when it has members), `instance` (an FB: the members are its interface), `parameter` (`Variant`, `Any`, `Pointer`, `Block_FB`, ...), `void`, and `named` or `unknown` for what tiaconv could not place (not met in the test projects and samples) |
+| `name` | `Int`, `String`, `Array`, `Struct`, the name of the type or FB without quotes |
+| `bits` | elementary: the size, `Bool` 1, `Int` 16, `LReal` 64, `Date_And_Time` 64; also the system types that are numbers (`Hw_SubModule`, `OB_Cyclic`, `Pip`, `DB_Any`: 16) |
+| `length` | string: the maximum number of characters, 254 when not given |
+| `dims` | array: per dimension `low`, `high` and as written `low_text`, `high_text`. A bound written as a constant (`#TIME_LAG_MAX`, a local constant of the block or of the FB of a multi-instance; `"MAX"`, a user constant of the PLC) has its value; `null` when it cannot be known (`Array[*]`) |
+| `element` | array: the element's `type` |
+
+`types` lists `{"name", "kind": "plc_type"|"system_type", "members"}`: every
+PLC data type of the PLC from its definition (with its own start values),
+and the PLC data types whose definition is protected (Siemens library
+types) and the system types as met in a member of that type
+(`TON_TIME`: `ST`, `PT`, `ET`, `RU`, `IN`, `Q`).
 
 ### Blocks
 

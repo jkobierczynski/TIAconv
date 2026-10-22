@@ -151,7 +151,7 @@ public:
                 if (inProject(o)) {
                     out.blockList.push_back(makeInfo(o));
                     const BlockInfo& info = out.blockList.back();
-                    if ((info.type == "FB" || info.type == "FC" || info.type == "OB") && info.protectionStored != "KnowHowProtection" &&
+                    if ((info.type == "FB" || info.type == "FC" || info.type == "OB" || info.type == "UDT") && info.protectionStored != "KnowHowProtection" &&
                         info.protectionStored != "SystemKnowHowProtection" && info.protection.find("know-how") == std::string::npos &&
                         info.protection != "system")
                         pendingInterfaces_.push_back({out.blockList.size() - 1, Key(b.type, b.id)});
@@ -223,7 +223,7 @@ public:
             // members compared in the history (FB and FC)
             readInterface(o, family, false, info.declarations, notes, true);
             info.declarationsRead = notes.empty() || !info.declarations.empty();
-            if (info.type == "OB") continue;
+            if (info.type == "OB" || info.type == "UDT") continue;
             for (const auto& m : info.declarations)
                 if (m.section != "Temp" && m.section != "Constant" && m.section != "Return") info.interfaceMembers.push_back(m);
             info.interfaceRead = info.declarationsRead;

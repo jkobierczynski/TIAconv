@@ -12,6 +12,8 @@
 // docs/program.schema.json; kProgramSchemaVersion changes with it.
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -22,7 +24,33 @@
 
 namespace tia {
 
-constexpr int kProgramSchemaVersion = 1;
+constexpr int kProgramSchemaVersion = 2;
+
+// A data type as TIA Portal writes it ("Array[0..9] of Int", "String[20]",
+// "\"Motor\"", TON_TIME), taken apart. `kind` is "elementary" (with `bits`),
+// "string" (with `length`, the maximum number of characters), "array"
+// (`dims`, `element`), "struct", "parameter" (Variant, Any, Pointer, ...),
+// "void", "named" (any other name; `quoted` when written in quotes; the
+// program export says what it names), or "unknown".
+struct TypeDescriptor {
+    std::string kind;
+    std::string name;
+    bool quoted = false;
+    int64_t bits = -1;    // elementary: the size; -1 when not known
+    int64_t length = -1;  // string
+    struct Bound {
+        std::string text;  // as written: "0", "#MAX", "\"MAX\"", "*"
+        bool known = false;
+        int64_t value = 0;
+    };
+    struct Dim {
+        Bound low, high;
+    };
+    std::vector<Dim> dims;
+    std::shared_ptr<TypeDescriptor> element;
+};
+
+TypeDescriptor describeType(const std::string& dataType);
 
 struct ProgramJsonContext {
     std::string toolVersion;

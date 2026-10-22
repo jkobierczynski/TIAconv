@@ -23,6 +23,7 @@
 #include "miniz.h"
 #include "output.hpp"
 #include "program.hpp"
+#include "programjson.hpp"
 #include "source.hpp"
 #include "project.hpp"
 #include "sha256.hpp"
@@ -2509,6 +2510,60 @@ void testOperandLinks() {
                 if (o.kind == "data block member") CHECK(o.address.empty());
 }
 
+// Data types as TIA Portal writes them, taken apart for the program export.
+std::string typeText(const tia::TypeDescriptor& d) {
+    std::string s = d.kind + ":" + d.name;
+    if (d.bits >= 0) s += "/" + std::to_string(d.bits);
+    if (d.length >= 0) s += "#" + std::to_string(d.length);
+    if (d.quoted) s += "(quoted)";
+    for (const auto& x : d.dims)
+        s += " [" + (x.low.known ? std::to_string(x.low.value) : "?" + x.low.text) + ".." +
+             (x.high.known ? std::to_string(x.high.value) : "?" + x.high.text) + "]";
+    if (d.element) s += " of " + typeText(*d.element);
+    return s;
+}
+
+void testDescribeType() {
+    CHECK_EQ(typeText(tia::describeType("Int")), "elementary:Int/16");
+    CHECK_EQ(typeText(tia::describeType("bool")), "elementary:Bool/1");
+    CHECK_EQ(typeText(tia::describeType("LReal")), "elementary:LReal/64");
+    CHECK_EQ(typeText(tia::describeType("Date_And_Time")), "elementary:Date_And_Time/64");
+    CHECK_EQ(typeText(tia::describeType("Hw_SubModule")), "elementary:Hw_SubModule/16");
+    CHECK_EQ(typeText(tia::describeType("String")), "string:String#254");
+    CHECK_EQ(typeText(tia::describeType("String[20]")), "string:String#20");
+    CHECK_EQ(typeText(tia::describeType("WString[8]")), "string:WString#8");
+    CHECK_EQ(typeText(tia::describeType("\"User_data_type_1\"")), "named:User_data_type_1(quoted)");
+    CHECK_EQ(typeText(tia::describeType("TON_TIME")), "named:TON_TIME");
+    CHECK_EQ(typeText(tia::describeType("Struct")), "struct:Struct");
+    CHECK_EQ(typeText(tia::describeType("Variant")), "parameter:Variant");
+    CHECK_EQ(typeText(tia::describeType("Void")), "void:Void");
+    CHECK_EQ(typeText(tia::describeType("Array[0..9] of Int")), "array:Array [0..9] of elementary:Int/16");
+    // V13 writes a blank after Array
+    CHECK_EQ(typeText(tia::describeType("Array [1..100] of Word")), "array:Array [1..100] of elementary:Word/16");
+    CHECK_EQ(typeText(tia::describeType("Array[0..1, -2..2] of Bool")),
+             "array:Array [0..1] [-2..2] of elementary:Bool/1");
+    CHECK_EQ(typeText(tia::describeType("Array[0..#MAX] of String[4]")), "array:Array [0..?#MAX] of string:String#4");
+    CHECK_EQ(typeText(tia::describeType("Array[*] of Real")), "array:Array [?*..?*] of elementary:Real/32");
+    CHECK_EQ(typeText(tia::describeType("Array[0..16#F] of \"Motor\"")),
+             "array:Array [0..15] of named:Motor(quoted)");
+    CHECK_EQ(typeText(tia::describeType("Array[0..3] of Array[0..1] of Int")),
+             "array:Array [0..3] of array:Array [0..1] of elementary:Int/16");
+    CHECK_EQ(typeText(tia::describeType("Array[0..9]")), "unknown:Array[0..9]");
+    CHECK_EQ(typeText(tia::describeType("")), "unknown:");
+    CHECK_EQ(typeText(tia::describeType("Int Int")), "unknown:Int Int");
+    // nesting is cut off, not followed into the stack's limit
+    std::string deep;
+    for (int i = 0; i < 5000; ++i) deep += "Array[0..1] of ";
+    tia::TypeDescriptor d = tia::describeType(deep + "Int");
+    int levels = 0;
+    const tia::TypeDescriptor* at = &d;
+    while (at->element) {
+        at = at->element.get();
+        ++levels;
+    }
+    CHECK(levels == 17 && at->kind == "unknown");
+}
+
 void testGraphicNetworks() {
     const std::vector<tia::CodeReference> refs = testReferences();
     std::vector<tia::NetworkElement> elements;
@@ -3085,6 +3140,7 @@ int main() {
     testExtraDataFiles();
     testGraphicNetworks();
     testOperandLinks();
+    testDescribeType();
     testCodeProject();
     testCodeProtectionOverTime();
     testCodeCurrentNames();

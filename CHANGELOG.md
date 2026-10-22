@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Program export, schema version 2 (in progress toward a format a
+  simulator can interpret without parsing TIA Portal's notation; see
+  DEVELOPMENT.md): every member and tag has `type`, its data type taken
+  apart (kind, size in bits, string length, array bounds with constants
+  resolved, element type), and a `types` table lists the PLC data types,
+  read from their definitions, and the system types used (TON_TIME, CTU_INT,
+  DTL) with their members. The schema is written by
+  `tools/program_schema.py`.
+
 - `--program-json DIR`: the program of each PLC as one JSON file
   (`<PLC>.json`), as input for a simulator: tags, constants, data blocks
   with offsets, start values and retain; the I/O addresses of the PLC's

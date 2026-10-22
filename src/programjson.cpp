@@ -136,12 +136,315 @@ private:
     }
 };
 
-void members(Json& j, const std::vector<BlockMember>& list, const MemberAccess& outer = MemberAccess()) {
+std::string lower(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::string trim(const std::string& s) {
+    const size_t a = s.find_first_not_of(" \t");
+    if (a == std::string::npos) return std::string();
+    const size_t b = s.find_last_not_of(" \t");
+    return s.substr(a, b - a + 1);
+}
+
+// A whole number as a constant or a bound is written: 10, -3, 16#FF, 2#101,
+// 8#17; false for anything else.
+bool parseWhole(const std::string& text, int64_t& out) {
+    std::string t = trim(text);
+    if (t.empty()) return false;
+    int base = 10;
+    bool negative = false;
+    if (t[0] == '-' || t[0] == '+') {
+        negative = t[0] == '-';
+        t = t.substr(1);
+    }
+    const size_t hash = t.find('#');
+    if (hash != std::string::npos) {
+        const std::string b = t.substr(0, hash);
+        if (b == "16") base = 16;
+        else if (b == "8") base = 8;
+        else if (b == "2") base = 2;
+        else return false;
+        t = t.substr(hash + 1);
+    }
+    std::string digits;
+    for (char c : t)
+        if (c != '_') digits += c;
+    if (digits.empty() || digits.size() > 20) return false;
+    char* end = nullptr;
+    const long long v = std::strtoll(digits.c_str(), &end, base);
+    if (*end) return false;
+    out = negative ? -v : v;
+    return true;
+}
+
+struct Elementary {
+    const char* name;
+    int64_t bits;
+};
+// The elementary types, and the system types that are a number of a fixed
+// size (hardware identifiers, OB numbers, process image partitions).
+const Elementary kElementary[] = {
+    {"Bool", 1},          {"Byte", 8},          {"Word", 16},        {"DWord", 32},       {"LWord", 64},
+    {"SInt", 8},          {"USInt", 8},         {"Int", 16},         {"UInt", 16},        {"DInt", 32},
+    {"UDInt", 32},        {"LInt", 64},         {"ULInt", 64},       {"Real", 32},        {"LReal", 64},
+    {"Time", 32},         {"LTime", 64},        {"S5Time", 16},      {"Date", 16},        {"Time_Of_Day", 32},
+    {"TOD", 32},          {"LTime_Of_Day", 64}, {"LTOD", 64},        {"Date_And_Time", 64}, {"DT", 64},
+    {"LDT", 64},          {"Char", 8},          {"WChar", 16},       {"Timer", 16},       {"Counter", 16},
+    {"Hw_Any", 16},       {"Hw_Device", 16},    {"Hw_DpMaster", 16}, {"Hw_DpSlave", 16},  {"Hw_Io", 16},
+    {"Hw_IoSystem", 16},  {"Hw_SubModule", 16}, {"Hw_Module", 16},   {"Hw_Interface", 16}, {"Hw_Hsc", 16},
+    {"Hw_Pwm", 16},       {"Hw_Pto", 16},       {"OB_Any", 16},      {"OB_Delay", 16},    {"OB_Tod", 16},
+    {"OB_Cyclic", 16},    {"OB_Att", 16},       {"OB_PCycle", 16},   {"OB_HwInt", 16},    {"OB_Diag", 16},
+    {"OB_TimeError", 16}, {"OB_Startup", 16},   {"Pip", 16},         {"DB_Any", 16},      {"DB_WWW", 16},
+    {"DB_Dyn", 16},       {"Conn_Any", 16},     {"Conn_Prg", 16},    {"Conn_Ouc", 16},    {"Conn_R_ID", 32},
+    {"Port", 16},         {"Aom_Ident", 32},    {"Event_Any", 32},   {"Event_Att", 32},   {"Event_HwInt", 32},
+    {"Rtm", 16},
+};
+
+const char* const kParameterTypes[] = {"Variant", "Any", "Pointer", "Block_FB", "Block_FC", "Block_DB",
+                                       "Block_SDB", "Remote", "Void"};
+
+TypeDescriptor::Bound bound(const std::string& text) {
+    TypeDescriptor::Bound b;
+    b.text = trim(text);
+    b.known = parseWhole(b.text, b.value);
+    return b;
+}
+
+std::string canonicalElementary(const std::string& name, int64_t& bits) {
+    const std::string l = lower(name);
+    for (const Elementary& e : kElementary)
+        if (lower(e.name) == l) {
+            bits = e.bits;
+            return e.name;
+        }
+    return std::string();
+}
+
+TypeDescriptor describe(const std::string& dataType, int depth);
+
+}  // namespace
+
+TypeDescriptor describeType(const std::string& dataType) { return describe(dataType, 0); }
+
+namespace {
+
+TypeDescriptor describe(const std::string& dataType, int depth) {
+    TypeDescriptor d;
+    const std::string t = trim(dataType);
+    const std::string l = lower(t);
+    if (t.empty() || depth > 16) {  // arrays of arrays: no deeper than this
+        d.kind = "unknown";
+        d.name = t;
+        return d;
+    }
+    if (l.compare(0, 5, "array") == 0) {
+        const size_t open = t.find('[', 5), close = t.find(']', 5);
+        const std::string between = open == std::string::npos ? std::string() : trim(t.substr(5, open - 5));
+        const std::string after = close == std::string::npos ? std::string() : trim(t.substr(close + 1));
+        if (open != std::string::npos && close != std::string::npos && close > open && between.empty() &&
+            lower(after).compare(0, 3, "of ") == 0) {
+            d.kind = "array";
+            d.name = "Array";
+            const std::string dims = t.substr(open + 1, close - open - 1);
+            size_t from = 0;
+            while (from <= dims.size()) {
+                size_t comma = dims.find(',', from);
+                if (comma == std::string::npos) comma = dims.size();
+                const std::string dim = trim(dims.substr(from, comma - from));
+                TypeDescriptor::Dim x;
+                const size_t dots = dim.find("..");
+                if (dots == std::string::npos) {
+                    x.low = bound(dim);  // "*": a variable bound
+                    x.high = bound(dim);
+                } else {
+                    x.low = bound(dim.substr(0, dots));
+                    x.high = bound(dim.substr(dots + 2));
+                }
+                d.dims.push_back(x);
+                from = comma + 1;
+            }
+            d.element = std::make_shared<TypeDescriptor>(describe(after.substr(3), depth + 1));
+            return d;
+        }
+        d.kind = "unknown";
+        d.name = t;
+        return d;
+    }
+    if (l.compare(0, 6, "string") == 0 || l.compare(0, 7, "wstring") == 0) {
+        const bool wide = l[0] == 'w';
+        const std::string rest = trim(t.substr(wide ? 7 : 6));
+        int64_t n = 254;
+        if (rest.empty() || (rest.front() == '[' && rest.back() == ']' && parseWhole(rest.substr(1, rest.size() - 2), n))) {
+            d.kind = "string";
+            d.name = wide ? "WString" : "String";
+            d.length = n;
+            return d;
+        }
+    }
+    if (t.size() >= 2 && t.front() == '"' && t.back() == '"') {
+        d.kind = "named";
+        d.name = t.substr(1, t.size() - 2);
+        d.quoted = true;
+        return d;
+    }
+    if (l == "struct") {
+        d.kind = "struct";
+        d.name = "Struct";
+        return d;
+    }
+    if (l == "void") {
+        d.kind = "void";
+        d.name = "Void";
+        return d;
+    }
+    for (const char* p : kParameterTypes)
+        if (lower(p) == l) {
+            d.kind = "parameter";
+            d.name = p;
+            return d;
+        }
+    int64_t bits = -1;
+    const std::string e = canonicalElementary(t, bits);
+    if (!e.empty()) {
+        d.kind = "elementary";
+        d.name = e;
+        d.bits = bits;
+        return d;
+    }
+    bool identifier = true;
+    for (unsigned char c : t)
+        if (!(std::isalnum(c) || c == '_')) identifier = false;
+    d.kind = identifier ? "named" : "unknown";
+    d.name = t;
+    return d;
+}
+
+// What the names in data types stand for in one PLC, the values of its
+// constants, and the system types met on the way.
+class Types {
+public:
+    Types(const ProgramData& prog, const std::string& plc) : prog_(prog), plc_(plc) {
+        for (const BlockInfo& b : prog.blockList)
+            if (b.plc == plc || b.plc.empty()) blocks_.emplace(b.name, &b);
+        for (const Constant& c : prog.constants)
+            if (c.plc == plc) globals_[c.name] = c.value;
+    }
+
+    const BlockInfo* block(const std::string& name) const {
+        auto it = blocks_.find(name);
+        return it == blocks_.end() ? nullptr : it->second;
+    }
+
+    // "plc_type", "system_type", "instance" or "named" (not found)
+    std::string kindOf(const TypeDescriptor& d) const {
+        auto it = blocks_.find(d.name);
+        if (it != blocks_.end()) {
+            const std::string& t = it->second->type;
+            if (t == "UDT") return "plc_type";
+            if (t == "SDT") return "system_type";
+            if (t == "FB" || t == "SFB") return "instance";
+        }
+        return d.quoted ? "named" : "system_type";
+    }
+
+    void resolve(TypeDescriptor::Bound& b, const std::map<std::string, std::string>* locals) const {
+        if (b.known || b.text.empty()) return;
+        std::string value;
+        if (b.text[0] == '#' && locals) {
+            auto it = locals->find(b.text.substr(1));
+            if (it != locals->end()) value = it->second;
+        } else if (b.text.size() >= 2 && b.text.front() == '"' && b.text.back() == '"') {
+            auto it = globals_.find(b.text.substr(1, b.text.size() - 2));
+            if (it != globals_.end()) value = it->second;
+        }
+        if (!value.empty()) b.known = parseWhole(value, b.value);
+    }
+
+    // The PLC data types and system types with their members: from the
+    // definition of a PLC data type where it was read, otherwise as first met
+    // in a member of that type (the members of an array's element). Instances
+    // of FBs are not types here: their members are the FB's interface.
+    void collect(const std::vector<BlockMember>& list) {
+        for (const BlockMember& m : list) {
+            TypeDescriptor d = describeType(m.dataType);
+            if (d.kind == "array" && d.element) d = *d.element;
+            if (d.kind == "named" && !m.members.empty()) {
+                const std::string k = kindOf(d);
+                if ((k == "plc_type" || k == "system_type") && !found_.count(d.name))
+                    found_.emplace(d.name, Found{k, &m.members});
+            }
+            collect(m.members);
+        }
+    }
+    void define(const BlockInfo& udt) { found_[udt.name] = Found{"plc_type", &udt.declarations}; }
+    struct Found {
+        std::string kind;
+        const std::vector<BlockMember>* members;
+    };
+    const std::map<std::string, Found>& found() const { return found_; }
+
+    void write(Json& j, TypeDescriptor d, const std::map<std::string, std::string>* locals) const {
+        if (d.kind == "named") d.kind = kindOf(d);
+        for (auto& x : d.dims) {
+            resolve(x.low, locals);
+            resolve(x.high, locals);
+        }
+        j.beginObject(true);
+        j.key("kind").value(d.kind);
+        j.key("name").text(d.name);
+        j.key("bits");
+        if (d.bits >= 0) j.value(d.bits);
+        else j.null();
+        j.key("length");
+        if (d.length >= 0) j.value(d.length);
+        else j.null();
+        j.key("dims");
+        j.beginArray();
+        for (const auto& x : d.dims) {
+            j.beginObject();
+            for (const auto* b : {&x.low, &x.high}) {
+                j.key(b == &x.low ? "low" : "high");
+                if (b->known) j.value(b->value);
+                else j.null();
+                j.key(b == &x.low ? "low_text" : "high_text").value(b->text);
+            }
+            j.endObject();
+        }
+        j.endArray();
+        j.key("element");
+        if (d.element) write(j, *d.element, locals);
+        else j.null();
+        j.endObject();
+    }
+
+private:
+    const ProgramData& prog_;
+    std::string plc_;
+    std::map<std::string, const BlockInfo*> blocks_;
+    std::map<std::string, std::string> globals_;
+    std::map<std::string, Found> found_;
+};
+
+// The local constants of a block's interface: name -> value.
+std::map<std::string, std::string> localConstants(const std::vector<BlockMember>& declarations) {
+    std::map<std::string, std::string> out;
+    for (const BlockMember& m : declarations)
+        if (m.section == "Constant" && m.hasStartValue) out[m.name] = m.startValue;
+    return out;
+}
+
+void members(Json& j, const std::vector<BlockMember>& list, Types& types,
+             const std::map<std::string, std::string>* locals, const MemberAccess& outer = MemberAccess()) {
     j.beginArray();
     for (const BlockMember& m : list) {
+        const TypeDescriptor d = describeType(m.dataType);
         j.beginObject(m.members.empty());
         j.key("name").value(m.name);
         j.key("data_type").text(m.dataType);
+        j.key("type");
+        types.write(j, d, locals);
         j.key("section").text(m.section);
         j.key("offset");
         if (m.hasOffset) j.value(formatOffset(m));
@@ -160,7 +463,15 @@ void members(Json& j, const std::vector<BlockMember>& list, const MemberAccess& 
         j.key("unresolved").value(m.unresolved);
         j.key("comment").text(m.comment);
         j.key("members");
-        members(j, m.members, a);
+        // the members of a multi-instance take the bounds from its FB's constants
+        TypeDescriptor inner = d.kind == "array" && d.element ? *d.element : d;
+        const BlockInfo* fb = inner.kind == "named" && types.kindOf(inner) == "instance" ? types.block(inner.name) : nullptr;
+        if (fb && fb->declarationsRead) {
+            const std::map<std::string, std::string> own = localConstants(fb->declarations);
+            members(j, m.members, types, &own, a);
+        } else {
+            members(j, m.members, types, locals, a);
+        }
         j.endObject();
     }
     j.endArray();
@@ -333,6 +644,22 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
     else j.null();
     j.endObject();
 
+    // the types: PLC data types from their definitions, then whatever else is
+    // met in the members
+    Types types(prog, plc);
+    for (const BlockInfo& b : prog.blockList)
+        if (b.plc == plc && b.type == "UDT" && b.declarationsRead) types.define(b);
+    for (const BlockInfo& b : prog.blockList)
+        if (b.plc == plc && b.type == "UDT" && b.declarationsRead) types.collect(b.declarations);
+    for (const DataBlock& d : prog.blocks)
+        if (d.plc == plc) types.collect(d.members);
+    std::map<std::string, const BlockInfo*> codeBlocks;
+    for (const BlockInfo& b : prog.blockList)
+        if (b.plc == plc && (b.type == "OB" || b.type == "FB" || b.type == "FC")) {
+            codeBlocks[b.name] = &b;
+            if (b.declarationsRead) types.collect(b.declarations);
+        }
+
     // the CPU, and the modules of its station and of the IO devices it controls
     const Device* station = nullptr;
     const Module* cpu = nullptr;
@@ -381,6 +708,8 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
         j.key("name").value(t.name);
         j.key("table").text(t.table);
         j.key("data_type").text(t.dataType);
+        j.key("type");
+        types.write(j, describeType(t.dataType), nullptr);
         j.key("address").text(t.address);
         j.key("comment").text(t.comment);
         j.endObject();
@@ -404,6 +733,18 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
     j.endArray();
 
     std::vector<Reason> reasons;
+    j.key("types");
+    j.beginArray();
+    for (const auto& t : types.found()) {
+        j.beginObject();
+        j.key("name").value(t.first);
+        j.key("kind").value(t.second.kind);
+        j.key("members");
+        members(j, *t.second.members, types, nullptr);
+        j.endObject();
+    }
+    j.endArray();
+
     j.key("data_blocks");
     j.beginArray();
     for (const DataBlock& d : prog.blocks) {
@@ -419,8 +760,12 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
         if (d.hasAccess) j.value(d.symbolicAccessOnly);
         else j.null();
         j.key("notes").strings(d.notes);
+        // an instance data block: the local constants of its FB give array bounds
+        std::map<std::string, std::string> locals;
+        auto fb = codeBlocks.find(d.instanceOf);
+        if (fb != codeBlocks.end()) locals = localConstants(fb->second->declarations);
         j.key("members");
-        members(j, d.members);
+        members(j, d.members, types, &locals);
         j.endObject();
         if (d.members.empty() && !d.notes.empty())
             reasons.push_back({d.name, "DB", "members not read: " + d.notes.front()});
@@ -477,7 +822,10 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
         j.key("protection").text(b.protection);
         j.key("simulatable").value(why.empty());
         j.key("interface");
-        if (open && b.declarationsRead) members(j, b.declarations);
+        if (open && b.declarationsRead) {
+            const std::map<std::string, std::string> locals = localConstants(b.declarations);
+            members(j, b.declarations, types, &locals);
+        }
         else j.null();
         j.key("code");
         if (open) blockCode(j, *c);

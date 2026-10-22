@@ -835,9 +835,11 @@ and the return value.
 
 `--program-json DIR` writes `DIR/<PLC>.json` for each PLC: everything the
 project holds that a simulator needs, in one file with a documented form
-(`schema_version` 1, [docs/PROGRAM-JSON.md](docs/PROGRAM-JSON.md) and the
+(`schema_version` 2, [docs/PROGRAM-JSON.md](docs/PROGRAM-JSON.md) and the
 JSON Schema [docs/program.schema.json](docs/program.schema.json)): the
-tags, constants and data blocks with offsets, start values and retain; the
+tags, constants and data blocks with offsets, start values and retain,
+every data type taken apart (size, string length, array bounds) and the PLC
+data types and system types with their members; the
 I/O addresses of the station and of the IO devices; the OBs with event,
 priority, cycle and phase shift; every OB, FB and FC with its whole
 interface and its code, as SCL or STL text or as the LAD/FBD graph with each

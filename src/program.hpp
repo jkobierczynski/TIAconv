@@ -156,8 +156,8 @@ struct BlockInfo {
     bool interfaceRead = false;
     std::vector<BlockMember> interfaceMembers;
     // OB, FB, FC: every section of the interface, Temp, Constant and Return
-    // included, as the declaration part of a source shows them. Not read for
-    // know-how protected blocks.
+    // included, as the declaration part of a source shows them. UDT: the
+    // members of the PLC data type. Not read for know-how protected blocks.
     bool declarationsRead = false;
     std::vector<BlockMember> declarations;
     // OB: the event it handles, as stored with the event: its priority, and
