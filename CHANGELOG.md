@@ -1,5 +1,16 @@
 # Changes
 
+## Unreleased
+
+- Operand links in the LAD/FBD graph: every operand at a pin in the JSON
+  (`elements[].pins[].operands`) carries the id of its entry in the block's
+  reference table and through it its kind, data type, data block and
+  address (a tag's, or `%DB1.DBX60.0` for a member of a data block with
+  standard access), and the type of the pin it is wired to. A literal
+  without a stored type gets the pin's. Elements have `data_type`, the type
+  a box was set to. Pinned for all 44 operands of the LAD and FBD blocks of
+  `s14_code_rewritten`.
+
 ## 0.18.0
 
 - New test project `s15_motor`, made for a simulator: a motor start/stop

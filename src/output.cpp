@@ -1231,7 +1231,8 @@ void jsonCode(std::ostream& out, const CodeData& code, const ProgramData& prog) 
             for (size_t ei = 0; ei < n.elements.size(); ++ei) {
                 const NetworkElement& e = n.elements[ei];
                 out << (ei ? ", " : "") << "{\"uid\": " << e.uid << ", \"kind\": " << q(e.kind) << ", \"name\": "
-                    << q(e.name) << ", \"instance\": " << qn(e.instance) << ", \"options\": [";
+                    << q(e.name) << ", \"instance\": " << qn(e.instance) << ", \"data_type\": " << qn(e.dataType)
+                    << ", \"options\": [";
                 for (size_t oi = 0; oi < e.options.size(); ++oi)
                     out << (oi ? ", " : "") << "{\"name\": " << q(e.options[oi].first) << ", \"value\": "
                         << q(e.options[oi].second) << "}";
@@ -1240,7 +1241,20 @@ void jsonCode(std::ostream& out, const CodeData& code, const ProgramData& prog) 
                     out << (pi ? ", " : "") << "{\"name\": " << q(e.pins[pi].name) << ", \"direction\": "
                         << (e.pins[pi].output ? "\"out\"" : "\"in\"") << ", \"connected\": ";
                     jsonStrings(out, e.pins[pi].connected);
-                    out << "}";
+                    out << ", \"operands\": [";
+                    const auto& ops = e.pins[pi].operands;
+                    for (size_t oi = 0; oi < ops.size(); ++oi) {
+                        const NetworkElement::Operand& o = ops[oi];
+                        out << (oi ? ", " : "") << "{\"text\": " << q(o.text) << ", \"ref_id\": ";
+                        if (o.refId) out << o.refId;
+                        else out << "null";
+                        out << ", \"linked\": " << tf(o.linked) << ", \"kind\": " << qn(o.kind)
+                            << ", \"kind_stored\": " << qn(o.kindStored) << ", \"data_type\": " << qn(o.dataType)
+                            << ", \"data_type_from_pin\": " << tf(o.dataTypeFromPin) << ", \"data_block\": "
+                            << qn(o.dataBlock) << ", \"address\": " << qn(o.address) << ", \"pin_type\": "
+                            << qn(o.pinType) << "}";
+                    }
+                    out << "]}";
                 }
                 out << "]}";
             }

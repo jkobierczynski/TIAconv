@@ -91,12 +91,42 @@ struct NetworkElement {
     // What the part was set to: the data type chosen for a box, the number
     // of inputs, "DisableENO", and the pins that are negated ("negated").
     std::vector<std::pair<std::string, std::string>> options;
+    // The entry of the block's reference table for the block called or the
+    // instruction (0: none), and for the instance; the data type a box was
+    // set to ("" when not set; with "AutomaticTyped" in `options` TIA Portal
+    // takes it from the operands).
+    int64_t refId = 0;
+    int64_t instanceRefId = 0;
+    std::string dataType;
+    // An operand at a pin, linked to its entry in the block's reference
+    // table and through it to what it names.
+    struct Operand {
+        std::string text;    // as written in code, as in `connected`
+        int64_t refId = 0;   // the entry of the reference table; 0 when the part names none
+        bool linked = false; // the entry was found
+        std::string kind, kindStored;  // as CodeReference::kind, kindStored
+        // The data type: the entry's; for a literal without one, the type of
+        // the pin (`dataTypeFromPin`)
+        std::string dataType;
+        bool dataTypeFromPin = false;
+        std::string dataBlock;  // a data block member: the data block
+        // A tag: its address (%M1.0). A member of a data block with standard
+        // access, of an elementary type of up to 4 bytes: %DB1.DBX2.0,
+        // %DB1.DBW4, ... Empty otherwise.
+        std::string address;
+        // The type the pin takes, where tiaconv knows it: Bool for the
+        // operand of a contact or coil, the box's type for its data pins,
+        // the parameter of a called block, the pins of the IEC timers and
+        // counters. Empty when not known.
+        std::string pinType;
+    };
     struct Pin {
         std::string name;
         bool output = false;
         // What is at the pin: an operand as written in code, "power rail",
         // or the pin of another part as "<uid>.<pin>".
         std::vector<std::string> connected;
+        std::vector<Operand> operands;  // the operands among `connected`, in that order
     };
     std::vector<Pin> pins;
 };
@@ -195,6 +225,11 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
 bool graphicNetwork(const std::string& xml, const std::vector<CodeReference>& references,
                     std::vector<NetworkElement>& elements, std::vector<std::string>& lines,
                     std::vector<std::string>& notes);
+
+// Completes the operands of the LAD and FBD networks of `code` with what
+// `prog` knows: the address of a tag or data block member, the type of each
+// pin, and the type of a literal from its pin. buildCode calls it.
+void linkOperands(BlockCode& code, const ProgramData& prog);
 
 // The entries of one stored part of a block's reference table.
 void parseReferencePart(const std::string& xml, std::vector<CodeReference>& out);

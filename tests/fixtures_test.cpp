@@ -5,6 +5,7 @@
 // Reads the V21 test projects in tests/fixtures. Each project differs from the
 // previous one by one known change (see tests/fixtures/README.md), so every
 // value checked here was typed into TIA Portal by hand.
+#include <cctype>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -883,6 +884,97 @@ std::string sourceText(const LoadedCode& l, const std::string& name, const tia::
             return out;
         }
     return std::string();
+}
+
+// Operand links in the LAD and FBD networks of s14_code_rewritten: every
+// operand at a pin with its entry of the reference table, its kind, data
+// type, data block, address and the type of the pin. One line per operand:
+// block|network|uid.pin|text|ref id|kind|data type|data block|address|pin type
+void testOperands() {
+    const LoadedCode l = loadCode("s14_code_rewritten");
+    current = "s14_code_rewritten operand links";
+    std::multiset<std::string> found;
+    size_t blocks = 0;
+    for (const auto& b : l.code.blocks) {
+        if (b.language != "LAD" && b.language != "FBD") continue;
+        ++blocks;
+        for (const auto& n : b.networks)
+            for (const auto& e : n.elements)
+                for (const auto& pin : e.pins) {
+                    size_t operandsAtPin = 0;
+                    for (const auto& c : pin.connected) {
+                        // "<uid>.<pin>": a wire to another part
+                        const size_t dot = c.find('.');
+                        const bool part = dot != std::string::npos && dot > 0 &&
+                                          c.find_first_not_of("0123456789") == dot && dot + 1 < c.size() &&
+                                          std::isalpha(static_cast<unsigned char>(c[dot + 1]));
+                        if (c != "power rail" && !part) ++operandsAtPin;
+                    }
+                    CHECK(operandsAtPin == pin.operands.size());
+                    for (const auto& o : pin.operands) {
+                        CHECK(o.linked && o.refId != 0 && !o.kind.empty() && !o.dataType.empty());
+                        found.insert(b.name + "|" + std::to_string(n.number) + "|" + std::to_string(e.uid) + "." +
+                                     pin.name + "|" + o.text + "|" + std::to_string(o.refId) + "|" + o.kind + "|" +
+                                     o.dataType + (o.dataTypeFromPin ? "(pin)" : "") + "|" + o.dataBlock + "|" +
+                                     o.address + "|" + o.pinType);
+                    }
+                }
+    }
+    // Main, ZZCYC2, ZZFB, ZZOUTER, ZZLAD2, ZZSTD, ZZFLAGS in LAD, ZZFBD in FBD
+    CHECK(blocks == 8);
+    CHECK(same(found, std::multiset<std::string>{
+        "Main|1|23.operand|\"ZZALPHA\"|1|tag|Bool||%M10.0|Bool",
+        "Main|1|27.operand|\"ZZC\"|4|tag|Bool||%M10.2|Bool",
+        "Main|1|31.operand|\"ZZOUT\"|3|tag|Bool||%M11.0|Bool",
+        "Main|2|23.operand|\"ZZC\"|4|tag|Bool||%M10.2|Bool",
+        "Main|2|27.operand|\"ZZOUT\"|3|tag|Bool||%M11.0|Bool",
+        "Main|3|22.in1|\"ZZN1\"|18|tag|Int||%MW20|Int",
+        "Main|3|22.in2|100|19|constant|Int|||Int",
+        "Main|3|41.in|\"ZZN2\"|20|tag|Int||%MW22|",
+        "Main|3|41.out1|\"ZZDATA\".speed|21|data block member|Int|ZZDATA||",
+        "Main|4|22.in1|\"ZZN1\"|18|tag|Int||%MW20|Int",
+        "Main|4|22.in2|5|22|constant|Int|||Int",
+        "Main|4|22.out|\"ZZN3\"|23|tag|Int||%MW24|Int",
+        "Main|5|23.operand|\"ZZALPHA\"|1|tag|Bool||%M10.0|Bool",
+        "Main|5|25.PT|T#5S|30|constant|Time|||Time",
+        "Main|5|34.operand|\"ZZC\"|4|tag|Bool||%M10.2|Bool",
+        "Main|6|23.in1|\"ZZALPHA\"|1|tag|Bool||%M10.0|Bool",
+        "Main|6|23.io1|\"ZZN2\"|20|tag|Int||%MW22|Int",
+        "Main|6|23.out1|\"ZZC\"|4|tag|Bool||%M10.2|Bool",
+        "Main|11|22.in|\"ZZK\"|59|user constant|Int|||",
+        "Main|11|22.out1|\"ZZN3\"|23|tag|Int||%MW24|",
+        "ZZFB|1|23.operand|#in1|1|local|Bool|||Bool",
+        "ZZFB|1|27.operand|#out1|2|local|Bool|||Bool",
+        "ZZOUTER|1|23.in1|\"ZZB\"|4|tag|Bool||%M10.1|Bool",
+        "ZZOUTER|1|23.io1|\"ZZN1\"|5|tag|Int||%MW20|Int",
+        "ZZOUTER|1|23.out1|\"ZZOUT\"|6|tag|Bool||%M11.0|Bool",
+        "ZZLAD2|1|23.operand|\"ZZALPHA\"|1|tag|Bool||%M10.0|Bool",
+        "ZZLAD2|1|31.operand|\"ZZOUT\"|6|tag|Bool||%M11.0|Bool",
+        "ZZLAD2|2|23.bit|#edgeP|8|local|Bool|||Bool",
+        "ZZLAD2|2|23.operand|\"ZZB\"|7|tag|Bool||%M10.1|Bool",
+        "ZZLAD2|2|29.operand|\"ZZC\"|9|tag|Bool||%M10.2|Bool",
+        "ZZLAD2|3|23.bit|#memN|10|local|Bool|||Bool",
+        "ZZLAD2|3|23.operand|\"ZZB\"|7|tag|Bool||%M10.1|Bool",
+        "ZZLAD2|3|29.operand|\"ZZC\"|9|tag|Bool||%M10.2|Bool",
+        "ZZLAD2|4|31.operand|\"ZZALPHA\"|1|tag|Bool||%M10.0|Bool",
+        "ZZLAD2|4|22.R|\"ZZB\"|7|tag|Bool||%M10.1|Bool",
+        "ZZLAD2|4|22.PV|10|17|constant|Int|||Int",
+        "ZZLAD2|4|22.CV|\"ZZN3\"|18|tag|Int||%MW24|Int",
+        "ZZLAD2|4|36.operand|\"ZZOUT\"|6|tag|Bool||%M11.0|Bool",
+        "ZZLAD2|5|29.operand|\"ZZALPHA\"|1|tag|Bool||%M10.0|Bool",
+        "ZZLAD2|5|22.PT|T#2S|22|constant|Time|||Time",
+        "ZZLAD2|5|34.operand|\"ZZOUT\"|6|tag|Bool||%M11.0|Bool",
+        "ZZFBD|1|21.in1|\"ZZALPHA\"|3|tag|Bool||%M10.0|Bool",
+        "ZZFBD|1|21.in2|\"ZZB\"|4|tag|Bool||%M10.1|Bool",
+        "ZZFBD|1|30.operand|\"ZZDATA\".run|6|data block member|Bool|ZZDATA||Bool"}));
+    // the Add box of Main network 4 is set to Auto: its pins take the type
+    // of the operands
+    const tia::BlockCode* main = codeOf(l, "Main");
+    CHECK(main && main->networks.size() == 12);
+    if (main && main->networks.size() == 12) {
+        const auto& add = main->networks[3].elements;
+        CHECK(add.size() == 1 && add[0].name == "Add" && add[0].dataType.empty());
+    }
 }
 
 // s15_motor: a motor start/stop with a start delay and a start counter, as
@@ -2512,6 +2604,7 @@ int main() {
     testCode();
     testSources();
     testMotor();
+    testOperands();
     testDiff();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

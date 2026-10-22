@@ -2384,6 +2384,131 @@ void testCodeConstructs() {
     CHECK(notes.empty());
 }
 
+// Operand links: the address of a tag and of a member of a data block with
+// standard access, a literal typed by its pin, the pins of a timer and of a
+// called FC.
+void testOperandLinks() {
+    std::vector<tia::CodeReference> refs;
+    auto add = [&](int64_t id, const char* kind, const char* text, const char* type, std::vector<std::string> path = {}) {
+        tia::CodeReference r;
+        r.refId = id;
+        r.kind = kind;
+        r.text = text;
+        r.dataType = type;
+        for (const auto& p : path) r.path.push_back({p, {}});
+        if (!r.path.empty()) {
+            r.container = r.path[0].name;
+            r.name = r.path.back().name;
+        } else {
+            r.name = text[0] == '"' ? std::string(text + 1, std::strlen(text) - 2) : std::string(text);
+        }
+        refs.push_back(r);
+    };
+    add(1, "constant", "2", "");
+    add(2, "data block member", "\"D\".x", "Real", {"D", "x"});
+    add(3, "tag", "\"T\"", "Real");
+    add(4, "data block member", "\"D\".b", "Bool", {"D", "b"});
+    add(5, "local", "#t", "TON_TIME");
+    add(6, "constant", "T#1S", "Time");
+    add(7, "block", "\"F\"", "F");
+    add(8, "data block member", "\"D\".w", "Word", {"D", "w"});
+    add(9, "data block member", "\"D\".l", "LReal", {"D", "l"});
+    const char xml[] =
+        "<FlgNet><Parts>"
+        "<Part UId=\"20\" Gate=\"Add\"><TemplateValue Name=\"SrcType\" Type=\"Type\">Real</TemplateValue></Part>"
+        "<Part UId=\"21\" Gate=\"Contact\" />"
+        "<LRef UId=\"22\" RefId=\"0\"><Instance RefId=\"5\" /></LRef>"
+        "<CRef UId=\"23\"><CodeBlock RefId=\"7\" /></CRef>"
+        "<ORef UId=\"30\" RefId=\"1\" /><ORef UId=\"31\" RefId=\"2\" /><ORef UId=\"32\" RefId=\"3\" />"
+        "<ORef UId=\"33\" RefId=\"4\" /><ORef UId=\"34\" RefId=\"6\" /><ORef UId=\"35\" RefId=\"8\" /><ORef UId=\"36\" RefId=\"9\" />"
+        "</Parts><Wires>"
+        "<Wire><Powerrail /><PCon UId=\"20\" PinName=\"en\" /><PCon UId=\"21\" PinName=\"in\" /><PCon UId=\"23\" PinName=\"en\" /></Wire>"
+        "<Wire><OCon UId=\"30\" /><PCon UId=\"20\" PinName=\"in1\" /></Wire>"
+        "<Wire><OCon UId=\"31\" /><PCon UId=\"20\" PinName=\"in2\" /></Wire>"
+        "<Wire><PCon UId=\"20\" PinName=\"out\" /><OCon UId=\"32\" /></Wire>"
+        "<Wire><OCon UId=\"33\" /><PCon UId=\"21\" PinName=\"operand\" /></Wire>"
+        "<Wire><PCon UId=\"21\" PinName=\"out\" /><PCon UId=\"22\" PinName=\"IN\" /></Wire>"
+        "<Wire><OCon UId=\"34\" /><PCon UId=\"22\" PinName=\"PT\" /></Wire>"
+        "<Wire><OCon UId=\"35\" /><PCon UId=\"23\" PinName=\"a\" /></Wire>"
+        "<Wire><PCon UId=\"23\" PinName=\"Ret_Val\" /><OCon UId=\"36\" /></Wire>"
+        "</Wires></FlgNet>";
+    tia::BlockCode code;
+    code.plc = "P";
+    code.references = refs;
+    code.networks.emplace_back();
+    std::vector<std::string> lines, notes;
+    CHECK(tia::graphicNetwork(xml, code.references, code.networks[0].elements, lines, notes));
+    tia::ProgramData prog;
+    tia::Tag tag;
+    tag.plc = "P";
+    tag.name = "T";
+    tag.address = "%MD10";
+    prog.tags.push_back(tag);
+    tia::DataBlock db;
+    db.plc = "P";
+    db.name = "D";
+    db.hasNumber = true;
+    db.number = 5;
+    db.hasAccess = true;
+    db.symbolicAccessOnly = false;
+    auto member = [&](const char* name, const char* type, uint64_t bits) {
+        tia::BlockMember m;
+        m.name = name;
+        m.dataType = type;
+        m.hasOffset = true;
+        m.offsetBits = bits;
+        db.members.push_back(m);
+    };
+    member("x", "Real", 32);
+    member("b", "Bool", 66);
+    member("w", "Word", 80);
+    member("l", "LReal", 128);
+    prog.blocks.push_back(db);
+    tia::BlockInfo fc;
+    fc.plc = "P";
+    fc.name = "F";
+    fc.type = "FC";
+    fc.declarationsRead = true;
+    tia::BlockMember a, ret;
+    a.name = "a";
+    a.section = "Input";
+    a.dataType = "Word";
+    ret.name = "Ret_Val";
+    ret.section = "Return";
+    ret.dataType = "LReal";
+    fc.declarations = {a, ret};
+    prog.blockList.push_back(fc);
+    tia::linkOperands(code, prog);
+    std::multiset<std::string> found;
+    for (const auto& e : code.networks[0].elements)
+        for (const auto& pin : e.pins)
+            for (const auto& o : pin.operands)
+                found.insert(std::to_string(e.uid) + "." + pin.name + "|" + o.text + "|" + o.kind + "|" + o.dataType +
+                             (o.dataTypeFromPin ? "(pin)" : "") + "|" + o.dataBlock + "|" + o.address + "|" + o.pinType);
+    const std::multiset<std::string> expected = {
+        "20.in1|2|constant|Real(pin)|||Real",
+        "20.in2|\"D\".x|data block member|Real|D|%DB5.DBD4|Real",
+        "20.out|\"T\"|tag|Real||%MD10|Real",
+        "21.operand|\"D\".b|data block member|Bool|D|%DB5.DBX8.2|Bool",
+        "22.PT|T#1S|constant|Time|||Time",
+        "23.a|\"D\".w|data block member|Word|D|%DB5.DBW10|Word",
+        "23.Ret_Val|\"D\".l|data block member|LReal|D||LReal",
+    };
+    CHECK(found == expected);
+    if (found != expected)
+        for (const auto& f : found) std::fprintf(stderr, "  found %s\n", f.c_str());
+    // an optimized data block has no addresses
+    prog.blocks[0].symbolicAccessOnly = true;
+    for (auto& e : code.networks[0].elements)
+        for (auto& pin : e.pins)
+            for (auto& o : pin.operands) o.address.clear();
+    tia::linkOperands(code, prog);
+    for (const auto& e : code.networks[0].elements)
+        for (const auto& pin : e.pins)
+            for (const auto& o : pin.operands)
+                if (o.kind == "data block member") CHECK(o.address.empty());
+}
+
 void testGraphicNetworks() {
     const std::vector<tia::CodeReference> refs = testReferences();
     std::vector<tia::NetworkElement> elements;
@@ -2801,8 +2926,11 @@ void testCodeProject() {
           std::string::npos);
     CHECK(j.find("{\"number\": 1, \"network_id\": 9, \"title\": \"Start the pump\", \"comment\": \"runs when asked\", \"language\": \"LAD\", "
                  "\"language_stored\": \"LAD_CLASSIC\", \"content\": \"graphic\", \"notes\": [], \"lines\": [\"1: \\\"Data\\\".Run := \\\"Start\\\"\"], "
-                 "\"elements\": [{\"uid\": 21, \"kind\": \"gate\", \"name\": \"Contact\", \"instance\": null, \"options\": [], \"pins\": ["
-                 "{\"name\": \"in\", \"direction\": \"in\", \"connected\": [\"power rail\"]}") != std::string::npos);
+                 "\"elements\": [{\"uid\": 21, \"kind\": \"gate\", \"name\": \"Contact\", \"instance\": null, \"data_type\": null, \"options\": [], \"pins\": ["
+                 "{\"name\": \"in\", \"direction\": \"in\", \"connected\": [\"power rail\"], \"operands\": []}") != std::string::npos);
+    CHECK(j.find("{\"name\": \"operand\", \"direction\": \"in\", \"connected\": [\"\\\"Start\\\"\"], \"operands\": [{\"text\": \"\\\"Start\\\"\", "
+                 "\"ref_id\": 30, \"linked\": true, \"kind\": \"tag\", \"kind_stored\": \"SimpleAccess\", \"data_type\": \"Bool\", "
+                 "\"data_type_from_pin\": false, \"data_block\": null, \"address\": ") != std::string::npos);
     CHECK(j.find("{\"kind\": \"tag\", \"kind_stored\": \"SimpleAccess\", \"text\": \"\\\"Start\\\"\", \"data_type\": \"Bool\", \"data_block\": null, "
                  "\"declared_as\": null, \"uses\": [{\"network\": 1, \"access\": \"read and write\", \"access_stored\": \"RW\", \"uid\": 42, \"hidden\": false}]}") !=
           std::string::npos);
@@ -2956,6 +3084,7 @@ int main() {
     testDeclarations();
     testExtraDataFiles();
     testGraphicNetworks();
+    testOperandLinks();
     testCodeProject();
     testCodeProtectionOverTime();
     testCodeCurrentNames();

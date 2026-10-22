@@ -1231,6 +1231,28 @@ screenshot of a network of 17 parts in the V15.1 sample's repository).
 V13 has `Version="12.0.0.0"`, no namespace and an extra `<Labels />`; the
 sample has only empty networks in LAD.
 
+**Operand links** (tiaconv's, not stored as such). An operand's `RefId`
+names its entry of the reference table below, which gives the kind
+(`SimpleAccess` a tag, `GlobalAccess` a data block member,
+`InterfaceAccess` a local, `LiteralConstant`, `GlobalConstant`), the data
+type and, for a data block member, the path from the data block. Every
+literal in the fixtures and samples is stored with a type (`100` Int,
+`T#5S` Time); tiaconv falls back on the pin's type for one without. The
+address comes from the tag table for a tag, and for a member of a data
+block with standard access from its offset, as `%DB<n>.DBX<byte>.<bit>`
+for a Bool and `DBB`, `DBW`, `DBD` for 1, 2 and 4 bytes. The type of a pin
+is not stored: tiaconv takes Bool for contacts, coils, `A`, `O`, `X`,
+`PBox`/`NBox` and `en`/`eno`; the box's `TemplateValue` type for the data
+pins (`in*`, `out*`; `DestType` for the outputs where given; the `pre` and
+`out` of a comparison are Bool); for a box on Auto the type of the first
+operand at a data pin that is not a constant (as TIA Portal does, "Auto
+(Int)"); the declared type of the parameter for a call; and for the IEC
+timers and counters the value type of the instance (`TON_TIME`,
+`IEC_TIMER` → `PT`, `ET` Time; `CTU_INT`, `IEC_COUNTER` → `PV`, `CV`
+Int; the other pins Bool). A comparison can take operands of another type
+(`Eq[UInt]` with a USInt member in the V15.1 sample): `data_type` and
+`pin_type` then differ.
+
 ### The reference table
 
 The XML of a network names operands and blocks by number. The names are in a

@@ -4,6 +4,8 @@
 #include "code.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <cstdlib>
 #include <map>
 #include <memory>
@@ -422,6 +424,7 @@ struct GPart {
     std::string name;
     std::string instance;
     std::string dataType;  // the type a box was set to
+    int64_t refId = 0, instanceRefId = 0;
     std::vector<std::pair<std::string, std::string>> options;
     std::set<std::string> negated;
     std::vector<std::pair<std::string, Source>> inputs;
@@ -507,6 +510,7 @@ private:
     std::vector<GPart> parts_;
     std::map<uint64_t, size_t> partIndex_;
     std::map<uint64_t, std::string> operands_;  // operand uid -> text; empty: nothing entered
+    std::map<uint64_t, int64_t> operandRefs_;   // operand uid -> entry of the reference table
     std::set<uint64_t> consumedNow_;
     std::string lastHead_;
     std::vector<std::string> lastPins_;
@@ -520,10 +524,17 @@ private:
         return ref ? ref->text : "{?" + *r + "}";
     }
 
+    static int64_t refIdOf(const XmlNode& n) {
+        const std::string* r = n.attr("RefId");
+        int64_t id = 0;
+        return r && parseInt(*r, id) ? id : 0;
+    }
+
     void part(const XmlNode& p) {
         const uint64_t uid = static_cast<uint64_t>(intAttr(p, "UId", 0));
         if (p.name == "ORef") {
             operands_[uid] = refTextOf(p);
+            operandRefs_[uid] = refIdOf(p);
             return;
         }
         GPart g;
@@ -535,11 +546,15 @@ private:
             g.coil = isCoil(g.name);
         } else if (p.name == "CRef") {
             g.kind = "call";
-            if (const XmlNode* b = p.child("CodeBlock")) g.name = refTextOf(*b);
+            if (const XmlNode* b = p.child("CodeBlock")) {
+                g.name = refTextOf(*b);
+                g.refId = refIdOf(*b);
+            }
             if (g.name.empty()) g.name = "{?}";
         } else if (p.name == "LRef") {
             g.kind = "instruction";
             g.name = refTextOf(p);
+            g.refId = refIdOf(p);
             if (g.name.empty()) g.name = "{?}";
         } else {
             g.kind = "gate";
@@ -553,6 +568,7 @@ private:
         for (const auto& c : p.children) {
             if (c->name == "Instance") {
                 g.instance = refTextOf(*c);
+                g.instanceRefId = refIdOf(*c);
             } else if (c->name == "TemplateValue") {
                 g.options.emplace_back(c->attrOr("Name", "?"), c->text);
                 if (c->attrIs("Type", "Type")) g.dataType = c->text;
@@ -750,6 +766,21 @@ private:
         return s;
     }
 
+    NetworkElement::Operand operand(uint64_t uid) const {
+        NetworkElement::Operand o;
+        o.text = operandText(uid);
+        auto r = operandRefs_.find(uid);
+        if (r != operandRefs_.end()) o.refId = r->second;
+        if (const CodeReference* ref = o.refId ? findRef(index_, refs_, o.refId) : nullptr) {
+            o.linked = true;
+            o.kind = ref->kind;
+            o.kindStored = ref->kindStored;
+            o.dataType = ref->dataType;
+            o.dataBlock = ref->container;
+        }
+        return o;
+    }
+
     NetworkElement element(const GPart& p) const {
         NetworkElement e;
         e.uid = p.uid;
@@ -757,6 +788,9 @@ private:
         e.name = p.name;
         e.instance = p.instance;
         e.options = p.options;
+        e.refId = p.refId;
+        e.instanceRefId = p.instanceRefId;
+        e.dataType = p.dataType;
         auto pinOf = [&](const std::string& name, bool output) -> NetworkElement::Pin& {
             for (auto& x : e.pins)
                 if (x.name == name && x.output == output) return x;
@@ -773,11 +807,15 @@ private:
             else what = std::to_string(in.second.uid) + "." + in.second.pin;
             NetworkElement::Pin& pin = pinOf(in.first, false);
             if (!what.empty()) pin.connected.push_back(what);
+            if (!what.empty() && in.second.type == Source::Operand) pin.operands.push_back(operand(in.second.uid));
         }
         for (const std::string& name : p.outputPins) pinOf(name, true);
         for (const auto& o : p.outputsToOperand) {
             const std::string t = operandText(o.second);
-            if (!t.empty()) pinOf(o.first, true).connected.push_back(t);
+            if (t.empty()) continue;
+            NetworkElement::Pin& pin = pinOf(o.first, true);
+            pin.connected.push_back(t);
+            pin.operands.push_back(operand(o.second));
         }
         // the parts an output leads to
         for (const GPart& other : parts_)
@@ -836,6 +874,7 @@ public:
             Object o;
             if (decodeKey(it->second, o)) read(o, code);
             else code.notes.push_back("block not readable");
+            linkOperands(code, prog_);
             if (info.interfaceRead) declaredInstances(info, code);
             out.stats.networks += code.networks.size();
             out.stats.references += code.references.size();
@@ -1543,6 +1582,207 @@ ProtectedVersions protectedVersions(const Project& wholeFile) {
     }
     return out;
 }
+
+namespace {
+
+bool sameName(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) return false;
+    return true;
+}
+
+bool startsWith(const std::string& s, const char* p) { return s.compare(0, std::strlen(p), p) == 0; }
+
+// The size in bytes of an elementary type that an absolute address can
+// name; 0 for anything else.
+int addressBytes(const std::string& t) {
+    if (t == "Byte" || t == "Char" || t == "SInt" || t == "USInt") return 1;
+    if (t == "Word" || t == "Int" || t == "UInt" || t == "Date" || t == "S5Time") return 2;
+    if (t == "DWord" || t == "DInt" || t == "UDInt" || t == "Real" || t == "Time" || t == "Time_Of_Day" || t == "TOD")
+        return 4;
+    return 0;
+}
+
+// The value type of an IEC timer or counter instance: TON_TIME -> Time,
+// CTU_INT -> Int, IEC_TIMER -> Time; "" when not one of these.
+std::string iecValueType(const std::string& instanceType, bool& timer) {
+    static const std::map<std::string, std::pair<std::string, bool>> iec = {
+        {"IEC_TIMER", {"Time", true}},       {"IEC_LTIMER", {"LTime", true}},     {"IEC_COUNTER", {"Int", false}},
+        {"IEC_SCOUNTER", {"SInt", false}},   {"IEC_DCOUNTER", {"DInt", false}},   {"IEC_LCOUNTER", {"LInt", false}},
+        {"IEC_UCOUNTER", {"UInt", false}},   {"IEC_USCOUNTER", {"USInt", false}}, {"IEC_UDCOUNTER", {"UDInt", false}},
+        {"IEC_ULCOUNTER", {"ULInt", false}},
+    };
+    auto it = iec.find(instanceType);
+    if (it != iec.end()) {
+        timer = it->second.second;
+        return it->second.first;
+    }
+    const size_t u = instanceType.rfind('_');
+    if (u == std::string::npos) return std::string();
+    const std::string head = instanceType.substr(0, u), tail = instanceType.substr(u + 1);
+    static const std::map<std::string, std::string> types = {
+        {"TIME", "Time"}, {"LTIME", "LTime"}, {"INT", "Int"},     {"SINT", "SInt"},   {"DINT", "DInt"},
+        {"LINT", "LInt"}, {"UINT", "UInt"},   {"USINT", "USInt"}, {"UDINT", "UDInt"}, {"ULINT", "ULInt"},
+    };
+    auto t = types.find(tail);
+    if (t == types.end()) return std::string();
+    if (head == "TON" || head == "TOF" || head == "TP" || head == "TONR") {
+        timer = true;
+        return t->second;
+    }
+    if (head == "CTU" || head == "CTD" || head == "CTUD") {
+        timer = false;
+        return t->second;
+    }
+    return std::string();
+}
+
+class OperandLinker {
+public:
+    OperandLinker(BlockCode& code, const ProgramData& prog) : code_(code), prog_(prog) {
+        for (size_t i = 0; i < code.references.size(); ++i) index_[code.references[i].refId] = i;
+    }
+
+    void run() {
+        for (Network& n : code_.networks)
+            for (NetworkElement& e : n.elements) element(e);
+    }
+
+private:
+    BlockCode& code_;
+    const ProgramData& prog_;
+    std::map<int64_t, size_t> index_;
+
+    const CodeReference* ref(int64_t id) const {
+        auto it = index_.find(id);
+        return it == index_.end() ? nullptr : &code_.references[it->second];
+    }
+
+    static bool isConstant(const NetworkElement::Operand& o) {
+        return o.kind == "constant" || o.kind == "local constant" || o.kind == "user constant";
+    }
+
+    void element(NetworkElement& e) {
+        std::string boxType = e.dataType, outType;
+        for (const auto& opt : e.options)
+            if (opt.first == "DestType" && !opt.second.empty()) outType = opt.second;
+        bool automatic = false;
+        for (const auto& opt : e.options)
+            if (opt.first == "AutomaticTyped") automatic = true;
+        // first the addresses, then the pin types: an automatic box takes its
+        // type from the operands at its data pins
+        for (auto& pin : e.pins)
+            for (auto& o : pin.operands) address(o);
+        if (boxType.empty() && automatic && e.kind == "gate")
+            for (const auto& pin : e.pins)
+                if (dataPin(pin.name))
+                    for (const auto& o : pin.operands)
+                        if (boxType.empty() && o.linked && !isConstant(o) && !o.dataType.empty()) boxType = o.dataType;
+        for (auto& pin : e.pins) {
+            const std::string t = pinType(e, pin, boxType, outType);
+            for (auto& o : pin.operands) {
+                o.pinType = t;
+                if (o.dataType.empty() && !t.empty() && (isConstant(o) || !o.linked)) {
+                    o.dataType = t;
+                    o.dataTypeFromPin = true;
+                }
+            }
+        }
+    }
+
+    static bool dataPin(const std::string& pin) {
+        return startsWith(pin, "in") || startsWith(pin, "out");
+    }
+
+    std::string pinType(const NetworkElement& e, const NetworkElement::Pin& pin, const std::string& boxType,
+                        const std::string& outType) const {
+        const std::string& p = pin.name;
+        if (sameName(p, "en") || sameName(p, "eno")) return "Bool";
+        if (e.kind == "gate") {
+            const std::string& g = e.name;
+            if (g == "Contact" || g == "PContact" || g == "NContact" || isCoil(g) || g == "A" || g == "O" ||
+                g == "X" || g == "Not" || g == "PBox" || g == "NBox")
+                return "Bool";
+            if (compareOperator(g)) return p == "pre" || p == "out" ? "Bool" : boxType;
+            if (g == "Move") return std::string();
+            if (startsWith(p, "out") && !outType.empty()) return outType;
+            return dataPin(p) ? boxType : std::string();
+        }
+        if (e.kind == "instruction") {
+            const CodeReference* inst = ref(e.instanceRefId);
+            bool timer = false;
+            const std::string v = inst ? iecValueType(inst->dataType, timer) : std::string();
+            if (v.empty()) return std::string();
+            if (timer) {
+                if (p == "IN" || p == "Q" || p == "R") return "Bool";
+                if (p == "PT" || p == "ET") return v;
+            } else {
+                if (p == "CU" || p == "CD" || p == "R" || p == "LD" || p == "Q" || p == "QU" || p == "QD") return "Bool";
+                if (p == "PV" || p == "CV") return v;
+            }
+            return std::string();
+        }
+        if (e.kind == "call") {
+            const CodeReference* called = ref(e.refId);
+            if (!called) return std::string();
+            const std::string& name = called->dataType.empty() ? called->name : called->dataType;
+            for (const BlockInfo& b : prog_.blockList) {
+                if (b.plc != code_.plc || b.name != name || !b.declarationsRead) continue;
+                for (const BlockMember& m : b.declarations) {
+                    if (m.section == "Return" ? sameName(p, "Ret_Val") : sameName(m.name, p)) {
+                        if (m.section == "Input" || m.section == "Output" || m.section == "InOut" || m.section == "Return")
+                            return m.dataType;
+                    }
+                }
+            }
+        }
+        return std::string();
+    }
+
+    void address(NetworkElement::Operand& o) const {
+        const CodeReference* r = o.linked ? ref(o.refId) : nullptr;
+        if (!r) return;
+        if (r->kind == "tag") {
+            for (const Tag& t : prog_.tags)
+                if (t.plc == code_.plc && t.name == r->name) {
+                    o.address = t.address;
+                    return;
+                }
+            return;
+        }
+        if (r->kind != "data block member" || r->path.size() < 2) return;
+        const DataBlock* db = nullptr;
+        for (const DataBlock& d : prog_.blocks)
+            if (d.plc == code_.plc && d.name == r->path[0].name) db = &d;
+        if (!db || !db->hasNumber || !db->hasAccess || db->symbolicAccessOnly) return;
+        const std::vector<BlockMember>* level = &db->members;
+        const BlockMember* m = nullptr;
+        for (size_t i = 1; i < r->path.size(); ++i) {
+            if (!r->path[i].index.empty()) return;
+            m = nullptr;
+            for (const BlockMember& x : *level)
+                if (x.name == r->path[i].name) m = &x;
+            if (!m) return;
+            level = &m->members;
+        }
+        if (!m || !m->hasOffset || !r->modifier.empty()) return;
+        const std::string db_ = "%DB" + std::to_string(db->number) + ".DB";
+        const uint64_t byte = m->offsetBits / 8;
+        if (m->dataType == "Bool") {
+            o.address = db_ + "X" + std::to_string(byte) + "." + std::to_string(m->offsetBits % 8);
+            return;
+        }
+        const int n = addressBytes(m->dataType);
+        if (n == 1) o.address = db_ + "B" + std::to_string(byte);
+        else if (n == 2) o.address = db_ + "W" + std::to_string(byte);
+        else if (n == 4) o.address = db_ + "D" + std::to_string(byte);
+    }
+};
+
+}  // namespace
+
+void linkOperands(BlockCode& code, const ProgramData& prog) { OperandLinker(code, prog).run(); }
 
 CodeData buildCode(const Project& project, const ProgramData& prog, const ProtectedVersions* protectedUpTo) {
     return CodeBuilder(project, prog, protectedUpTo).run();

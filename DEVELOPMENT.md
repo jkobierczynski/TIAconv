@@ -206,6 +206,14 @@ simulated from it outside TIA Portal. Three steps, in this order.
    mostly wiring together data tiaconv already reads. Done when: the
    graph in the JSON has these fields for every operand, and fixture tests
    on `s14_code_rewritten` pin them for the LAD and FBD blocks there.
+   *Done (unreleased):* every operand in `elements[].pins[].operands` has
+   `ref_id`, `kind`, `data_type`, `data_block`, `address` and `pin_type`;
+   the 44 operands of the eight LAD/FBD blocks of `s14_code_rewritten` are
+   pinned in `testOperands`. Every operand of the fixtures and of the
+   local samples is linked and typed. What is not known yet: the pin types
+   of `Move`, `S_Move` and instructions other than the IEC timers and
+   counters (PID_Compact, MB_SERVER), and the absolute address of a member
+   inside an array or of a type longer than 4 bytes.
 2. **A `--program-json` export with a documented schema** (about 2–4
    days). One file per PLC with:
    - the memory model: tags, data blocks, offsets, start values, retain;

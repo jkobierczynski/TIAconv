@@ -657,7 +657,15 @@ Calls:
     type the editor shows on the box (`Int`, `Time`) is not stored there.
   - The JSON also has the parts themselves (`elements`): every part with
     its pins and what each pin is connected to. Nothing of the stored
-    network is left out there.
+    network is left out there. Each operand at a pin is linked to the
+    block's table of references (`operands`): its `ref_id` there, its
+    `kind` (tag, data block member, local, constant, ...), `data_type`,
+    `data_block`, the `address` of a tag (`%M10.0`) or of a member of a
+    data block with standard access (`%DB1.DBX60.0`, `%DB2.DBW4`), and
+    `pin_type`, the type the pin takes where tiaconv knows it (the operand
+    of a contact or coil, the data pins of a box with its type or on Auto,
+    the parameters of a called block, the IEC timers and counters). A
+    literal stored without a type gets the pin's (`data_type_from_pin`).
 - **STL** comes out as its statements, one per line, instruction and
   operand in two columns as the editor shows them: comments with `//`, a
   label in front of its statement (`M001: NOP 0`), and the parameters of a
