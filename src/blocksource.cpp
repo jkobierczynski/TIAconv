@@ -37,23 +37,59 @@ std::string sectionKeyword(const std::string& section) {
 
 // The settings of a member that differ from the defaults, as a source
 // writes them before the colon: " { ExternalWritable := 'False'}".
-std::string memberAttributes(const MemberAccess& a) {
+// A multi-instance: a member whose own members have sections (Input,
+// Output, ...), the instance of a function block or of an instruction.
+bool isInstance(const BlockMember& m) {
+    for (const auto& c : m.members)
+        if (!c.section.empty()) return true;
+    return false;
+}
+
+// The library version of an instruction: TON_TIME is the TON instruction
+// for the type Time.
+std::string instructionVersion(const std::string& type, const InstructionVersions* versions) {
+    if (!versions) return std::string();
+    auto it = versions->find(type);
+    if (it != versions->end()) return it->second;
+    const size_t us = type.rfind('_');
+    if (us != std::string::npos) {
+        it = versions->find(type.substr(0, us));
+        if (it != versions->end()) return it->second;
+    }
+    return std::string();
+}
+
+std::string memberAttributes(const BlockMember& m, const MemberAccess& a, const InstructionVersions* versions) {
     std::vector<std::string> parts;
+    // An instruction's instance: its type is an instruction of the project
+    // (TON_TIME for TON), or its members have sections. The members of an
+    // IEC timer come from a system data type and have none.
+    const bool unquoted = !m.dataType.empty() && m.dataType[0] != '"';
+    const std::string version = unquoted ? instructionVersion(m.dataType, versions) : std::string();
+    const bool instruction = unquoted && (!version.empty() || isInstance(m));
+    const bool instance = instruction || isInstance(m);
+    if (instruction) {
+        parts.push_back("InstructionName := '" + m.dataType + "'");
+        if (!version.empty()) parts.push_back("LibVersion := '" + version + "'");
+    }
     if (!a.accessible) parts.push_back("ExternalAccessible := 'False'");
     if (!a.visible) parts.push_back("ExternalVisible := 'False'");
     if (!a.writable) parts.push_back("ExternalWritable := 'False'");
-    if (a.setpoint) parts.push_back("S7_SetPoint := 'True'");
+    // a multi-instance always carries the setpoint setting
+    if (instance) parts.push_back(std::string("S7_SetPoint := '") + (a.setpoint ? "True" : "False") + "'");
+    else if (a.setpoint) parts.push_back("S7_SetPoint := 'True'");
     if (parts.empty()) return std::string();
-    std::string out = " { ";
+    std::string out = instruction ? " {" : " { ";
     for (size_t i = 0; i < parts.size(); ++i) out += (i ? "; " : "") + parts[i];
     return out + "}";
 }
 
 void memberLines(const std::vector<BlockMember>& members, const std::string& indent, bool attributes,
-                 const MemberAccess& outer, std::vector<std::string>& out) {
+                 const MemberAccess& outer, const InstructionVersions* versions, std::vector<std::string>& out) {
     for (const auto& m : members) {
         const MemberAccess a = memberAccess(m, outer);
-        std::string line = indent + sourceName(m.name) + (attributes ? memberAttributes(a) : std::string()) + " : ";
+        std::string line =
+            indent + sourceName(m.name) + (attributes ? memberAttributes(m, a, versions) : std::string()) + " : ";
         // A structure lists its members; a multi-instance, a system type or
         // a PLC data type is named by its type alone.
         const bool structure = m.dataType == "Struct" && !m.members.empty();
@@ -61,7 +97,7 @@ void memberLines(const std::vector<BlockMember>& members, const std::string& ind
             line += "Struct";
             if (!m.comment.empty()) line += "   // " + m.comment;
             out.push_back(line);
-            memberLines(m.members, indent + kIndent, attributes, a, out);
+            memberLines(m.members, indent + kIndent, attributes, a, versions, out);
             out.push_back(indent + "END_STRUCT;");
             continue;
         }
@@ -131,9 +167,20 @@ std::string safeFileName(const std::string& s) {
 
 }  // namespace
 
+InstructionVersions instructionVersionsOf(const ProgramData& prog, const std::string& plc) {
+    // those the project keeps without a PLC (V19, V21), then the PLC's own
+    InstructionVersions versions;
+    for (const std::string& key : {std::string(), plc}) {
+        auto v = prog.instructionVersions.find(key);
+        if (v != prog.instructionVersions.end())
+            for (const auto& kv : v->second) versions[kv.first] = kv.second;
+    }
+    return versions;
+}
+
 std::string sourceName(const std::string& name) { return plainIdentifier(name) ? name : "\"" + name + "\""; }
 
-std::vector<std::string> declarationLines(const BlockInfo& info) {
+std::vector<std::string> declarationLines(const BlockInfo& info, const InstructionVersions* versions) {
     std::vector<std::string> out;
     // sections in the order a source has them
     for (const char* section : {"Input", "Output", "InOut", "Static", "Temp", "Constant"}) {
@@ -150,7 +197,7 @@ std::vector<std::string> declarationLines(const BlockInfo& info) {
             while (j < in.size() && isRetain(in[j]) == retain) ++j;
             out.push_back(std::string(kIndent) + sectionKeyword(section) + (retain ? " RETAIN" : " "));
             memberLines(std::vector<BlockMember>(in.begin() + static_cast<long>(i), in.begin() + static_cast<long>(j)),
-                        std::string(kIndent) + kIndent, attributes, MemberAccess(), out);
+                        std::string(kIndent) + kIndent, attributes, MemberAccess(), versions, out);
             out.push_back(std::string(kIndent) + "END_VAR");
             i = j;
         }
@@ -159,7 +206,7 @@ std::vector<std::string> declarationLines(const BlockInfo& info) {
     return out;
 }
 
-BlockSource blockSource(const BlockInfo& info, const BlockCode& code) {
+BlockSource blockSource(const BlockInfo& info, const BlockCode& code, const InstructionVersions* versions) {
     BlockSource s;
     const std::string keyword = blockKeyword(info.type);
     bool scl = false, stl = false, graphic = false, unread = false;
@@ -208,7 +255,7 @@ BlockSource blockSource(const BlockInfo& info, const BlockCode& code) {
     if (!info.userId.empty()) out.push_back("NAME : " + headerValue(info.userId));
     out.push_back("VERSION : " + (info.version.empty() ? std::string("0.1") : info.version));
     commentLines(info.comment, "", out);
-    for (auto& l : declarationLines(info)) out.push_back(std::move(l));
+    for (auto& l : declarationLines(info, versions)) out.push_back(std::move(l));
     out.push_back(std::string());
     out.push_back("BEGIN");
 
@@ -253,7 +300,8 @@ size_t writeBlockSources(const std::string& dir, const ProgramData& prog, const 
         auto it = infos.find(bc.blockId);
         if (it == infos.end()) continue;
         const BlockInfo& info = *it->second;
-        BlockSource s = blockSource(info, bc);
+        const InstructionVersions versions = instructionVersionsOf(prog, info.plc);
+        BlockSource s = blockSource(info, bc, &versions);
         fs::path p = fs::u8path(dir) / fs::u8path(safeFileName(info.plc.empty() ? "PLC" : info.plc));
         // the folders of the project tree
         size_t from = 0;

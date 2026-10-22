@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -72,7 +73,7 @@ struct BlockMember {
 // against the members of every other project read; see FORMAT.md.
 struct MemberAccess {
     bool accessible = true, visible = true, writable = true;
-    bool setpoint = false;  // "Setpoint": bit 9, only where accessible
+    bool setpoint = false;  // "Setpoint": bit 9, only where accessible and of an elementary type
 };
 MemberAccess memberAccess(const BlockMember& m);
 // The same for a member of a structure: no more than the structure (`outer`).
@@ -263,6 +264,10 @@ struct ProgramData {
     std::vector<DataBlock> blocks;
     std::vector<BlockInfo> blockList;
     std::vector<HmiTag> hmiTags;
+    // The instructions of each PLC that come from a Siemens library (TON,
+    // Filter_PT1), with their version as "major.minor": PLC -> name -> version;
+    // PLC "" for those kept without a link to a PLC, as V19 and V21 do.
+    std::map<std::string, std::map<std::string, std::string>> instructionVersions;
     ProgramStats stats;
     std::vector<std::string> warnings;
 };

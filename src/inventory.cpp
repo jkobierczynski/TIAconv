@@ -1116,13 +1116,19 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
         }
         // A CPU's PROFINET name on automatic: the one TIA Portal generates
         // from the CPU's name (only checked for a CPU with one interface).
+        // Newer CPUs carry an internal "virtual" interface without an
+        // address; it does not count.
+        auto virtualInterface = [](const Interface& i) {
+            return i.hasIpSettings && i.ip == "0.0.0.0" && i.mask == "0.0.0.0" && !i.ipAssignedElsewhere &&
+                   i.subnet.empty() && !i.hasBusAddress;
+        };
         if (m.kind == "controller") {
             size_t automatic = 0;
             for (const auto& i : m.interfaces)
-                if (i.profinetNameAuto) ++automatic;
+                if (i.profinetNameAuto && !virtualInterface(i)) ++automatic;
             if (automatic == 1)
                 for (auto& i : m.interfaces) {
-                    if (!i.profinetNameAuto) continue;
+                    if (!i.profinetNameAuto || virtualInterface(i)) continue;
                     const DerivedProfinetName d = deriveProfinetName(m.name);
                     if (!d.known) continue;
                     i.profinetName = d.name;
@@ -1133,11 +1139,7 @@ Inventory buildInventory(const Project& project, const InventoryOptions& opt) {
         if (!opt.allItems) {
             // Newer CPUs carry an internal "virtual" interface without an
             // address and a pseudo module for it; neither is a real port.
-            m.interfaces.erase(std::remove_if(m.interfaces.begin(), m.interfaces.end(),
-                                              [](const Interface& i) {
-                                                  return i.hasIpSettings && i.ip == "0.0.0.0" && i.mask == "0.0.0.0" &&
-                                                         !i.ipAssignedElsewhere && i.subnet.empty() && !i.hasBusAddress;
-                                              }),
+            m.interfaces.erase(std::remove_if(m.interfaces.begin(), m.interfaces.end(), virtualInterface),
                                m.interfaces.end());
         }
         const bool pseudo = m.orderNumber.compare(0, 8, "Virtual ") == 0;

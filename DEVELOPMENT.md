@@ -5,7 +5,7 @@ what is still unclear or still to do. The user-facing description is in
 [README.md](README.md), the file format in [docs/FORMAT.md](docs/FORMAT.md),
 the releases in [CHANGELOG.md](CHANGELOG.md).
 
-State at the time of writing: version 0.17.0. A STEP 7 Professional V21
+State at the time of writing: version 0.18.0. A STEP 7 Professional V21
 trial licence is available until about 27–29 October 2026; the items marked
 *(trial)* below need it.
 
@@ -193,6 +193,37 @@ because TIA Portal can rewrite the whole file.
   LAD contacts, branches, set/reset and negated coils, edge contacts,
   comparisons, MOVE, ADD, timers, counters, block calls, multi-instances;
   FBD with negated inputs.
+
+## Objectives: a program export for simulation
+
+The next aim is an export complete enough that a PLC program could be
+simulated from it outside TIA Portal. Three steps, in this order.
+
+1. **Operand links in the LAD/FBD graph** (about 1–2 days). Every pin
+   operand carries the id of its access node in the block's reference
+   table, and through it the operand's kind, data type, data block and
+   address. A literal gets its type from the pin it is wired to. This is
+   mostly wiring together data tiaconv already reads. Done when: the
+   graph in the JSON has these fields for every operand, and fixture tests
+   on `s14_code_rewritten` pin them for the LAD and FBD blocks there.
+2. **A `--program-json` export with a documented schema** (about 2–4
+   days). One file per PLC with:
+   - the memory model: tags, data blocks, offsets, start values, retain;
+   - the OBs with their events and priorities;
+   - every block's interface, and its code as SCL/STL text or as the
+     LAD/FBD graph;
+   - the list of what cannot be simulated: know-how protected blocks,
+     GRAPH, fail-safe blocks.
+
+   Done when: a schema page in `docs/`, a `schema_version` field in the
+   file, and tests that check the export of the fixtures against the
+   schema and against what the other outputs report.
+3. **One TIA Portal session** (an evening, while a licence is at hand).
+   *Done (0.18.0):* the fixture `s15_motor`, a motor start/stop with an
+   interlock, a TON start delay and a start counter, as an FB in LAD and in
+   SCL, called from Main, 15 saves. A box left on "Auto" stores
+   `AutomaticTyped` and no type: the simulator has to derive it from the
+   operands wired to the box, as TIA Portal does ("Auto (Int)").
 
 ## What is still unclear or to do
 

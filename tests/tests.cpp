@@ -2143,6 +2143,13 @@ void testDeclarations() {
     CHECK(access(588) == "---");
     CHECK(access(527) == "AVWS");  // V21: "Setpoint" ticked (ZZFLAGS m5)
     CHECK(access(14) == "---" && access(13) == "A-W");  // V21: m2 not accessible, m3 not visible
+    {
+        // V21: a TON_TIME declared in SCL has 527 too, Setpoint not ticked
+        tia::BlockMember inst;
+        inst.flags = 527;
+        inst.members.resize(4);
+        CHECK(!tia::memberAccess(inst).setpoint && tia::memberAccess(inst).accessible);
+    }
     CHECK(access(4183) == "AV-");  // ET of an IEC timer
     CHECK(access(0) == "---");
 

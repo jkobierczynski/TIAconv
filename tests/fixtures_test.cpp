@@ -872,15 +872,104 @@ std::string fixtureFile(const std::string& file) {
     return text;
 }
 
-std::string sourceText(const LoadedCode& l, const std::string& name) {
+std::string sourceText(const LoadedCode& l, const std::string& name, const tia::ProgramData* versionsFrom = nullptr) {
     const tia::BlockCode* c = codeOf(l, name);
     for (const auto& b : l.prog.blockList)
         if (c && b.id == c->blockId) {
+            const tia::InstructionVersions v =
+                versionsFrom ? tia::instructionVersionsOf(*versionsFrom, b.plc) : tia::InstructionVersions();
             std::string out;
-            for (const auto& line : tia::blockSource(b, *c).lines) out += line + "\r\n";
+            for (const auto& line : tia::blockSource(b, *c, &v).lines) out += line + "\r\n";
             return out;
         }
     return std::string();
+}
+
+// s15_motor: a motor start/stop with a start delay and a start counter, as
+// an FB in LAD and again in SCL, called from Main; made for a simulator.
+void testMotor() {
+    // every save holds the one step taken before it (the steps in
+    // tests/fixtures/README.md); the first line of each change
+    const tia::History h = history("s15_motor");
+    CHECK(h.saves.size() == 15);
+    std::multiset<std::string> found;
+    for (const auto& s : h.saves)
+        for (const auto& c : s.changes)
+            if (!followsFromSomethingElse(c)) {
+                const std::string t = stepText(c);
+                found.insert(std::to_string(s.number) + "|" + t.substr(0, t.find('\n')));
+            }
+    CHECK(same(found, std::multiset<std::string>{
+        "3|+|device|S7-1500/ET200MP station_1|S71500.Device",
+        "4|+|tag|MOTORPLC / Default tag table / StartPB|Bool, %I0.0",
+        "4|+|tag|MOTORPLC / Default tag table / StopPB|Bool, %I0.1",
+        "4|+|tag|MOTORPLC / Default tag table / Guard|Bool, %I0.2",
+        "4|+|tag|MOTORPLC / Default tag table / MotorLadOut|Bool, %Q0.0",
+        "4|+|tag|MOTORPLC / Default tag table / MotorSclOut|Bool, %Q0.1",
+        "5|+|block|MOTORPLC / MotorData [DB1]|global, DB",
+        "6|+|block|MOTORPLC / MotorLAD [FB1]|LAD",
+        "7|~|block|MOTORPLC / MotorLAD [FB1]|networks|1|2",
+        "7|~|network|MOTORPLC / MotorLAD [FB1] / network 1|code||1: #run := (#start OR #run) AND #stop AND #interlock",
+        "7|+|network|MOTORPLC / MotorLAD [FB1] / network 2|LAD, empty",
+        "8|~|block|MOTORPLC / MotorLAD [FB1]|networks|2|3",
+        "8|+|data type|MOTORPLC / IEC_TIMER [SDT31]|SDT",
+        "8|~|network|MOTORPLC / MotorLAD [FB1] / network 2|code||1: TON, #delay(IN := #run, PT := T#5S)",
+        "8|+|network|MOTORPLC / MotorLAD [FB1] / network 3|LAD, empty",
+        "8|+|member|MOTORPLC / MotorLAD [FB1] / delay|Static, TON_TIME",
+        "9|~|block|MOTORPLC / MotorLAD [FB1]|networks|3|4",
+        "9|~|network|MOTORPLC / MotorLAD [FB1] / network 3|code||1: Add(en := P(#run, #runEdge), in1 := "
+        "\"MotorData\".starts, in2 := 1, out => \"MotorData\".starts)",
+        "9|+|network|MOTORPLC / MotorLAD [FB1] / network 4|LAD, empty",
+        // the ADD's data type set from Auto to Int
+        "10|~|network|MOTORPLC / MotorLAD [FB1] / network 3|code|1: Add(en := P(#run, #runEdge), in1 := "
+        "\"MotorData\".starts, in2 := 1, out => \"MotorData\".starts)|1: Add[Int](en := P(#run, #runEdge), in1 := "
+        "\"MotorData\".starts, in2 := 1, out => \"MotorData\".starts)",
+        "11|+|block|MOTORPLC / MotorSCL [FB2]|SCL",
+        "12|~|network|MOTORPLC / MotorSCL [FB2] / network 1|code||    // seal-in with interlock",
+        "13|~|block|MOTORPLC / Main [OB1]|networks|1|2", "13|+|block|MOTORPLC / MotorLAD_DB [DB2]|instance, DB",
+        "13|~|network|MOTORPLC / Main [OB1] / network 1|code||1: \"MotorLAD\", \"MotorLAD_DB\"(",
+        "13|+|network|MOTORPLC / Main [OB1] / network 2|LAD, empty",
+        "14|~|block|MOTORPLC / Main [OB1]|networks|2|3", "14|+|block|MOTORPLC / MotorSCL_DB [DB3]|instance, DB",
+        "14|~|network|MOTORPLC / Main [OB1] / network 2|code||1: \"MotorSCL\", \"MotorSCL_DB\"(",
+        "14|+|network|MOTORPLC / Main [OB1] / network 3|LAD, empty"}));
+    // save 15: compiled, nothing else
+    if (h.saves.size() == 15) {
+        size_t compiled = 0;
+        for (const auto& c : h.saves[14].changes) {
+            if (c.attribute == "compiled") ++compiled;
+            CHECK(followsFromSomethingElse(c) || c.kind == "hardware identifier");
+        }
+        CHECK(compiled == 6);
+    }
+
+    // the ADD left on Auto stores no type, only that it is automatic; set to
+    // Int it stores the type (screenshot of the box: "Auto (Int)")
+    {
+        const LoadedCode at9 = loadCode("s15_motor", 9);
+        const tia::BlockCode* lad = codeOf(at9, "MotorLAD");
+        bool automatic = false;
+        if (lad && lad->networks.size() >= 3)
+            for (const auto& e : lad->networks[2].elements)
+                if (e.name == "Add")
+                    for (const auto& o : e.options)
+                        if (o.first == "AutomaticTyped" && o.second == "SrcType") automatic = true;
+        CHECK(automatic);
+    }
+
+    const Loaded l = load("s15_motor");
+    const tia::Interface* x1 = firstInterface(l.inv, "MOTORPLC");
+    CHECK(x1 && x1->profinetNameDerived && x1->profinetName == "motorplc");  // past the virtual interface of FW V4.1
+    CHECK(l.prog.tags.size() == 5);
+
+    // MotorSCL as TIA Portal generated its source (after save 15): the
+    // multi-instance with InstructionName, LibVersion and S7_SetPoint
+    const LoadedCode code = loadCode("s15_motor");
+    CHECK(sourceText(code, "MotorSCL", &code.prog) == fixtureFile("s15_motor/exports/MotorSCL.scl"));
+    // its delay has the bit of a setpoint, but Setpoint is not ticked (screenshot)
+    for (const auto& b : code.prog.blockList)
+        if (b.name == "MotorSCL")
+            for (const auto& m : b.declarations)
+                if (m.name == "delay") CHECK(m.flags == 527 && !tia::memberAccess(m).setpoint);
 }
 
 // The block sources against the ones TIA Portal generated for these blocks.
@@ -2422,6 +2511,7 @@ int main() {
     testHistory();
     testCode();
     testSources();
+    testMotor();
     testDiff();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

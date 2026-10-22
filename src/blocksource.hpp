@@ -10,6 +10,7 @@
 // file that says so, without interface or code.
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -27,11 +28,19 @@ struct BlockSource {
     std::vector<std::string> lines;  // without line ends
 };
 
+// The library versions of the instructions of a PLC (ProgramData::
+// instructionVersions), for the InstructionName and LibVersion of a
+// multi-instance of an instruction.
+using InstructionVersions = std::map<std::string, std::string>;
+
+// The versions for the blocks of one PLC.
+InstructionVersions instructionVersionsOf(const ProgramData& prog, const std::string& plc);
+
 // The declaration part: "   VAR_INPUT ", "      start : Bool;   // ...",
 // "   END_VAR", "" for each section, as TIA Portal writes it.
-std::vector<std::string> declarationLines(const BlockInfo& info);
+std::vector<std::string> declarationLines(const BlockInfo& info, const InstructionVersions* versions = nullptr);
 
-BlockSource blockSource(const BlockInfo& info, const BlockCode& code);
+BlockSource blockSource(const BlockInfo& info, const BlockCode& code, const InstructionVersions* versions = nullptr);
 
 // A name as a source writes it: as it is when it is a plain identifier,
 // otherwise in double quotes ("666").

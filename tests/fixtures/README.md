@@ -438,6 +438,33 @@ on the PC was last written at 2026-10-07 20:44:27.140 UTC, and its last save
 holds 20:44:27.109 as the latest change.
 
 
+`s15_motor` is a new project made for a simulator: a motor start/stop with
+an interlock, a start delay (TON) and a start counter, once as an FB in LAD
+and once in SCL, both called from Main. One S7-1500 CPU, `MOTORPLC` (CPU
+1511-1 PN, 6ES7 511-1AL03-0AB0, firmware V4.1), security wizard at its
+defaults. TIA Portal V21, one action per save:
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 3 | the CPU added and named `MOTORPLC` |
+| 4 | Default tag table: `StartPB` %I0.0, `StopPB` %I0.1, `Guard` %I0.2, `MotorLadOut` %Q0.0, `MotorSclOut` %Q0.1, all Bool |
+| 5 | global data block `MotorData`: `starts` Int, `runTime` Time |
+| 6 | FB `MotorLAD`, LAD: Input `start`, `stop`, `interlock`; Output `motor`; Static `run`, `runEdge`; all Bool |
+| 7 | network 1: `#start` with `#run` in parallel, in series `#stop` and `#interlock`, coil `#run` |
+| 8 | network 2: TON as multi-instance `delay`, IN `#run`, PT `T#5S`, Q to a coil `#motor` |
+| 9 | network 3: positive edge contact on `#run` (edge memory `#runEdge`), then ADD `"MotorData".starts` + 1 to `"MotorData".starts`, its data type left on Auto (the box showed "Auto (Int)") |
+| 10 | the ADD's data type set to Int |
+| 11 | FB `MotorSCL`, SCL: the same interface with Static `run`, `runOld` and `delay` (TON_TIME) |
+| 12 | its code pasted: seal-in, the TON call, the start counter with an edge |
+| 13 | Main network 1: `MotorLAD` called, instance DB `MotorLAD_DB`, wired to the tags |
+| 14 | Main network 2: `MotorSCL` called, instance DB `MotorSCL_DB`, wired to the tags |
+| 15 | compiled: no errors, one warning (the inputs and outputs used do not exist in the hardware) |
+
+`s15_motor/exports/MotorSCL.scl` is the source TIA Portal generated for
+`MotorSCL` after save 15. References: screenshots of the ADD box after save 9,
+of the interface of `MotorSCL` with every column (Setpoint not ticked for
+`delay`), and of the compile result.
+
 All passwords in these projects are throwaway test passwords.
 
 `tests/fixtures_test.cpp` checks these facts.

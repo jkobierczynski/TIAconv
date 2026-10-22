@@ -1,5 +1,25 @@
 # Changes
 
+## 0.18.0
+
+- New test project `s15_motor`, made for a simulator: a motor start/stop
+  with an interlock, a start delay (TON) and a start counter, as an FB in
+  LAD and in SCL, called from Main (15 saves, one action each).
+- A LAD/FBD box whose data type was left on "Auto" stores no type, only
+  that it is automatic; the listing shows `Add(...)` for it and `Add[Int]`
+  once a type is chosen; the JSON has the element option `AutomaticTyped`.
+  Checked in V21 (`s15_motor` saves 9 and 10).
+- Sources: multi-instances get what TIA Portal writes for them,
+  `S7_SetPoint := 'False'`, and for instructions `InstructionName` and
+  `LibVersion`, the version from the instruction kept in the project. Now
+  all five SCL sources published with the V19 sample and the source TIA
+  Portal V21 generated for `MotorSCL` are identical byte for byte.
+- Setpoint is read only for members of an elementary type: a multi-instance
+  declared in SCL has the same bit without Setpoint ticked.
+- The automatic PROFINET name is now derived for CPUs with firmware V4.x
+  too, which carry an internal virtual interface besides X1 (`"zzcharlie"`,
+  `"motorplc"`; before: `PROFINET name automatic`).
+
 ## 0.17.0
 
 - Checked in TIA Portal V21:

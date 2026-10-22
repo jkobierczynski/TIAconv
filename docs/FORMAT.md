@@ -1030,10 +1030,10 @@ starts with a UTF-8 byte-order mark (as TIA Portal V21 writes it).
 `s08_program/exports/source_from_blocks.awl` (four sections, a quoted name,
 start values and comments), and three of the five SCL sources published
 with the V19 sample (with a title, author, family, comment lines, retain
-sections, structures and the access settings). The other two differ only in
-the eight lines of multi-instances, where TIA Portal also writes
-`S7_SetPoint`, and for instructions `InstructionName` and `LibVersion`, which
-tiaconv does not write (see Interface parts).
+sections, structures and the access settings). Since 0.18.0 also the other
+two, with the multi-instances of function blocks and instructions, and the
+source TIA Portal V21 generated for `MotorSCL` in `s15_motor` (a TON_TIME
+as multi-instance): all five V19 sources and the four V21 ones identical.
 
 Details the sources show: SCL lines are indented by a tab, empty ones too,
 and an empty line at the end of the code is kept; STL statements are
@@ -1207,7 +1207,7 @@ operands out.
 
 | element | what |
 |---|---|
-| `Part Gate="..."` | a contact, coil or box. Children: `TemplateValue Name="SrcType" Type="Type"` (the data type a box was set to; its text content), `TemplateValue Name="Card" Type="Cardinality"` (number of inputs), `Negated PinName="..."` (the pin is negated: a normally closed contact has its `operand` negated). Attribute `DisableENO` |
+| `Part Gate="..."` | a contact, coil or box. Children: `TemplateValue Name="SrcType" Type="Type"` (the data type a box was set to; its text content), or `AutomaticTyped Name="SrcType"` when the data type was left on Auto: then the type is **not stored**; TIA Portal derives it from the operands wired to the box and shows "Auto (Int)" (verified, `s15_motor` saves 9 and 10), `TemplateValue Name="Card" Type="Cardinality"` (number of inputs), `Negated PinName="..."` (the pin is negated: a normally closed contact has its `operand` negated). Attribute `DisableENO` |
 | `CRef RefId` | the call of a block. `RefId` names the entry for the call's interface; the children `CodeBlock RefId` and `Instance RefId` the block and its instance |
 | `LRef RefId` | an instruction that has an instance (a timer): `RefId` names the instruction, the child `Instance` its instance data block or multi-instance |
 | `ORef UId RefId` | an operand: an entry of the reference table. Without `RefId`: a pin nothing was entered for |
@@ -1518,11 +1518,18 @@ A root document:
   588) and with the internal members of IEC timers (`ET` and `Q`, 4183,
   read only; `ST`, `RU`, 4112, not accessible). Other bits (2, 4, 7, 12, 19)
   are set as well; their meaning is not known.
-- Members whose type is an instruction (`Filter_PT1`, `TON_TIME`) or a
-  function block get `S7_SetPoint` in the sources TIA Portal generates also
-  when it is `'False'`, and instructions `InstructionName` and `LibVersion`;
-  tiaconv writes `S7_SetPoint := 'True'` only, and the other two not (where
-  the library version is stored is not known).
+- Multi-instances, members whose type is an instruction (`Filter_PT1`,
+  `TON_TIME`) or a function block, get `S7_SetPoint := 'False'` in the
+  sources TIA Portal generates, and those of instructions `InstructionName`
+  (the type) and `LibVersion` in front: `{InstructionName := 'TON_TIME';
+  LibVersion := '1.0'; S7_SetPoint := 'False'}`, without the blank after
+  the brace. The version is that of the instruction in the project, an
+  `IECPLInstructionData` object (`TON`, `Filter_PT1`) with
+  `ICoreLibTypeAttributes.MajorVersion`, `.MinorVersion`; `TON_TIME` is the
+  `TON` instruction for the type Time. In V19 and V21 these objects are not
+  linked to a PLC. Bit 9 of `MFlags` is set on such a member without
+  "Setpoint" being ticked (a TON_TIME declared in SCL, `s15_motor`), so
+  tiaconv reads Setpoint only for members of an elementary type.
 - An instance data block's own interface object holds only values; the first
   entry of its list of parts is the root of the function block's interface
   (V14 and later). In V13 the block has a copy of the function block's root.
@@ -1577,7 +1584,7 @@ redistributed with `tiaconv`; the V21 test projects were made for it.
 | V16 | v14 | 926 | 825 | github.com/rossmann-engineering/EasyModbusTCP.PY (examples/example1) |
 | V17 | v14 | 2 637 | 2 516 | a third-party project archive (`.zap17`), not in this repository |
 | V19 | v14 | 3 187 | 3 107 | github.com/LCC-Automation/OpenPID-TIA-SCL (`.zap19`) |
-| V21 | v14 | 22 141 | 15 788 | `tests/fixtures` (seventeen project files, in this repository) |
+| V21 | v14 | 23 212 | 16 575 | `tests/fixtures` (eighteen project files, in this repository) |
 
 Checked against statements outside the project files:
 

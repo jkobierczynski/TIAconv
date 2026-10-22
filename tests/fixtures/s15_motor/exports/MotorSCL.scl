@@ -1,0 +1,34 @@
+﻿FUNCTION_BLOCK "MotorSCL"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      start : Bool;
+      stop : Bool;
+      interlock : Bool;
+   END_VAR
+
+   VAR_OUTPUT 
+      motor : Bool;
+   END_VAR
+
+   VAR 
+      run : Bool;
+      runOld : Bool;
+      delay {InstructionName := 'TON_TIME'; LibVersion := '1.0'; S7_SetPoint := 'False'} : TON_TIME;
+   END_VAR
+
+
+BEGIN
+	    // seal-in with interlock
+	    #run := (#start OR #run) AND #stop AND #interlock;
+	    // start delay
+	    #delay(IN := #run,
+	           PT := T#5S);
+	    #motor := #delay.Q;
+	    // count the starts
+	    IF #run AND NOT #runOld THEN
+	        "MotorData".starts := "MotorData".starts + 1;
+	    END_IF;
+	    #runOld := #run;
+END_FUNCTION_BLOCK
+

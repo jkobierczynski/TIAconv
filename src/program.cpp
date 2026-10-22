@@ -105,7 +105,8 @@ public:
             const bool constant = isConstant(*t);
             const bool hmiTag = isHmiTag(*t);
             const bool obEvent = isObEvent(*t);
-            if (role == 0 && !listed && !constant && !hmiTag && !obEvent) continue;
+            const bool instruction = isInstruction(*t);
+            if (role == 0 && !listed && !constant && !hmiTag && !obEvent && !instruction) continue;
             Object o;
             try {
                 if (!project_.decode(b, o)) continue;
@@ -120,6 +121,14 @@ public:
                 continue;
             }
             if (role == 3 || role == 4) noteComments(o);
+            if (instruction) {
+                int64_t major = 0, minor = 0;
+                const std::string name = attrStr(o, "ICoreAttributes", "Name");
+                if (!name.empty() && attrInt(o, "ICoreLibTypeAttributes", "MajorVersion", major) &&
+                    attrInt(o, "ICoreLibTypeAttributes", "MinorVersion", minor))
+                    out.instructionVersions[plcOf(o)][name] = std::to_string(major) + "." + std::to_string(minor);
+                continue;
+            }
             if (obEvent) {
                 // the event an OB handles: its relation Handler is the OB
                 for (const Key& h : targets(o, "Handler")) {
@@ -294,7 +303,8 @@ private:
         int64_t priority = 0, cycle = 0, phase = 0;
     };
     std::map<uint64_t, ObEvent> obEvents_;  // by the id of the OB
-    std::map<uint32_t, bool> obEventTypes_;  // FB: position in blockList, object
+    std::map<uint32_t, bool> obEventTypes_;
+    std::map<uint32_t, bool> instructionTypes_;  // FB: position in blockList, object
 
     // 1 type catalogue entry, 2 tag, 3 data block, 4 anything else with an
     // interface (code blocks, PLC data types): only its comments are of use
@@ -358,6 +368,15 @@ private:
 
     // HMI tags. The tags an HMI device creates itself ("@CurrentUser") are a
     // type of their own and are not listed, as in TIA Portal's tag table.
+    // The instructions a PLC uses from a Siemens library (IECPLInstructionData).
+    bool isInstruction(const TypeDef& t) {
+        auto it = instructionTypes_.find(t.id);
+        if (it != instructionTypes_.end()) return it->second;
+        const bool yes = meta_.derivesFromShort(t.name, "IECPLInstructionData");
+        instructionTypes_[t.id] = yes;
+        return yes;
+    }
+
     // The objects for the events of OBs (ProgramCycleEventData,
     // CyclicInterruptEventData, ...).
     bool isObEvent(const TypeDef& t) {
@@ -1218,7 +1237,9 @@ MemberAccess memberAccess(const BlockMember& m) {
     a.accessible = (m.flags & 1) != 0;
     a.visible = a.accessible && (m.flags & 2) != 0;
     a.writable = a.accessible && (m.flags & 64) == 0;
-    a.setpoint = a.accessible && (m.flags & 512) != 0;
+    // Only for a member of an elementary type: a multi-instance (a TON_TIME
+    // declared in SCL) has the bit too, with Setpoint not ticked
+    a.setpoint = a.accessible && (m.flags & 512) != 0 && m.members.empty();
     return a;
 }
 

@@ -1147,7 +1147,8 @@ void textCode(std::ostream& out, const CodeData& code, const ProgramData& prog) 
         // the declarations, as a source has them
         auto info = infos.find(b.blockId);
         if (info != infos.end() && info->second->declarationsRead) {
-            const std::vector<std::string> decl = declarationLines(*info->second);
+            const InstructionVersions versions = instructionVersionsOf(prog, info->second->plc);
+            const std::vector<std::string> decl = declarationLines(*info->second, &versions);
             if (!decl.empty()) out << "    Interface\n";
             for (const auto& l : decl)
                 if (!l.empty()) out << "    " << l << "\n";
