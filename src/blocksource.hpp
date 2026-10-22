@@ -46,6 +46,10 @@ BlockSource blockSource(const BlockInfo& info, const BlockCode& code, const Inst
 // otherwise in double quotes ("666").
 std::string sourceName(const std::string& name);
 
+// A name as a file name: characters Windows does not allow in one, and
+// control characters, replaced by "_".
+std::string safeFileName(const std::string& s);
+
 // Writes one file per code block of `code` into `dir` (created when
 // missing), with CR LF line ends and a UTF-8 byte-order mark unless
 // `bom` is false; returns the number of files written. Errors throw

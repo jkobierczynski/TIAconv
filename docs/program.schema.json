@@ -1,0 +1,930 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jkobierczynski/TIAconv/docs/program.schema.json",
+  "title": "tiaconv program export",
+  "description": "The program of one PLC, as tiaconv --program-json writes it. See docs/PROGRAM-JSON.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "schema_version",
+    "tool",
+    "source",
+    "plc",
+    "io",
+    "tags",
+    "constants",
+    "data_blocks",
+    "organization_blocks",
+    "blocks",
+    "instructions",
+    "not_simulatable"
+  ],
+  "properties": {
+    "format": {
+      "const": "tiaconv-program"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "const": "tiaconv"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "project",
+        "save"
+      ],
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "save": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "the project as it was after this save; null: as it is now"
+        }
+      }
+    },
+    "plc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "station",
+        "type",
+        "order_number",
+        "firmware"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "station": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "order_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "firmware": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "io": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "station",
+          "module",
+          "item",
+          "area",
+          "start_bit",
+          "length_bits",
+          "process_image",
+          "text"
+        ],
+        "properties": {
+          "station": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "item": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "area": {
+            "enum": [
+              "I",
+              "Q"
+            ]
+          },
+          "start_bit": {
+            "type": "integer"
+          },
+          "length_bits": {
+            "type": "integer"
+          },
+          "process_image": {
+            "type": "integer",
+            "description": "0: automatic update"
+          },
+          "text": {
+            "type": "string",
+            "description": "\"I 64...67\""
+          }
+        }
+      },
+      "description": "the I/O addresses of the modules of the PLC's station and of the IO devices it controls"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "table",
+          "data_type",
+          "address",
+          "comment"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "table": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "constants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "table",
+          "data_type",
+          "value",
+          "kind",
+          "system",
+          "comment"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "table": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "hardware, ob, pip, user, system"
+          },
+          "system": {
+            "type": "boolean"
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "data_blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "number",
+          "kind",
+          "instance_of",
+          "optimized",
+          "notes",
+          "members"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "global, instance"
+          },
+          "instance_of": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "optimized": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/member"
+            }
+          }
+        }
+      }
+    },
+    "organization_blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "number",
+          "event",
+          "priority",
+          "cycle_us",
+          "phase_shift_us"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "event": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ProgramCycle, CyclicInterrupt, Startup, ..."
+          },
+          "priority": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cycle_us": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "phase_shift_us": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/block"
+      }
+    },
+    "instructions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "major.minor of the library version"
+          }
+        }
+      },
+      "description": "the instructions the code uses"
+    },
+    "not_simulatable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "block",
+          "type",
+          "reason"
+        ],
+        "properties": {
+          "block": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "data_type",
+        "section",
+        "offset",
+        "offset_bits",
+        "start_value",
+        "retain",
+        "accessible_from_hmi",
+        "writable_from_hmi",
+        "setpoint",
+        "unresolved",
+        "comment",
+        "members"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "as TIA Portal writes it: Bool, Int, Array[0..9] of Real, String[20], \"MyUdt\", TON_TIME"
+        },
+        "section": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Input, Output, InOut, Static, Temp, Constant, Return; null in a global data block and below the top level"
+        },
+        "offset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "byte or byte.bit from the start of the data block or instance, \"12\", \"12.3\"; only with standard (not optimized) access"
+        },
+        "offset_bits": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "the same in bits"
+        },
+        "start_value": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "as written in the project; null: the default of the type (or of an enclosing structure)"
+        },
+        "retain": {
+          "type": "boolean"
+        },
+        "accessible_from_hmi": {
+          "type": "boolean",
+          "description": "Accessible from HMI/OPC UA/Web API, as limited by an enclosing structure"
+        },
+        "writable_from_hmi": {
+          "type": "boolean",
+          "description": "Writable from HMI/OPC UA/Web API, as limited by an enclosing structure"
+        },
+        "setpoint": {
+          "type": "boolean"
+        },
+        "unresolved": {
+          "type": "boolean",
+          "description": "the nested type could not be followed; members may be missing"
+        },
+        "comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/member"
+          },
+          "description": "members of a structure, UDT, multi-instance or array element type"
+        }
+      }
+    },
+    "operand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "ref_id",
+        "linked",
+        "kind",
+        "data_type",
+        "data_type_from_pin",
+        "data_block",
+        "address",
+        "pin_type"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "as written in code: \"Tag\", \"DB\".member, #local, 5, T#5S"
+        },
+        "ref_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "the entry of the block's references"
+        },
+        "linked": {
+          "type": "boolean",
+          "description": "the entry was found"
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "tag, data block member, local, constant, local constant, user constant, ..."
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data_type_from_pin": {
+          "type": "boolean",
+          "description": "data_type is the pin's: a literal stored without a type"
+        },
+        "data_block": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "a tag's address (%M10.0); a member of a data block with standard access: %DB1.DBX60.0, %DB2.DBW4"
+        },
+        "pin_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the type the pin takes, where tiaconv knows it"
+        }
+      }
+    },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "direction",
+        "connected",
+        "operands"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "in",
+            "out"
+          ]
+        },
+        "connected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "an operand as written in code, \"power rail\", or the pin of another part as \"<uid>.<pin>\""
+        },
+        "operands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operand"
+          },
+          "description": "the operands among connected, in that order"
+        }
+      }
+    },
+    "element": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "kind",
+        "name",
+        "ref_id",
+        "instance",
+        "instance_ref_id",
+        "data_type",
+        "options",
+        "pins"
+      ],
+      "properties": {
+        "uid": {
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "gate",
+            "call",
+            "instruction"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "the gate as stored (Contact, Coil, Add, Move, ...), the block called, or the instruction"
+        },
+        "ref_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "call, instruction: its entry of the references"
+        },
+        "instance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance_ref_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the type a box was set to; null when not set (an AutomaticTyped option: Auto)"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "value"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "what the part was set to: SrcType, Card (number of inputs), DisableENO, negated (a negated pin), AutomaticTyped"
+        },
+        "pins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pin"
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "network_id",
+        "title",
+        "comment",
+        "language",
+        "content",
+        "lines",
+        "elements",
+        "notes"
+      ],
+      "properties": {
+        "number": {
+          "type": "integer",
+          "description": "position in the block, 1 = first"
+        },
+        "network_id": {
+          "type": "integer",
+          "description": "the number the project knows it by"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "enum": [
+            "scl",
+            "stl",
+            "graphic",
+            "empty",
+            "unread"
+          ]
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "scl, stl: the source text; graphic: tiaconv's listing of the elements"
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/element"
+          },
+          "description": "graphic: the parts and their wires"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref_id",
+        "kind",
+        "kind_stored",
+        "text",
+        "data_type",
+        "data_block",
+        "declared_as"
+      ],
+      "properties": {
+        "ref_id": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "kind_stored": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data_block": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declared_as": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "a multi-instance: the member declared with this block as its type"
+        }
+      }
+    },
+    "code": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "networks",
+        "references"
+      ],
+      "properties": {
+        "networks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/network"
+          }
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          },
+          "description": "what the block's code refers to"
+        }
+      }
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "name",
+        "number",
+        "language",
+        "optimized",
+        "protection",
+        "simulatable",
+        "interface",
+        "code"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "OB",
+            "FB",
+            "FC"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "optimized": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "protection": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "know-how, write, know-how, write, system"
+        },
+        "simulatable": {
+          "type": "boolean",
+          "description": "nothing listed for it under not_simulatable"
+        },
+        "interface": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/member"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "every section; null for a protected block or when not read"
+        },
+        "code": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/code"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "null for a protected block"
+        }
+      }
+    }
+  }
+}

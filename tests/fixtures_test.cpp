@@ -5,7 +5,10 @@
 // Reads the V21 test projects in tests/fixtures. Each project differs from the
 // previous one by one known change (see tests/fixtures/README.md), so every
 // value checked here was typed into TIA Portal by hand.
+#include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -15,6 +18,8 @@
 #include <vector>
 
 #include "blocksource.hpp"
+#include "programjson.hpp"
+#include "jsonschema.hpp"
 #include "code.hpp"
 #include "container.hpp"
 #include "history.hpp"
@@ -974,6 +979,221 @@ void testOperands() {
     if (main && main->networks.size() == 12) {
         const auto& add = main->networks[3].elements;
         CHECK(add.size() == 1 && add[0].name == "Add" && add[0].dataType.empty());
+    }
+}
+
+// --program-json: the export of every PLC of every fixture fits the schema in
+// docs/, and says what the other outputs say.
+size_t countMembers(const std::vector<tia::BlockMember>& ms) {
+    size_t n = 0;
+    for (const auto& m : ms) n += 1 + countMembers(m.members);
+    return n;
+}
+size_t countMembers(const jsontest::Value& ms) {
+    size_t n = 0;
+    for (const auto& m : ms.items) n += 1 + countMembers(m["members"]);
+    return n;
+}
+
+std::string readFile(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    std::ostringstream o;
+    o << f.rdbuf();
+    return o.str();
+}
+
+struct ProgramExport {
+    tia::Inventory inv;
+    tia::ProgramData prog;
+    tia::CodeData code;
+};
+
+ProgramExport loadExport(const std::string& name) {
+    tia::LoadedSource src = tia::loadProjectData(std::string(TIACONV_FIXTURES) + "/" + name);
+    tia::Project p(tia::Container::parse(std::move(src.data), tia::ContainerOptions()));
+    ProgramExport e;
+    e.inv = tia::buildInventory(p);
+    e.prog = tia::buildProgramData(p);
+    tia::linkHmiTags(e.inv, e.prog);
+    e.code = tia::buildCode(p, e.prog);
+    return e;
+}
+
+jsontest::Value exportOf(const ProgramExport& e, const std::string& plc, const std::string& name) {
+    tia::ProgramJsonContext ctx;
+    ctx.toolVersion = "test";
+    ctx.source = name;
+    std::ostringstream o;
+    tia::writeProgramJson(o, plc, e.inv, e.prog, e.code, ctx);
+    return jsontest::parse(o.str());
+}
+
+const jsontest::Value* named(const jsontest::Value& list, const std::string& name) {
+    for (const auto& x : list.items)
+        if (x["name"].s == name) return &x;
+    return nullptr;
+}
+
+void testProgramJson() {
+    current = "program schema";
+    const jsontest::Value schema = jsontest::parse(readFile(std::string(TIACONV_DOCS) + "/program.schema.json"));
+    jsontest::Validator validator(schema);
+
+    // the check itself finds what does not fit
+    {
+        jsontest::Value bad = jsontest::parse(
+            "{\"format\": \"tiaconv-program\", \"schema_version\": 2, \"extra\": 1}");
+        const auto errors = validator.check(bad, 100);
+        auto has = [&](const std::string& what) {
+            for (const auto& e : errors)
+                if (e.find(what) != std::string::npos) return true;
+            return false;
+        };
+        CHECK(has("$.schema_version: not the value") && has("'extra' not in the schema") && has("'blocks' missing"));
+    }
+
+    std::vector<std::string> fixtures;
+    for (const auto& d : std::filesystem::directory_iterator(TIACONV_FIXTURES))
+        if (d.is_directory()) fixtures.push_back(d.path().filename().string());
+    std::sort(fixtures.begin(), fixtures.end());
+    size_t files = 0, operandsSeen = 0;
+    for (const std::string& name : fixtures) {
+        const ProgramExport e = loadExport(name);
+        for (const std::string& plc : tia::programPlcs(e.prog)) {
+            current = name + " program export of " + plc;
+            const jsontest::Value doc = exportOf(e, plc, name);
+            ++files;
+            const auto errors = validator.check(doc);
+            CHECK(errors.empty());
+            for (const auto& er : errors) std::fprintf(stderr, "    %s\n", er.c_str());
+            CHECK(doc["schema_version"].i() == tia::kProgramSchemaVersion && doc["plc"]["name"].s == plc);
+            // tags, constants, data blocks as the program data has them
+            std::vector<std::string> tags, docTags;
+            for (const auto& t : e.prog.tags)
+                if (t.plc == plc) tags.push_back(t.name + "|" + t.address);
+            for (const auto& t : doc["tags"].items)
+                docTags.push_back(t["name"].s + "|" + (t["address"].type == jsontest::Value::Null ? "" : t["address"].s));
+            CHECK(tags == docTags);
+            size_t constants = 0;
+            for (const auto& c : e.prog.constants) constants += c.plc == plc;
+            CHECK(doc["constants"].items.size() == constants);
+            std::vector<std::string> dbs, docDbs;
+            for (const auto& d : e.prog.blocks)
+                if (d.plc == plc) dbs.push_back(d.name + "|" + std::to_string(countMembers(d.members)));
+            for (const auto& d : doc["data_blocks"].items)
+                docDbs.push_back(d["name"].s + "|" + std::to_string(countMembers(d["members"])));
+            CHECK(dbs == docDbs);
+            // organization blocks and code blocks as in the block list
+            std::map<uint64_t, const tia::BlockCode*> codeOf;
+            for (const auto& c : e.code.blocks) codeOf[c.blockId] = &c;
+            size_t obs = 0, blocks = 0, operands = 0, docOperands = 0;
+            for (const auto& b : e.prog.blockList) {
+                if (b.plc != plc) continue;
+                if (b.type == "OB") {
+                    const jsontest::Value* ob = named(doc["organization_blocks"], b.name);
+                    ++obs;
+                    CHECK(ob && (*ob)["event"].s == b.kind &&
+                          (b.hasPriority ? (*ob)["priority"].i() == b.priority : (*ob)["priority"].type == jsontest::Value::Null) &&
+                          (b.hasCycle ? (*ob)["cycle_us"].i() == b.cycleMicroseconds &&
+                                            (*ob)["phase_shift_us"].i() == b.phaseShiftMicroseconds
+                                      : (*ob)["cycle_us"].type == jsontest::Value::Null));
+                }
+                if (b.type != "OB" && b.type != "FB" && b.type != "FC") continue;
+                ++blocks;
+                const jsontest::Value* jb = named(doc["blocks"], b.name);
+                CHECK(jb != nullptr);
+                if (!jb) continue;
+                auto ci = codeOf.find(b.id);
+                const tia::BlockCode* c = ci == codeOf.end() ? nullptr : ci->second;
+                const bool open = c && !c->isProtected;
+                // nothing of a protected block: no interface, no code
+                CHECK(((*jb)["code"].type == jsontest::Value::Null) == !open);
+                CHECK(((*jb)["interface"].type == jsontest::Value::Null) == !(open && b.declarationsRead));
+                if (open && b.declarationsRead) CHECK(countMembers((*jb)["interface"]) == countMembers(b.declarations));
+                if (c && c->isProtected) {
+                    bool listed = false;
+                    for (const auto& r : doc["not_simulatable"].items) listed = listed || r["block"].s == b.name;
+                    CHECK(listed && !(*jb)["simulatable"].b);
+                }
+                if (!open) continue;
+                const auto& nets = (*jb)["code"]["networks"].items;
+                CHECK(nets.size() == c->networks.size());
+                for (size_t i = 0; i < nets.size() && i < c->networks.size(); ++i) {
+                    std::vector<std::string> lines;
+                    for (const auto& l : nets[i]["lines"].items) lines.push_back(l.s);
+                    CHECK(lines == c->networks[i].lines && nets[i]["content"].s == c->networks[i].content);
+                    for (const auto& el : c->networks[i].elements)
+                        for (const auto& p : el.pins) operands += p.operands.size();
+                    for (const auto& el : nets[i]["elements"].items)
+                        for (const auto& p : el["pins"].items) docOperands += p["operands"].items.size();
+                }
+            }
+            CHECK(doc["organization_blocks"].items.size() == obs && doc["blocks"].items.size() == blocks);
+            CHECK(operands == docOperands);
+            operandsSeen += docOperands;
+        }
+    }
+    current = "program export";
+    CHECK(files >= 30);
+    CHECK(operandsSeen >= 85);
+
+    // what the TIA Portal sessions set
+    {
+        const ProgramExport e = loadExport("s14_code_rewritten");
+        current = "s14_code_rewritten program export";
+        const jsontest::Value doc = exportOf(e, "ZZPLC", "s14_code_rewritten");
+        const jsontest::Value* cyc = named(doc["organization_blocks"], "ZZCYC2");
+        CHECK(cyc && (*cyc)["number"].i() == 30 && (*cyc)["event"].s == "CyclicInterrupt" &&
+              (*cyc)["cycle_us"].i() == 250000 && (*cyc)["phase_shift_us"].i() == 10000 && (*cyc)["priority"].i() == 11);
+        const jsontest::Value* scl = named(doc["blocks"], "ZZSCL");
+        CHECK(scl && (*scl)["protection"].s == "know-how" && (*scl)["interface"].type == jsontest::Value::Null &&
+              (*scl)["code"].type == jsontest::Value::Null && !(*scl)["simulatable"].b);
+        CHECK(doc["not_simulatable"].items.size() == 1 && doc["not_simulatable"].items[0]["block"].s == "ZZSCL" &&
+              doc["not_simulatable"].items[0]["reason"].s == "know-how protected");
+        std::vector<std::string> instructions;
+        for (const auto& i : doc["instructions"].items) instructions.push_back(i["name"].s + " " + i["version"].s);
+        CHECK(instructions == (std::vector<std::string>{"CTU 1.0", "TON 1.0"}));
+        // an operand in the graph, linked
+        const jsontest::Value* main = named(doc["blocks"], "Main");
+        bool found = false;
+        if (main)
+            for (const auto& n : (*main)["code"]["networks"].items)
+                for (const auto& el : n["elements"].items)
+                    for (const auto& p : el["pins"].items)
+                        for (const auto& o : p["operands"].items)
+                            if (n["number"].i() == 3 && p["name"].s == "in1" && o["text"].s == "\"ZZN1\"")
+                                found = o["kind"].s == "tag" && o["address"].s == "%MW20" && o["pin_type"].s == "Int";
+        CHECK(found);
+    }
+    {
+        const ProgramExport e = loadExport("s15_motor");
+        current = "s15_motor program export";
+        const jsontest::Value doc = exportOf(e, "MOTORPLC", "s15_motor");
+        CHECK(doc["plc"]["type"].s == "CPU 1511-1 PN" && doc["plc"]["firmware"].s == "V4.1");
+        CHECK(doc["not_simulatable"].items.empty());
+        const jsontest::Value* scl = named(doc["blocks"], "MotorSCL");
+        CHECK(scl && (*scl)["language"].s == "SCL" && (*scl)["simulatable"].b);
+        std::vector<std::string> iface;
+        if (scl)
+            for (const auto& m : (*scl)["interface"].items) iface.push_back(m["section"].s + " " + m["name"].s + " " + m["data_type"].s);
+        CHECK(iface == (std::vector<std::string>{"Input start Bool", "Input stop Bool", "Input interlock Bool",
+                                                  "Output motor Bool", "Static run Bool", "Static runOld Bool",
+                                                  "Static delay TON_TIME"}));
+        const jsontest::Value* db = named(doc["data_blocks"], "MotorData");
+        CHECK(db && (*db)["number"].i() == 1 && (*db)["optimized"].b);
+    }
+    {
+        const ProgramExport e = loadExport("s10_connections");
+        current = "s10_connections program export";
+        const jsontest::Value doc = exportOf(e, "ZZALPHA", "s10_connections");
+        std::vector<std::string> io;
+        for (const auto& a : doc["io"].items) io.push_back(a["item"].s + " " + a["text"].s);
+        // the CPU's onboard I/O, high-speed counters and pulse outputs, and a
+        // signal module
+        CHECK(io == (std::vector<std::string>{"DI 8/DQ 6_1 I 0", "DI 8/DQ 6_1 Q 0", "AI 2_1 I 64...67", "HSC_1 I 1000...1003",
+                                              "HSC_2 I 1004...1007", "HSC_3 I 1008...1011", "HSC_4 I 1012...1015",
+                                              "HSC_5 I 1016...1019", "HSC_6 I 1020...1023", "Pulse_1 Q 1000...1001",
+                                              "Pulse_2 Q 1002...1003", "DI 8x24VDC_1 I 8"}));
     }
 }
 
@@ -2605,6 +2825,7 @@ int main() {
     testSources();
     testMotor();
     testOperands();
+    testProgramJson();
     testDiff();
     std::printf("%d fixture checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

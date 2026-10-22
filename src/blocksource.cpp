@@ -151,6 +151,9 @@ std::string stlSourceLine(const std::string& line) {
     return "      " + s + ";" + comment;
 }
 
+
+}  // namespace
+
 std::string safeFileName(const std::string& s) {
     std::string out;
     for (unsigned char c : s) {
@@ -164,8 +167,6 @@ std::string safeFileName(const std::string& s) {
     if (out.empty() || out == "." || out == "..") out = "_";
     return out;
 }
-
-}  // namespace
 
 InstructionVersions instructionVersionsOf(const ProgramData& prog, const std::string& plc) {
     // those the project keeps without a PLC (V19, V21), then the PLC's own

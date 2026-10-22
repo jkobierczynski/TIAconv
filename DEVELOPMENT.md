@@ -226,6 +226,16 @@ simulated from it outside TIA Portal. Three steps, in this order.
    Done when: a schema page in `docs/`, a `schema_version` field in the
    file, and tests that check the export of the fixtures against the
    schema and against what the other outputs report.
+   *Done (unreleased):* `docs/PROGRAM-JSON.md`, `docs/program.schema.json`
+   (every object closed, all keys required), `schema_version` 1.
+   `testProgramJson` checks the 30+ PLC files of all fixtures against the
+   schema with a small validator in `tests/jsonschema.hpp` (which refuses
+   schema keywords it does not check) and against the program data: tags,
+   data blocks with all their members, OBs, blocks, interfaces, network
+   lines, operands, and that protected blocks have neither interface nor
+   code. `cli_program` runs the option. Also checked by hand with Python's
+   `jsonschema` on the fixtures and the local samples (41 files). Open:
+   tag retentivity, ET 200SP I/O, array elements, library type instances.
 3. **One TIA Portal session** (an evening, while a licence is at hand).
    *Done (0.18.0):* the fixture `s15_motor`, a motor start/stop with an
    interlock, a TON start delay and a start counter, as an FB in LAD and in

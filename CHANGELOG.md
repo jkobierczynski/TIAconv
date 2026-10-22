@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `--program-json DIR`: the program of each PLC as one JSON file
+  (`<PLC>.json`), as input for a simulator: tags, constants, data blocks
+  with offsets, start values and retain; the I/O addresses of the PLC's
+  station and IO devices; the OBs with event, priority, cycle and phase
+  shift; every OB, FB and FC with its full interface and its code (SCL/STL
+  text, the LAD/FBD graph with linked operands, the reference table); the
+  instructions used, with their library versions; and what cannot be
+  simulated (protected blocks, Siemens library instructions, GRAPH,
+  fail-safe, networks not read). `schema_version` 1, described in
+  `docs/PROGRAM-JSON.md` and the JSON Schema `docs/program.schema.json`;
+  the tests check the export of every PLC of every test project against the
+  schema and against the program data.
+
 - Operand links in the LAD/FBD graph: every operand at a pin in the JSON
   (`elements[].pins[].operands`) carries the id of its entry in the block's
   reference table and through it its kind, data type, data block and

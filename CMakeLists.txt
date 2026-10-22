@@ -31,6 +31,7 @@ add_library(tiacore STATIC
   src/program.cpp
   src/code.cpp
   src/blocksource.cpp
+  src/programjson.cpp
   src/project.cpp
   src/sha256.cpp
   src/source.cpp
@@ -78,7 +79,8 @@ if(BUILD_TESTING)
   add_executable(tiaconv_fixture_tests tests/fixtures_test.cpp)
   target_link_libraries(tiaconv_fixture_tests PRIVATE tiacore)
   target_compile_definitions(tiaconv_fixture_tests PRIVATE
-    TIACONV_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    TIACONV_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    TIACONV_DOCS="${CMAKE_CURRENT_SOURCE_DIR}/docs")
   add_test(NAME fixtures COMMAND tiaconv_fixture_tests)
   if(MSVC)
     target_compile_options(tiaconv_tests PRIVATE /utf-8)
@@ -103,6 +105,12 @@ if(BUILD_TESTING)
     -DPROJECT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/s08_program
     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/cli_sources
     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_sources.cmake)
+
+  add_test(NAME cli_program COMMAND ${CMAKE_COMMAND}
+    -DTIACONV=$<TARGET_FILE:tiaconv>
+    -DPROJECT=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/s10_connections
+    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/cli_program
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_program.cmake)
 
   add_test(NAME cli_save COMMAND ${CMAKE_COMMAND}
     -DTIACONV=$<TARGET_FILE:tiaconv>

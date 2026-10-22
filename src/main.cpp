@@ -17,6 +17,7 @@
 #include "history.hpp"
 #include "inventory.hpp"
 #include "output.hpp"
+#include "programjson.hpp"
 #include "program.hpp"
 #include "project.hpp"
 #include "source.hpp"
@@ -66,6 +67,11 @@ const char kUsage[] =
     "                      as TIA Portal generates their sources (.scl, .awl),\n"
     "                      LAD and FBD in tiaconv's notation (.txt); know-how\n"
     "                      protected blocks as a note, without code\n"
+    "      --program-json DIR\n"
+    "                      write the program of each PLC as one JSON file into\n"
+    "                      DIR (<PLC>.json): memory, I/O, organization blocks,\n"
+    "                      every block's interface and code, and what cannot be\n"
+    "                      simulated; see docs/PROGRAM-JSON.md\n"
     "      --objects FILE  write every decoded object as JSON lines (for research)\n"
     "      --meta FILE     write the type model embedded in the project (XML)\n"
     "      --all-devices   also list device objects outside the project tree\n"
@@ -98,7 +104,7 @@ const char kUsage[] =
 
 struct Args {
     std::string input, json, csv, objects, meta, tagsCsv, blocksCsv, blockListCsv, constantsCsv, historyCsv, hmiTagsCsv,
-        xrefCsv, sourcesDir;
+        xrefCsv, sourcesDir, programJsonDir;
     bool allDevices = false, allItems = false, verify = false, quiet = false, members = false, noBom = false;
     bool history = false, code = false;
     size_t save = 0;  // 0: the current state
@@ -244,6 +250,7 @@ int run(const std::vector<std::string>& argv) {
         else if (s == "--code") a.code = true;
         else if (s == "--xref-csv") value(a.xrefCsv);
         else if (s == "--sources") value(a.sourcesDir);
+        else if (s == "--program-json") value(a.programJsonDir);
         else if (s == "--no-bom") a.noBom = true;
         else if (s == "--meta") value(a.meta);
         else if (s == "--all-devices") a.allDevices = true;
@@ -301,7 +308,7 @@ int run(const std::vector<std::string>& argv) {
     ctx.shownSave = a.save;
 
     tia::CodeData code;
-    if (a.code || !a.xrefCsv.empty() || !a.sourcesDir.empty()) {
+    if (a.code || !a.xrefCsv.empty() || !a.sourcesDir.empty() || !a.programJsonDir.empty()) {
         // An earlier save is not a way around a protection set later.
         tia::ProtectedVersions protectedUpTo;
         if (a.save) {
@@ -353,6 +360,19 @@ int run(const std::vector<std::string>& argv) {
         if (!a.quiet)
             (stdoutTaken ? std::cerr : std::cout) << "\n" << n << " block source file" << (n == 1 ? "" : "s")
                                                   << " written to " << a.sourcesDir << "\n";
+    }
+    if (!a.programJsonDir.empty()) {
+        if (a.programJsonDir == "-")
+            throw std::invalid_argument("--program-json needs a folder, not standard output");
+        tia::ProgramJsonContext pctx;
+        pctx.toolVersion = TIACONV_VERSION;
+        pctx.source = src.description;
+        pctx.shownSave = a.save;
+        const std::vector<std::string> files = tia::writeProgramJsonFiles(a.programJsonDir, inv, prog, code, pctx);
+        if (!a.quiet)
+            (stdoutTaken ? std::cerr : std::cout) << "\n" << files.size() << " program file"
+                                                  << (files.size() == 1 ? "" : "s") << " written to "
+                                                  << a.programJsonDir << "\n";
     }
     if (!a.objects.empty()) emit(a.objects, [&](std::ostream& o) { tia::writeObjects(o, project); });
     if (!a.meta.empty())

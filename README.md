@@ -29,6 +29,8 @@ it:
 - the blocks as source files (`--sources`), one per block in folders as in
   the project tree: SCL and STL with their declarations as TIA Portal's
   "Generate source from blocks" writes them, ready to keep in git,
+- the program of each PLC as one JSON file with a documented schema
+  (`--program-json`), as input for a simulator,
 - the save history, as far as the file still holds it: what was added,
   removed or changed with each save, when, and by which user,
 - the differences between two projects or two versions of one
@@ -63,6 +65,7 @@ engineering station.
     tiaconv --code MyProject/            # also print the code of the blocks
     tiaconv -q --xref-csv xref.csv MyProject/   # who reads and writes what
     tiaconv -q --sources src/ MyProject/  # one source file per block
+    tiaconv -q --program-json prog/ MyProject/  # the program of each PLC, for a simulator
     tiaconv diff Archive/MyProject.zap19 MyProject/   # what changed since the archive
 
 Example (a public V15.1 project):
@@ -125,6 +128,7 @@ Options:
 | `--code` | add the code of the blocks to the text report and the JSON: the networks of every OB, FB and FC as text (see [Block code](#block-code)) |
 | `--xref-csv FILE` | the cross-reference as CSV: which block uses which tag, data block member or block, in which network, reading or writing |
 | `--sources DIR` | one source file per OB, FB and FC into `DIR`, in folders per PLC and project-tree folder (see [Block sources](#block-sources)) |
+| `--program-json DIR` | the program of each PLC as one JSON file into `DIR`, for a simulator (see [Program export](#program-export)) |
 | `--objects FILE` | every decoded object as JSON lines: attributes and relations. For research and for comparing two versions of a project |
 | `--meta FILE` | the type model embedded in the project (XML) |
 | `--all-devices` | also list device objects outside the project tree (copies kept for library types) |
@@ -827,7 +831,22 @@ diff` shows what changed in the program, block by block.
 and the JSON has them as `declarations`, every section with Temp, Constant
 and the return value.
 
-### Constants
+### Program export
+
+`--program-json DIR` writes `DIR/<PLC>.json` for each PLC: everything the
+project holds that a simulator needs, in one file with a documented form
+(`schema_version` 1, [docs/PROGRAM-JSON.md](docs/PROGRAM-JSON.md) and the
+JSON Schema [docs/program.schema.json](docs/program.schema.json)): the
+tags, constants and data blocks with offsets, start values and retain; the
+I/O addresses of the station and of the IO devices; the OBs with event,
+priority, cycle and phase shift; every OB, FB and FC with its whole
+interface and its code, as SCL or STL text or as the LAD/FBD graph with each
+operand linked to what it names; the instructions used, with their library
+versions; and a list of what cannot be simulated from the file
+(`not_simulatable`): know-how protected blocks, which have neither
+interface nor code in it, instructions from Siemens libraries, GRAPH and
+fail-safe blocks, networks that could not be read.
+
 
 This is `tiaconv --save 15 tests/fixtures/s12_constants`, the rows of one PLC:
 
