@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "programjson.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <climits>
 #include <cmath>
@@ -1479,27 +1480,35 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
     j.key("order_number").text(cpu ? cpu->orderNumber : std::string());
     j.key("firmware").text(cpu ? cpu->firmware : std::string());
     j.endObject();
-    j.key("io");
-    j.beginArray();
+    struct Io {
+        const Device* station;
+        const Module* module;
+        const IoAddress* address;
+    };
+    std::vector<Io> io;
     for (const Device& d : inv.devices) {
         bool controlled = &d == station;
         for (const Module& m : d.modules)
             if (m.ioController == plc) controlled = true;
         if (!controlled) continue;
         for (const Module& m : d.modules)
-            for (const IoAddress& a : m.ioAddresses) {
-                j.beginObject(true);
-                j.key("station").value(d.name);
-                j.key("module").value(m.name);
-                j.key("item").text(a.item);
-                j.key("area").value(a.input ? "I" : "Q");
-                j.key("start_bit").value(a.startBit);
-                j.key("length_bits").value(a.lengthBits);
-                j.key("process_image").value(a.processImage);
-                j.key("text").value(ioAddressText(a));
-                j.endObject();
-            }
+            for (const IoAddress& a : m.ioAddresses) io.push_back({&d, &m, &a});
     }
+    auto ioJson = [&](const Io& x) {
+        j.beginObject(true);
+        j.key("station").value(x.station->name);
+        j.key("module").value(x.module->name);
+        j.key("item").text(x.address->item);
+        j.key("area").value(x.address->input ? "I" : "Q");
+        j.key("start_bit").value(x.address->startBit);
+        j.key("length_bits").value(x.address->lengthBits);
+        j.key("process_image").value(x.address->processImage);
+        j.key("text").value(ioAddressText(*x.address));
+        j.endObject();
+    };
+    j.key("io");
+    j.beginArray();
+    for (const Io& x : io) ioJson(x);
     j.endArray();
 
     j.key("tags");
@@ -1603,9 +1612,89 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
         j.key("phase_shift_us");
         if (b.hasCycle) j.value(b.phaseShiftMicroseconds);
         else j.null();
+        j.key("event_class");
+        if (b.hasEventClass) j.value(b.eventClass);
+        else j.null();
+        j.key("max_buffered_events");
+        if (b.hasMaxBufferedEvents) j.value(b.maxBufferedEvents);
+        else j.null();
+        j.key("process_image");
+        if (b.hasProcessImage && b.processImage != 65535) j.value(b.processImage);
+        else j.null();
         j.endObject();
     }
     j.endArray();
+
+    // How the CPU runs the program: the startup OBs once, then the program
+    // cycle OBs in a loop, the other OBs when their events come, by
+    // priority; and which process image partition is updated when.
+    {
+        std::vector<const BlockInfo*> startup, cycle, interrupts;
+        for (const BlockInfo& b : prog.blockList) {
+            if (b.plc != plc || b.type != "OB") continue;
+            const bool isStartup = b.kind == "Startup" || (b.hasEventClass && b.eventClass == 100);
+            const bool isCycle = b.kind == "ProgramCycle" || (b.hasEventClass && b.eventClass == 1);
+            (isStartup ? startup : isCycle ? cycle : interrupts).push_back(&b);
+        }
+        auto byNumber = [](const BlockInfo* a, const BlockInfo* b) {
+            return (a->hasNumber ? a->number : INT64_MAX) < (b->hasNumber ? b->number : INT64_MAX);
+        };
+        std::stable_sort(startup.begin(), startup.end(), byNumber);
+        std::stable_sort(cycle.begin(), cycle.end(), byNumber);
+        std::stable_sort(interrupts.begin(), interrupts.end(), [&](const BlockInfo* a, const BlockInfo* b) {
+            const int64_t pa = a->hasPriority ? a->priority : 0, pb = b->hasPriority ? b->priority : 0;
+            if (pa != pb) return pa > pb;
+            return byNumber(a, b);
+        });
+        auto names = [&](const std::vector<const BlockInfo*>& v) {
+            j.beginArray(true);
+            for (const BlockInfo* b : v) j.value(b->name);
+            j.endArray();
+        };
+        // the partitions: those the I/O uses and those an OB updates
+        std::map<int64_t, std::vector<const BlockInfo*>> pips;
+        for (const Io& x : io) pips[x.address->processImage];
+        for (const BlockInfo& b : prog.blockList)
+            if (b.plc == plc && b.type == "OB" && b.hasProcessImage && b.processImage != 65535 && b.processImage > 0)
+                pips[b.processImage].push_back(&b);
+        std::map<int64_t, std::string> pipNames;
+        for (const Constant& c : prog.constants)
+            if (c.plc == plc && c.dataType == "Pip") {
+                int64_t n = 0;
+                if (parseWhole(c.value, n)) pipNames[n] = c.name;
+            }
+        j.key("runtime");
+        j.beginObject();
+        j.key("startup");
+        names(startup);
+        j.key("program_cycle");
+        names(cycle);
+        j.key("interrupts");
+        names(interrupts);
+        j.key("process_images");
+        j.beginArray();
+        for (const auto& p : pips) {
+            j.beginObject();
+            j.key("number").value(p.first);
+            auto n = pipNames.find(p.first);
+            j.key("name").text(n != pipNames.end() ? n->second : (p.first == 0 ? "Automatic update" : "PIP " + std::to_string(p.first)));
+            // 0 with the program cycle; another one with the OB it is
+            // assigned to; without an OB only by UPDAT_PI and UPDAT_PO
+            j.key("updated").value(p.first == 0 ? "program_cycle" : p.second.empty() ? "instructions_only" : "with_ob");
+            j.key("obs");
+            names(p.second);
+            for (const char* area : {"inputs", "outputs"}) {
+                j.key(area);
+                j.beginArray();
+                for (const Io& x : io)
+                    if (x.address->processImage == p.first && x.address->input == (area[0] == 'i')) ioJson(x);
+                j.endArray();
+            }
+            j.endObject();
+        }
+        j.endArray();
+        j.endObject();
+    }
 
     std::map<std::string, std::string> used;  // instructions: name -> version
     const InstructionVersions versions = instructionVersionsOf(prog, plc);

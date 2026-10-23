@@ -10,6 +10,11 @@
   read from their definitions, and the system types used (TON_TIME, CTU_INT,
   DTL) with their members. The schema is written by
   `tools/program_schema.py`.
+- Program export: the run-time model. `runtime` lists the startup, program
+  cycle and interrupt OBs in the order the CPU runs them and the process
+  image partitions with their inputs, outputs and how they are updated;
+  `organization_blocks` have the event class, how many events are kept and
+  the partition the OB updates.
 - Program export: calls resolved. Every call in the tree (and every STL
   CALL) has `target`: the block, instruction or built-in function it runs,
   its instance (a data block or a member path of the caller), and the

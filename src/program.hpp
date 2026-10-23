@@ -166,6 +166,11 @@ struct BlockInfo {
     int64_t priority = 0;
     bool hasCycle = false;
     int64_t cycleMicroseconds = 0, phaseShiftMicroseconds = 0;
+    // the class of the event (1 program cycle, 30 cyclic interrupt, 100
+    // startup), how many events of it are kept while the OB runs, and the
+    // process image partition the OB updates (as stored: 65535 none)
+    bool hasEventClass = false, hasMaxBufferedEvents = false, hasProcessImage = false;
+    int64_t eventClass = 0, maxBufferedEvents = 0, processImage = 0;
 };
 
 // "100 ms", "1.5 ms", "2 s": a time in microseconds as TIA Portal shows it,

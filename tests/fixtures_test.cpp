@@ -1449,6 +1449,31 @@ void testProgramJson() {
                 }
             }
             CHECK(doc["organization_blocks"].items.size() == obs && doc["blocks"].items.size() == blocks);
+            // the runtime model: every OB in one of the three lists, the
+            // interrupts by priority, every I/O address in one partition
+            {
+                const jsontest::Value& rt = doc["runtime"];
+                std::multiset<std::string> listed, all;
+                for (const char* k : {"startup", "program_cycle", "interrupts"})
+                    for (const auto& n : rt[k].items) listed.insert(n.s);
+                for (const auto& o : doc["organization_blocks"].items) all.insert(o["name"].s);
+                CHECK(listed == all);
+                int64_t last = INT64_MAX;
+                for (const auto& n : rt["interrupts"].items) {
+                    const jsontest::Value* o = named(doc["organization_blocks"], n.s);
+                    const int64_t pr = o && (*o)["priority"].type != jsontest::Value::Null ? (*o)["priority"].i() : 0;
+                    CHECK(pr <= last);
+                    last = pr;
+                }
+                size_t inPips = 0;
+                for (const auto& p : rt["process_images"].items)
+                    for (const char* k : {"inputs", "outputs"})
+                        for (const auto& a : p[k].items) {
+                            ++inPips;
+                            CHECK(a["process_image"].i() == p["number"].i() && (a["area"].s == "I") == (k[0] == 'i'));
+                        }
+                CHECK(inPips == doc["io"].items.size());
+            }
             CHECK(operands == docOperands);
             // calls resolved, and one entry of the call graph for each
             std::vector<std::string> badCalls;
@@ -1477,6 +1502,13 @@ void testProgramJson() {
         const jsontest::Value* cyc = named(doc["organization_blocks"], "ZZCYC2");
         CHECK(cyc && (*cyc)["number"].i() == 30 && (*cyc)["event"].s == "CyclicInterrupt" &&
               (*cyc)["cycle_us"].i() == 250000 && (*cyc)["phase_shift_us"].i() == 10000 && (*cyc)["priority"].i() == 11);
+        // how it runs: Main in the cycle, the cyclic interrupt beside it
+        const jsontest::Value& rt = doc["runtime"];
+        CHECK(rt["startup"].items.empty() && rt["program_cycle"].items.size() == 1 &&
+              rt["program_cycle"].items[0].s == "Main" && rt["interrupts"].items.size() == 1 &&
+              rt["interrupts"].items[0].s == "ZZCYC2" && rt["process_images"].items.empty());
+        CHECK(cyc && (*cyc)["event_class"].i() == 30 && (*cyc)["max_buffered_events"].i() == 1 &&
+              (*cyc)["process_image"].type == jsontest::Value::Null);
         const jsontest::Value* scl = named(doc["blocks"], "ZZSCL");
         CHECK(scl && (*scl)["protection"].s == "know-how" && (*scl)["interface"].type == jsontest::Value::Null &&
               (*scl)["code"].type == jsontest::Value::Null && !(*scl)["simulatable"].b);
@@ -1586,6 +1618,11 @@ void testProgramJson() {
         for (const auto& a : doc["io"].items) io.push_back(a["item"].s + " " + a["text"].s);
         // the CPU's onboard I/O, high-speed counters and pulse outputs, and a
         // signal module
+        // all of it in the partition updated with the program cycle
+        const auto& pips = doc["runtime"]["process_images"].items;
+        CHECK(pips.size() == 1 && pips[0]["number"].i() == 0 && pips[0]["name"].s == "Automatic update" &&
+              pips[0]["updated"].s == "program_cycle" && pips[0]["inputs"].items.size() == 9 &&
+              pips[0]["outputs"].items.size() == 3);
         CHECK(io == (std::vector<std::string>{"DI 8/DQ 6_1 I 0", "DI 8/DQ 6_1 Q 0", "AI 2_1 I 64...67", "HSC_1 I 1000...1003",
                                               "HSC_2 I 1004...1007", "HSC_3 I 1008...1011", "HSC_4 I 1012...1015",
                                               "HSC_5 I 1016...1019", "HSC_6 I 1020...1023", "Pulse_1 Q 1000...1001",

@@ -143,6 +143,14 @@ public:
                         e.cycle = v;
                         if (attrInt(o, "ICyclicInterruptEventData", "PhaseShift", v)) e.phase = v;
                     }
+                    if (attrInt(o, "IOrganizationBlockEventDataAttributes", "EventClassNumber", v)) {
+                        e.hasEventClass = true;
+                        e.eventClass = v;
+                    }
+                    if (attrInt(o, "IOrganizationBlockEventDataAttributes", "MaxBufferedEvents", v)) {
+                        e.hasMaxBuffered = true;
+                        e.maxBuffered = v;
+                    }
                     obEvents_[h.second] = e;
                 }
                 continue;
@@ -204,6 +212,10 @@ public:
             b.hasCycle = e->second.hasCycle;
             b.cycleMicroseconds = e->second.cycle;
             b.phaseShiftMicroseconds = e->second.phase;
+            b.hasEventClass = e->second.hasEventClass;
+            b.eventClass = e->second.eventClass;
+            b.hasMaxBufferedEvents = e->second.hasMaxBuffered;
+            b.maxBufferedEvents = e->second.maxBuffered;
         }
         for (const auto& pi : pendingInterfaces_) {
             const Block* b = project_.live(pi.second.first, pi.second.second);
@@ -299,8 +311,8 @@ private:
     std::vector<Key> pendingBlocks_;
     std::vector<std::pair<size_t, Key>> pendingInterfaces_;
     struct ObEvent {
-        bool hasPriority = false, hasCycle = false;
-        int64_t priority = 0, cycle = 0, phase = 0;
+        bool hasPriority = false, hasCycle = false, hasEventClass = false, hasMaxBuffered = false;
+        int64_t priority = 0, cycle = 0, phase = 0, eventClass = 0, maxBuffered = 0;
     };
     std::map<uint64_t, ObEvent> obEvents_;  // by the id of the OB
     std::map<uint32_t, bool> obEventTypes_;
@@ -767,6 +779,14 @@ private:
         readFlag(o, "Unlinked", b.onlyInLoadMemory);
         readFlag(o, "DBAccessibleFromOPCUA", b.accessibleFromOpcUa);
         readFlag(o, "DBAccessibleFromWebserver", b.accessibleFromWebServer);
+        // the process image partition an OB updates
+        if (b.type == "OB") {
+            int64_t pip = 0;
+            if (attrInt(o, "IOBInfoData", "PIP", pip) || attrInt(o, "IAdditionalBlockData", "PIP", pip)) {
+                b.hasProcessImage = true;
+                b.processImage = pip;
+            }
+        }
         return b;
     }
 

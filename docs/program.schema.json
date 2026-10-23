@@ -19,6 +19,7 @@
     "organization_blocks",
     "blocks",
     "instructions",
+    "runtime",
     "call_graph",
     "not_simulatable"
   ],
@@ -115,52 +116,7 @@
     "io": {
       "type": "array",
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "station",
-          "module",
-          "item",
-          "area",
-          "start_bit",
-          "length_bits",
-          "process_image",
-          "text"
-        ],
-        "properties": {
-          "station": {
-            "type": "string"
-          },
-          "module": {
-            "type": "string"
-          },
-          "item": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "area": {
-            "enum": [
-              "I",
-              "Q"
-            ]
-          },
-          "start_bit": {
-            "type": "integer"
-          },
-          "length_bits": {
-            "type": "integer"
-          },
-          "process_image": {
-            "type": "integer",
-            "description": "0: automatic update"
-          },
-          "text": {
-            "type": "string",
-            "description": "\"I 64...67\""
-          }
-        }
+        "$ref": "#/$defs/io"
       },
       "description": "the I/O addresses of the modules of the PLC's station and of the IO devices it controls"
     },
@@ -376,7 +332,10 @@
           "event",
           "priority",
           "cycle_us",
-          "phase_shift_us"
+          "phase_shift_us",
+          "event_class",
+          "max_buffered_events",
+          "process_image"
         ],
         "properties": {
           "name": {
@@ -412,6 +371,27 @@
               "integer",
               "null"
             ]
+          },
+          "event_class": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "as stored: 1 program cycle, 30 cyclic interrupt, 100 startup"
+          },
+          "max_buffered_events": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "events of this class kept while the OB runs"
+          },
+          "process_image": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "the process image partition the OB updates; null for none"
           }
         }
       }
@@ -445,6 +425,93 @@
         }
       },
       "description": "the instructions the code uses"
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startup",
+        "program_cycle",
+        "interrupts",
+        "process_images"
+      ],
+      "properties": {
+        "startup": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "the startup OBs, in the order of their numbers: run once, before the cycle"
+        },
+        "program_cycle": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "the program cycle OBs, in the order of their numbers: run one after the other, again and again"
+        },
+        "interrupts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "the other OBs, highest priority first: run when their events come"
+        },
+        "process_images": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "number",
+              "name",
+              "updated",
+              "obs",
+              "inputs",
+              "outputs"
+            ],
+            "properties": {
+              "number": {
+                "type": "integer"
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updated": {
+                "enum": [
+                  "program_cycle",
+                  "with_ob",
+                  "instructions_only"
+                ],
+                "description": "program_cycle: inputs read before and outputs written after each program cycle; with_ob: around the OBs in obs; instructions_only: only by UPDAT_PI and UPDAT_PO"
+              },
+              "obs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/io"
+                }
+              },
+              "outputs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/io"
+                }
+              }
+            }
+          },
+          "description": "the process image partitions the I/O and the OBs use"
+        }
+      },
+      "description": "how the CPU runs the program"
     },
     "call_graph": {
       "type": "array",
@@ -707,6 +774,54 @@
         }
       },
       "description": "a value parsed"
+    },
+    "io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "station",
+        "module",
+        "item",
+        "area",
+        "start_bit",
+        "length_bits",
+        "process_image",
+        "text"
+      ],
+      "properties": {
+        "station": {
+          "type": "string"
+        },
+        "module": {
+          "type": "string"
+        },
+        "item": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "area": {
+          "enum": [
+            "I",
+            "Q"
+          ]
+        },
+        "start_bit": {
+          "type": "integer"
+        },
+        "length_bits": {
+          "type": "integer"
+        },
+        "process_image": {
+          "type": "integer",
+          "description": "0: automatic update"
+        },
+        "text": {
+          "type": "string",
+          "description": "\"I 64...67\""
+        }
+      }
     },
     "member": {
       "type": "object",

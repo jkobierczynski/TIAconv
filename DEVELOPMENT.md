@@ -317,6 +317,17 @@ format is only fixed when it is released.
    parameters are not known.
 5. **Run-time model** (about 1 day). Startup and cyclic OBs, process image
    partitions of the I/O addresses.
+   *Done (unreleased):* `runtime` with the startup, program cycle and
+   interrupt OBs (by number, by priority) and the process image partitions
+   with their I/O and how they are updated; `organization_blocks` with the
+   event class, the queue depth and the OB's partition (`IOBInfoData.PIP`,
+   V13 `IAdditionalBlockData.PIP`). The tests check for every PLC of every
+   fixture that each OB is in exactly one list, the interrupts are in the
+   order of priority and each I/O address is in exactly one partition, and
+   pin the runtime of `s14_code_rewritten` and `s10_connections`. To check
+   in TIA Portal (below): a partition assigned to an OB, I/O in a partition
+   other than 0, a startup OB in V21, the cycle settings and the startup
+   mode.
 6. **Reference behaviour** (one TIA Portal session, if the trial has
    S7-PLCSIM). Input and output sequences of `s15_motor` recorded in
    PLCSIM, kept as test data for the simulator.
@@ -324,6 +335,13 @@ format is only fixed when it is released.
 ## What is still unclear or to do
 
 ### Needs TIA Portal *(trial)*
+
+- **Run-time settings**, in `s14_code_rewritten`, one per save: (1) add a
+  Startup OB; (2) in the properties of `ZZCYC2`, assign process image
+  partition PIP 1; (3) the CPU's maximum cycle time from 150 to 200 ms;
+  (4) a minimum cycle time of 10 ms; (5) the startup mode to cold restart
+  (S7-1500: "Startup after POWER ON"). Where each is stored, and whether
+  `IOBInfoData.PIP` becomes 1.
 
 - `S7_SetPoint`/`InstructionName`/`LibVersion` of multi-instances in a
   generated source.

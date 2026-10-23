@@ -974,6 +974,21 @@ The event of an OB is an object of its own, `ProgramCycleEventData`,
 properties show it. The priorities stored in the other two, 13 (S7-1500)
 and 7 (S7-1200, V17), were not compared.
 
+The event object also has `EventClassNumber` (1 program cycle, 30 cyclic
+interrupt, 100 startup in the projects read), `EventNumber`,
+`MaxBufferedEvents` (1 everywhere), `EnableInitial` (1 for program cycle
+and startup, 9 for a cyclic interrupt: not understood), `ReactionWithoutOb`
+(4 or 8, 19), `Threshold` (0) and from V15 on `TaskGroupName` (`Default`).
+The OB itself keeps the process image partition it updates: V14 and later
+in `IOBInfoData.PIP` (with `OBInterfaceType`: `Improved` for optimized
+start information, `None`), V13 in `IAdditionalBlockData.PIP`, which every
+code block has (0 for FBs and FCs). 65535 means none; every OB in the
+projects read has 65535, also OB 1, whose partition is "Automatic update"
+in TIA Portal. **Not checked:** an OB with a partition assigned. The CPU's
+cycle settings (maximum and minimum cycle time, cycle load) and the
+startup mode are not stored in any project read: presumably only when
+changed from the default, like the SNMP settings.
+
 `FolderData` has `ICoreAttributes.Subtype` `ProgramBlocksFolder` (Program
 blocks), `ProgramBlocksFolder.Subfolder` (a group, named by the user),
 `SystemBlocksFolder` and `ProgramResourcesFolder` (System blocks > Program

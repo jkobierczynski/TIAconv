@@ -46,7 +46,8 @@ values parsed (`start`, `parsed`, `value`).
 | `constants` | user constants and the system constants TIA Portal creates: `name`, `table`, `data_type`, `value` as written and `parsed` (below), `kind` (`hardware`, `ob`, `pip`, `user`, `system`), `system`, `comment` |
 | `types` | the PLC data types and the system types the members use, with their members |
 | `data_blocks` | global and instance data blocks with their members |
-| `organization_blocks` | each OB with its `event`, `priority`, and for a cyclic interrupt `cycle_us` and `phase_shift_us` (microseconds) |
+| `organization_blocks` | each OB with its `event`, `priority`, for a cyclic interrupt `cycle_us` and `phase_shift_us` (microseconds), `event_class` (1 program cycle, 30 cyclic interrupt, 100 startup), `max_buffered_events`, and `process_image`, the partition it updates (null for none) |
+| `runtime` | how the CPU runs the program (below) |
 | `blocks` | every OB, FB and FC with its interface and its code |
 | `instructions` | the instructions the code uses (`TON`, `CTU`, `PID_Compact`) with their library version: a simulator has to provide these |
 | `call_graph` | one entry per call in the code: `from`, `from_type`, `network`, `kind`, `to`, `to_type`, `instance_kind`, `instance` (below) |
@@ -249,6 +250,30 @@ first statement of `MotorSCL` (SCL) in `s15_motor` are both
 `#run := (((#start OR #run) AND #stop) AND #interlock)`.
 
 `tools/program_tree.py` prints the trees of a file as SCL-like text.
+
+### Runtime
+
+`runtime` says what an interpreter runs when:
+
+| key | what |
+|---|---|
+| `startup` | the startup OBs, in the order of their numbers: run once, before the cycle |
+| `program_cycle` | the program cycle OBs (OB 1 and those from 123 on), in the order of their numbers: run one after the other, again and again |
+| `interrupts` | every other OB (cyclic interrupts and the rest), highest priority first: run when its event comes, interrupting an OB of lower priority. The event is in `organization_blocks` (a cyclic interrupt every `cycle_us`, shifted by `phase_shift_us`) |
+| `process_images` | the partitions the I/O and the OBs use: `number`, `name` (the system constant of the PLC: "Automatic update", "PIP 1"), `updated`, `obs`, and the `inputs` and `outputs` in it (as in `io`) |
+
+`updated` is `program_cycle` for partition 0: its inputs are read into the
+process image before each program cycle and its outputs written after it.
+`with_ob` for a partition an OB is assigned to (`obs`): read before that OB,
+written after it. `instructions_only` for a partition no OB is assigned to:
+only UPDAT_PI and UPDAT_PO update it. This is how S7-1200 and S7-1500 handle
+partitions; the assignment of a partition to an OB has not been seen in a
+project yet (every partition in the test projects is 0).
+
+Not in the export because no project stores them: the maximum cycle time
+(watchdog), a minimum cycle time, the cycle load for communication, the
+startup mode. TIA Portal's defaults are 150 ms maximum cycle time, no
+minimum, and a warm restart.
 
 ### Calls
 

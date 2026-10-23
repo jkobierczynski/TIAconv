@@ -843,7 +843,9 @@ JSON Schema [docs/program.schema.json](docs/program.schema.json)):
   and the PLC data types and system types with their members; every value
   parsed (`T#5S` as 5 000 000 000 ns, `16#FF` as 255);
 - the I/O addresses of the station and of the IO devices;
-- the OBs with event, priority, cycle and phase shift;
+- the OBs with event, priority, cycle and phase shift, and how the CPU runs
+  them: startup, program cycle, interrupts by priority, and the process
+  image partitions with their I/O;
 - every OB, FB and FC with its whole interface and its code: as text (SCL,
   STL), as the LAD/FBD graph with each operand linked to what it names,
   and as one tree for all languages, statements and expressions with every
