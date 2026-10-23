@@ -1510,11 +1510,28 @@ private:
             s.branches.push_back(std::move(b));
             out.push_back(std::move(s));
         } else {
+            // another coil (an S5 timer or counter coil: SD, CU, ...): a call of
+            // its name with its pins, the power flow as "in"
+            CodeExpr c = node("call");
+            c.name = p.name;
+            CodeExpr a = node("in");
+            a.name = "in";
+            a.args.push_back(std::move(in));
+            c.args.push_back(std::move(a));
+            for (const auto& pin : p.inputs) {
+                if (pin.first == "in") continue;
+                if (pin.second.type == Source::Operand && operandText(pin.second.uid).empty()) continue;
+                CodeExpr x = node("in");
+                x.name = pin.first;
+                x.args.push_back(pinTree(p, pin.first, 0));
+                c.args.push_back(std::move(x));
+            }
             CodeStmt s;
-            s.op = "unknown";
-            s.name = p.name;
-            if (unknownTree_.insert(p.name).second) treeNotes_->push_back("the coil '" + p.name + "' not read into the tree");
+            s.op = "call";
+            s.exprs.push_back(std::move(c));
             out.push_back(std::move(s));
+            if (unknownTree_.insert(p.name).second)
+                treeNotes_->push_back("the coil '" + p.name + "' is written as a call of that name");
         }
     }
 

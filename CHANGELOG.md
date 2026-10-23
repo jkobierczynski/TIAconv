@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Program export: a LAD/FBD coil other than ( ), (S) and (R) (the S5
+  timer and counter coils SD, CU, ...) is a call of its name with its pins
+  (`in` the power flow, `operand`, `value`), no longer an `unknown`
+  statement.
 - Program export: an STL statement has `text`, its operand as the editor
   shows it, so that absolute and indirect addresses, S5 timers and counters
   and pointers reach a simulator even where the code tree has no node for

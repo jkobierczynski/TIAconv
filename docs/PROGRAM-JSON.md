@@ -228,6 +228,10 @@ part as soon as the parts whose outputs it reads are done.
 - A coil is an `assign` (with NOT for a negated coil), `S` and `R` coils an
   `if` that sets the operand TRUE or FALSE. The power that flows on past a
   coil is its input as it was before the coil wrote: a `wire`.
+  Any other coil (the S5 timer and counter coils SD, SP, CU, SC, ...) is a
+  `call` of the coil's name as stored (`SdCoil`) with its pins as `in`
+  parameters: `in` the power flow, `operand` the timer or counter, `value`
+  the time or count where it has one.
 - `Move` and `S_Move` become `assign`s, `Add`, `Sub`, `Mul`, `Div`, `Mod`
   an `assign` of the operation with the inputs in the order of their pins
   (`in1`, `in2`, ...), `PBox` and `NBox` (P_TRIG, N_TRIG) an edge. Their

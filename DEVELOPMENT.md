@@ -245,7 +245,7 @@ simulated from it outside TIA Portal. Three steps, in this order.
 
 ## Objectives: the export as input of an interpreter (schema version 2)
 
-The C++ PLC simulator s7sim (a project of its own, GPL-3.0-or-later) loads
+The C++ PLC simulator S7Forge (a project of its own, GPL-3.0-or-later) loads
 the program export at run time and interprets it; it runs the test projects
 s15_motor and s14_code_rewritten from their exports. Version 2 of the format takes the parsing off the
 simulator: everything tiaconv knows comes out structured, so the simulator

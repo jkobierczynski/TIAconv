@@ -2845,6 +2845,7 @@ void testGraphicTreeCases() {
         {"t5", "<FlgNet><Parts><Part UId=\"20\" Gate=\"A\"><Negated PinName=\"out\"/></Part><Part UId=\"31\" Gate=\"Coil\"/><ORef UId=\"24\" RefId=\"1\"/><ORef UId=\"25\" RefId=\"2\"/><ORef UId=\"32\" RefId=\"5\"/></Parts><Wires><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"20\" PinName=\"in1\"/></Wire><Wire UId=\"3\"><OCon UId=\"25\"/><PCon UId=\"20\" PinName=\"in2\"/></Wire><Wire UId=\"4\"><PCon UId=\"20\" PinName=\"out\"/><PCon UId=\"31\" PinName=\"in\"/></Wire><Wire UId=\"6\"><OCon UId=\"32\"/><PCon UId=\"31\" PinName=\"operand\"/></Wire></Wires></FlgNet>"},
         {"t6", "<FlgNet><Parts><Part UId=\"23\" Gate=\"PContact\"/><Part UId=\"25\" Gate=\"O\"/><Part UId=\"29\" Gate=\"Coil\"/><ORef UId=\"24\" RefId=\"1\"/><ORef UId=\"26\" RefId=\"6\"/><ORef UId=\"30\" RefId=\"4\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"pre\"/><PCon UId=\"25\" PinName=\"in2\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"operand\"/></Wire><Wire UId=\"3\"><OCon UId=\"26\"/><PCon UId=\"23\" PinName=\"bit\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><PCon UId=\"25\" PinName=\"in1\"/></Wire><Wire UId=\"7\"><PCon UId=\"25\" PinName=\"out\"/><PCon UId=\"29\" PinName=\"in\"/></Wire><Wire UId=\"5\"><OCon UId=\"30\"/><PCon UId=\"29\" PinName=\"operand\"/></Wire></Wires></FlgNet>"},
         {"t7", "<FlgNet><Parts><Part UId=\"20\" Gate=\"PBox\"/><Part UId=\"23\" Gate=\"Contact\"/><ORef UId=\"24\" RefId=\"1\"/><ORef UId=\"26\" RefId=\"6\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"in\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"operand\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><PCon UId=\"20\" PinName=\"in\"/></Wire><Wire UId=\"3\"><OCon UId=\"26\"/><PCon UId=\"20\" PinName=\"bit\"/></Wire></Wires></FlgNet>"},
+        {"t8", "<FlgNet><Parts><Part UId=\"23\" Gate=\"Contact\"/><Part UId=\"29\" Gate=\"SdCoil\"/><ORef UId=\"24\" RefId=\"1\"/><ORef UId=\"30\" RefId=\"4\"/><ORef UId=\"31\" RefId=\"13\"/></Parts><Wires><Wire UId=\"1\"><Powerrail/><PCon UId=\"23\" PinName=\"in\"/></Wire><Wire UId=\"2\"><OCon UId=\"24\"/><PCon UId=\"23\" PinName=\"operand\"/></Wire><Wire UId=\"4\"><PCon UId=\"23\" PinName=\"out\"/><PCon UId=\"29\" PinName=\"in\"/></Wire><Wire UId=\"5\"><OCon UId=\"30\"/><PCon UId=\"29\" PinName=\"operand\"/></Wire><Wire UId=\"6\"><OCon UId=\"31\"/><PCon UId=\"29\" PinName=\"value\"/></Wire></Wires></FlgNet>"},
     };
     const std::map<std::string, std::vector<std::string>> expected = {
         // -|P| a, m-+-(S)- x  and  +-(R)- y: the edge once, both coils see it
@@ -2863,6 +2864,8 @@ void testGraphicTreeCases() {
         {"t6", {"assign ref#4:#x or(edge_pos(ref#1:#a ref#6:#m) const=TRUE/Bool)"}},
         // a P_TRIG whose output goes nowhere still updates its edge memory
         {"t7", {"eval edge_pos(ref#1:#a ref#6:#m)"}},
+        // -| a |-(SD)- x with the time value k: a call of the coil with its pins
+        {"t8", {"call call:SdCoil(in:in(ref#1:#a) in:operand(ref#4:#x) in:value(ref#13:#k))"}},
     };
     for (const auto& c : cases) {
         std::vector<tia::NetworkElement> elements;
@@ -2870,7 +2873,8 @@ void testGraphicTreeCases() {
         std::vector<tia::CodeStmt> tree;
         CHECK(tia::graphicNetwork(c.second, refs, elements, lines, notes, &tree, &treeNotes));
         treeLines(tree, "", t);
-        CHECK(t == expected.at(c.first) && treeNotes.empty());
+        const bool coil = std::string(c.first) == "t8";  // says it is written as a call
+        CHECK(t == expected.at(c.first) && treeNotes.size() == (coil ? 1u : 0u));
         // the listing negates the negated output too
         if (std::string(c.first) == "t5") CHECK(joinLines(lines) == "1: #y := NOT (#a AND #b)\n");
         if (t != expected.at(c.first)) {
