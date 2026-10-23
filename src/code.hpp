@@ -191,6 +191,8 @@ struct CodeStmt {
     std::vector<CodeStmt> body;
     bool hasElse = false;
     std::vector<CodeStmt> elseBody;
+    // stl: the operand as the editor shows it ("DBW [AR1,P#2.0]", "T 5")
+    std::string text;
 };
 
 struct Network {

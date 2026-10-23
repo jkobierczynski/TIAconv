@@ -1335,6 +1335,9 @@ void stmtJson(Json& j, const CodeStmt& s, CallResolver* calls) {
     } else {
         j.null();
     }
+    j.key("text");
+    if (s.op == "stl") j.value(s.text);
+    else j.null();
     j.key("branches");
     j.beginArray();
     for (const auto& b : s.branches) {
@@ -1407,6 +1410,24 @@ void blockCode(Json& j, const BlockCode& c, const ConstantValues& cv, CallResolv
         else j.null();
         j.key("data_block").text(r.container);
         j.key("declared_as").text(r.declaredAs);
+        // what the text is made of: the name, and for an access the members
+        // along the path (a data block member starts with the data block)
+        // with the ref_ids of array indices, and the part meant (b0, x3)
+        j.key("name").text(r.name);
+        j.key("scope").text(r.scope);
+        j.key("path");
+        j.beginArray();
+        for (const auto& st : r.path) {
+            j.beginObject(true);
+            j.key("name").value(st.name);
+            j.key("index");
+            j.beginArray();
+            for (int64_t i : st.index) j.value(i);
+            j.endArray();
+            j.endObject();
+        }
+        j.endArray();
+        j.key("modifier").text(r.modifier == "undef" || r.modifier == "None" ? std::string() : r.modifier);
         j.endObject();
     }
     j.endArray();

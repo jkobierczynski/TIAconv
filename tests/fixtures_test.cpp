@@ -1563,6 +1563,21 @@ void testProgramJson() {
                                                        "Q Bool/1"}));
         CHECK(operandValues(doc, "MotorLAD") ==
               (std::vector<std::string>{"2/PT T#5S duration:5000000000", "3/in2 1 int:1"}));
+        // references with their access paths, for a simulator
+        std::vector<std::string> paths;
+        if (scl)
+            for (const auto& r : (*scl)["code"]["references"].items) {
+                std::string p;
+                for (const auto& st : r["path"].items) p += "/" + st["name"].s;
+                if (!p.empty()) paths.push_back(r["text"].s + " " + r["kind"].s + " " + p);
+            }
+        std::sort(paths.begin(), paths.end());
+        CHECK(paths == (std::vector<std::string>{"\"MotorData\".starts data block member /MotorData/starts",
+                                                 "#delay local /delay", "#delay.Q local /delay/Q",
+                                                 "#interlock local /interlock", "#motor local /motor", "#run local /run",
+                                                 "#runOld local /runOld", "#start local /start", "#stop local /stop"}));
+        if (paths.size() != 9)
+            for (const auto& x : paths) std::fprintf(stderr, "[%s]\n", x.c_str());
         const jsontest::Value* start = named(doc["tags"], "StartPB");
         CHECK(start && (*start)["type"]["kind"].s == "elementary" && (*start)["type"]["bits"].i() == 1);
     }
@@ -1671,6 +1686,16 @@ void testCodeTree() {
         CHECK(sameTree(doc, "ZZSCL2", {"#1", "WHILE (\"ZZN1\" < 10) DO", "  \"ZZN1\" := (\"ZZN1\" + 1);", "END_WHILE;", "REPEAT", "  \"ZZN2\" := (\"ZZN2\" + 1);", "UNTIL (\"ZZN2\" > 5) END_REPEAT;", "CASE \"ZZN3\" OF", "  1..5:", "    \"ZZOUT\" := TRUE;", "  6, 8:", "    \"ZZOUT\" := FALSE;", "  ELSE", "    \"ZZC\" := TRUE;", "END_CASE;"}));
         CHECK(sameTree(doc, "ZZSTL", {"#1", "A \"ZZALPHA\"", "AN \"ZZB\"", "= \"ZZOUT\"", "#2", "L \"ZZN1\"", "L 5", "+I", "T \"ZZN3\""}));
         CHECK(sameTree(doc, "ZZSTL2", {"#1", "A \"ZZALPHA\"", "JC M001", "L 1", "T \"ZZN1\"", "M001:", "NOP 0", "#2", "CALL \"ZZFBD\"", "#3", "CALL \"ZZFB\", \"ZZFB_DB\", in1 := \"ZZB\", out1 => \"ZZC\", io1 :=: \"ZZN2\""}));
+        // the operands of STL as the editor shows them
+        {
+            std::vector<std::string> texts;
+            if (const jsontest::Value* b = named(doc["blocks"], "ZZSTL2"))
+                for (const auto& n : (*b)["code"]["networks"].items)
+                    for (const auto& st : n["statements"].items)
+                        if (st["op"].s == "stl") texts.push_back(st["name"].s + "|" + st["text"].s);
+            CHECK(texts == std::vector<std::string>({"A|\"ZZALPHA\"", "JC|M001", "L|1", "T|\"ZZN1\"", "NOP|0",
+                                                     "CALL|\"ZZFBD\"", "CALL|\"ZZFB\",\"ZZFB_DB\""}));
+        }
         CHECK(sameTree(doc, "ZZSCL", {"(no code)"}));
     }
 }

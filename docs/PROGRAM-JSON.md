@@ -158,7 +158,10 @@ How each of these is derived is in [FORMAT.md](FORMAT.md) ("Operand links").
 
 `references` is the block's table of what its code refers to: `ref_id`,
 `kind`, `kind_stored`, `text`, `data_type`, `value` (a constant's, as for
-an operand), `data_block`, `declared_as` (a
+an operand), `data_block`, `name` (of the tag, block or data block named),
+`scope`, `path` (an access as its names: `["MotorData", "starts"]` for
+`"MotorData".starts`, `["delay", "Q"]` for `#delay.Q`, each step with the
+`ref_id`s of its array indices), `modifier` (the part meant: `b0`, `x3`), `declared_as` (a
 multi-instance: the member declared with this block as its type). The
 `ref_id` of an operand or element points into it.
 
@@ -182,7 +185,7 @@ operand named by its `ref_id` in the block's `references`. A statement is
 | `return`, `exit`, `continue`, `empty` | |
 | `eval` | `exprs[0]` evaluated for its edges: LAD or FBD logic that leads nowhere |
 | `region` | `name` and `body`: only a grouping |
-| `stl` | one STL statement: `name` the instruction (`A`, `AN`, `=`, `L`, `T`, `+I`, `JC`, `CALL`), `exprs` its operands; a CALL's parameters as `in`, `out`, `inout` |
+| `stl` | one STL statement: `name` the instruction (`A`, `AN`, `=`, `L`, `T`, `+I`, `JC`, `CALL`), `exprs` its operands; a CALL's parameters as `in`, `out`, `inout`; `text` the operand as the editor shows it (`"ZZN1"`, `M001`, `"ZZFB","ZZFB_DB"`), also for operands the tree has no node for: absolute and indirect addresses (`DBW 2`, `MW [MD 10]`, `[AR1,P#2.0]`), S5 timers and counters (`T 5`), pointers (`P#M10.0`) |
 | `label` | `name`: an STL label, before the statement it marks |
 | `unknown` | `name` says what (not met in the test projects and samples) |
 

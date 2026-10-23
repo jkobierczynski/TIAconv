@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Program export: an STL statement has `text`, its operand as the editor
+  shows it, so that absolute and indirect addresses, S5 timers and counters
+  and pointers reach a simulator even where the code tree has no node for
+  them.
+
 - Program export, schema version 2 (in progress toward a format a
   simulator can interpret without parsing TIA Portal's notation; see
   DEVELOPMENT.md): every member and tag has `type`, its data type taken

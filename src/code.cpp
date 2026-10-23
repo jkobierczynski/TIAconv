@@ -2477,14 +2477,17 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
             const std::string* kw = piece->attr("Kw");
             if (piece->name == "Token" && !piece->attr("DispName") && kw && *kw == ",") {
                 line += ",";  // between the block and its instance: CALL "FB", "DB"
+                if (named) stl.text += ",";
                 continue;
             }
+            const bool first = !named;
             if (!named) {
                 named = true;
                 stl.name = piece->attrOr("DispName", piece->attrOr("TE", piece->attrOr("Text", kw ? *kw : std::string())));
             } else {
                 stl.exprs.push_back(refExpr(*piece));
             }
+            const size_t before = line.size();
             // a labelled statement is written with single blanks: "M001: NOP 0"
             if (!line.empty()) line.append(line.size() < 6 && !hasLabel(*st) ? 6 - line.size() : 1, ' ');
             if (const std::string* shown = piece->attr("DispName")) {
@@ -2500,6 +2503,15 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
                 line += *kw;
             } else {
                 line += unknownPiece(piece->name);
+            }
+            // the operand: what follows the instruction, as shown
+            if (!first) {
+                std::string shown = line.substr(before);
+                const size_t lead = shown.find_first_not_of(' ');
+                shown = lead == std::string::npos ? std::string() : shown.substr(lead);
+                if (!stl.text.empty() && !shown.empty() && shown != "," && stl.text.back() != ',' && stl.text.back() != '[')
+                    stl.text += ' ';
+                stl.text += shown;
             }
         }
         if (!label.empty()) line = line.empty() ? label : label + " " + line;

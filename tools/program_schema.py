@@ -127,6 +127,7 @@ defs["stmt"]=O({
  "body":A(R("stmt"),"for, while, repeat, region"),
  "else":{"oneOf":[A(R("stmt")),{"type":"null"}],"description":"if, case: the ELSE part; null without one"},
  "target":{"oneOf":[R("target"),{"type":"null"}],"description":"stl CALL: what it runs"},
+ "text":NS("stl: the operand as the editor shows it (`DBW [AR1,P#2.0]`, `T 5`, `\"Motor\".run`), empty without one; null for the other statements"),
 },"a statement of the code tree")
 defs["network"]=O({
  "number":I("position in the block, 1 = first"),
@@ -145,6 +146,11 @@ defs["reference"]=O({
  "value":{"oneOf":[R("value"),{"type":"null"}],"description":"a constant (literal, local or user constant): its value"},
  "data_block":NS(),
  "declared_as":NS("a multi-instance: the member declared with this block as its type"),
+ "name":NS("the name of what it names: the tag, block or data block, the literal; empty for an access"),
+ "scope":NS("as stored: Global, Local, Constant, Instruction, ..."),
+ "path":A(O({"name":S(),"index":A(I(),"ref_ids of the index expressions")}),
+          "an access: the names along it; a data block member starts with the data block, a local with the member of the interface"),
+ "modifier":NS("the part of the variable meant: b0 (byte 0), x3 (bit 3), w1, d0"),
 })
 defs["code"]=O({"networks":A(R("network")),"references":A(R("reference"),"what the block's code refers to")})
 defs["block"]=O({

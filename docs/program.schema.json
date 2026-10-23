@@ -1443,7 +1443,8 @@
         "branches",
         "body",
         "else",
-        "target"
+        "target",
+        "text"
       ],
       "properties": {
         "op": {
@@ -1518,6 +1519,13 @@
             }
           ],
           "description": "stl CALL: what it runs"
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "stl: the operand as the editor shows it (`DBW [AR1,P#2.0]`, `T 5`, `\"Motor\".run`), empty without one; null for the other statements"
         }
       },
       "description": "a statement of the code tree"
@@ -1628,7 +1636,11 @@
         "data_type",
         "value",
         "data_block",
-        "declared_as"
+        "declared_as",
+        "name",
+        "scope",
+        "path",
+        "modifier"
       ],
       "properties": {
         "ref_id": {
@@ -1675,6 +1687,51 @@
             "null"
           ],
           "description": "a multi-instance: the member declared with this block as its type"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the name of what it names: the tag, block or data block, the literal; empty for an access"
+        },
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "as stored: Global, Local, Constant, Instruction, ..."
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "index"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "index": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "ref_ids of the index expressions"
+              }
+            }
+          },
+          "description": "an access: the names along it; a data block member starts with the data block, a local with the member of the interface"
+        },
+        "modifier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the part of the variable meant: b0 (byte 0), x3 (bit 3), w1, d0"
         }
       }
     },
