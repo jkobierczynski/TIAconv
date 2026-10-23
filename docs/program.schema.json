@@ -19,6 +19,7 @@
     "organization_blocks",
     "blocks",
     "instructions",
+    "call_graph",
     "not_simulatable"
   ],
   "properties": {
@@ -444,6 +445,69 @@
         }
       },
       "description": "the instructions the code uses"
+    },
+    "call_graph": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "from_type",
+          "network",
+          "kind",
+          "to",
+          "to_type",
+          "instance_kind",
+          "instance"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "from_type": {
+            "type": "string"
+          },
+          "network": {
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "block",
+              "instruction",
+              "builtin",
+              "unknown"
+            ]
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instance_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "data_block, multi_instance, unknown"
+          },
+          "instance": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "the data block, or the member path as #a.b"
+          }
+        }
+      },
+      "description": "one entry per call in the code, in the order of the blocks and networks"
     },
     "not_simulatable": {
       "type": "array",
@@ -949,6 +1013,177 @@
         }
       }
     },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "block_type",
+        "name",
+        "number",
+        "version",
+        "instance",
+        "parameters"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "block",
+            "instruction",
+            "builtin",
+            "unknown"
+          ],
+          "description": "block: an FB or FC of this PLC, in blocks; instruction: from a Siemens library (TON, PID_Compact), in instructions; builtin: a function of the language (INT_TO_WORD, ABS)"
+        },
+        "block_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "FB, FC; for an instruction kept as a block, its type"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the block or instruction, without quotes"
+        },
+        "number": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "block: its number"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "instruction: its library version"
+        },
+        "instance": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "name",
+                "number",
+                "instance_of",
+                "data_type",
+                "path"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "data_block",
+                    "multi_instance",
+                    "unknown"
+                  ]
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "data_block: the data block; multi_instance: the last member of the path"
+                },
+                "number": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "data_block: its number"
+                },
+                "instance_of": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "data_block: what the data block is an instance of"
+                },
+                "data_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "multi_instance: the type of the member"
+                },
+                "path": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "name",
+                      "index"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "index": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        },
+                        "description": "ref_ids of the array indices"
+                      }
+                    }
+                  },
+                  "description": "multi_instance: the member in the caller's interface"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the instance; null for an FC, a built-in function, an instruction without one"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "section",
+              "data_type",
+              "given"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "section": {
+                "enum": [
+                  "Input",
+                  "Output",
+                  "InOut",
+                  "Return"
+                ]
+              },
+              "data_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "given": {
+                "type": "boolean",
+                "description": "the call gives it"
+              }
+            }
+          },
+          "description": "the formal parameters, from the block's interface, the instance, or for the IEC timers and counters their documented parameters"
+        }
+      },
+      "description": "what a call runs, resolved"
+    },
     "expr": {
       "type": "object",
       "additionalProperties": false,
@@ -959,7 +1194,8 @@
         "name",
         "type",
         "value",
-        "args"
+        "args",
+        "target"
       ],
       "properties": {
         "op": {
@@ -1044,6 +1280,17 @@
             "$ref": "#/$defs/expr"
           },
           "description": "the operands, in order"
+        },
+        "target": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "call: what it runs"
         }
       },
       "description": "an expression of the code tree"
@@ -1080,7 +1327,8 @@
         "exprs",
         "branches",
         "body",
-        "else"
+        "else",
+        "target"
       ],
       "properties": {
         "op": {
@@ -1144,6 +1392,17 @@
             }
           ],
           "description": "if, case: the ELSE part; null without one"
+        },
+        "target": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "stl CALL: what it runs"
         }
       },
       "description": "a statement of the code tree"

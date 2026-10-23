@@ -85,6 +85,24 @@ defs["element"]=O({
  "options":A(O({"name":S(),"value":S()}),"what the part was set to: SrcType, Card (number of inputs), DisableENO, negated (a negated pin), AutomaticTyped"),
  "pins":A(R("pin")),
 })
+defs["target"]=O({
+ "kind":{"enum":["block","instruction","builtin","unknown"],
+         "description":"block: an FB or FC of this PLC, in blocks; instruction: from a Siemens library (TON, PID_Compact), in instructions; builtin: a function of the language (INT_TO_WORD, ABS)"},
+ "block_type":NS("FB, FC; for an instruction kept as a block, its type"),
+ "name":NS("the block or instruction, without quotes"),
+ "number":NI("block: its number"),
+ "version":NS("instruction: its library version"),
+ "instance":{"oneOf":[O({
+     "kind":{"enum":["data_block","multi_instance","unknown"]},
+     "name":NS("data_block: the data block; multi_instance: the last member of the path"),
+     "number":NI("data_block: its number"),
+     "instance_of":NS("data_block: what the data block is an instance of"),
+     "data_type":NS("multi_instance: the type of the member"),
+     "path":A(O({"name":S(),"index":A(I(),"ref_ids of the array indices")}),"multi_instance: the member in the caller's interface"),
+   }),{"type":"null"}],"description":"the instance; null for an FC, a built-in function, an instruction without one"},
+ "parameters":A(O({"name":S(),"section":{"enum":["Input","Output","InOut","Return"]},"data_type":NS(),"given":B("the call gives it")}),
+   "the formal parameters, from the block's interface, the instance, or for the IEC timers and counters their documented parameters"),
+},"what a call runs, resolved")
 defs["expr"]=O({
  "op":{"enum":["ref","const","member","index","slice","not","neg","add","sub","mul","div","mod","pow","and","or","xor",
                "eq","ne","lt","le","gt","ge","call","in","out","inout","edge_pos","edge_neg","wire","range","builtin",
@@ -95,6 +113,7 @@ defs["expr"]=O({
  "type":NS("the data type of the result, where the project gives it"),
  "value":{"oneOf":[R("value"),{"type":"null"}],"description":"const: the literal parsed"},
  "args":A(R("expr"),"the operands, in order"),
+ "target":{"oneOf":[R("target"),{"type":"null"}],"description":"call: what it runs"},
 },"an expression of the code tree")
 defs["branch"]=O({"exprs":A(R("expr"),"if: the condition; case: the labels"),"body":A(R("stmt"))})
 defs["stmt"]=O({
@@ -105,6 +124,7 @@ defs["stmt"]=O({
  "branches":A(R("branch"),"if: one per IF/ELSIF; case: one per list of labels"),
  "body":A(R("stmt"),"for, while, repeat, region"),
  "else":{"oneOf":[A(R("stmt")),{"type":"null"}],"description":"if, case: the ELSE part; null without one"},
+ "target":{"oneOf":[R("target"),{"type":"null"}],"description":"stl CALL: what it runs"},
 },"a statement of the code tree")
 defs["network"]=O({
  "number":I("position in the block, 1 = first"),
@@ -157,6 +177,10 @@ schema={
                              "priority":NI(),"cycle_us":NI(),"phase_shift_us":NI()})),
   "blocks":A(R("block")),
   "instructions":A(O({"name":S(),"version":NS("major.minor of the library version")}),"the instructions the code uses"),
+  "call_graph":A(O({"from":S(),"from_type":S(),"network":I(),"kind":{"enum":["block","instruction","builtin","unknown"]},
+                    "to":NS(),"to_type":NS(),"instance_kind":NS("data_block, multi_instance, unknown"),
+                    "instance":NS("the data block, or the member path as #a.b")}),
+                 "one entry per call in the code, in the order of the blocks and networks"),
   "not_simulatable":A(O({"block":S(),"type":S(),"reason":S()})),
  }),
  "$defs":defs,

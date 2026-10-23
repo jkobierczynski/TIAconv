@@ -49,6 +49,7 @@ values parsed (`start`, `parsed`, `value`).
 | `organization_blocks` | each OB with its `event`, `priority`, and for a cyclic interrupt `cycle_us` and `phase_shift_us` (microseconds) |
 | `blocks` | every OB, FB and FC with its interface and its code |
 | `instructions` | the instructions the code uses (`TON`, `CTU`, `PID_Compact`) with their library version: a simulator has to provide these |
+| `call_graph` | one entry per call in the code: `from`, `from_type`, `network`, `kind`, `to`, `to_type`, `instance_kind`, `instance` (below) |
 | `not_simulatable` | what keeps a block from being simulated from the file: `block`, `type`, `reason` |
 
 Texts that are not stored are `null`, not `""`. Lists are always present,
@@ -195,7 +196,7 @@ An expression is `{"op", "ref_id", "instance_ref_id", "name", "type", "value", "
 | `slice` | a part of `args[0]`, `name` `%X3`, `%B1`, `%W0` |
 | `not`, `neg` | one operand |
 | `add` `sub` `mul` `div` `mod` `pow` `and` `or` `xor` `eq` `ne` `lt` `le` `gt` `ge` | two operands, left to right |
-| `call` | `name`; `ref_id` the block or instruction called (null for a built-in function such as `INT_TO_WORD` or `ABS`); `instance_ref_id` its instance data block or multi-instance; `args` its parameters |
+| `call` | `name`; `ref_id` the block or instruction called (null for a built-in function such as `INT_TO_WORD` or `ABS`); `instance_ref_id` its instance data block or multi-instance; `args` its parameters; `target` what it runs, resolved (below) |
 | `in`, `out`, `inout` | a parameter: `name` (null when given by position), `args[0]` the operand |
 | `edge_pos`, `edge_neg` | LAD and FBD: the rising or falling edge of `args[0]`, with `args[1]` the edge memory bit it updates |
 | `wire` | LAD and FBD: the value of a pin of another part, `name` `<uid>.<pin>`, set by an earlier statement of the same network |
@@ -248,6 +249,29 @@ first statement of `MotorSCL` (SCL) in `s15_motor` are both
 `#run := (((#start OR #run) AND #stop) AND #interlock)`.
 
 `tools/program_tree.py` prints the trees of a file as SCL-like text.
+
+### Calls
+
+Every `call` expression, and every STL `CALL` statement, has `target`:
+what it runs, found in this file, so an interpreter does not look it up
+by name.
+
+| key | what |
+|---|---|
+| `kind` | `block`: an FB or FC of this PLC, in `blocks`; `instruction`: from a Siemens library (`TON`, `CTU`, `PID_Compact`, `MB_SERVER`), in `instructions`, which the interpreter provides; `builtin`: a function of the language (`INT_TO_WORD`, `ABS`); `unknown`: not found (none in the test projects and samples; listed under `not_simulatable` as "calls ..., which is not in the program") |
+| `block_type`, `name`, `number` | `FB` or `FC`, the name without quotes, the number |
+| `version` | an instruction's library version |
+| `instance` | null for an FC, a built-in function, an instruction without one. Otherwise `kind` `data_block` (`name`, `number`, `instance_of`: an entry of `data_blocks`) or `multi_instance` (`path`: the member of the caller's interface, with the `ref_id`s of array indices; `data_type`: its type, `"ZZFB"` or `TON_TIME`) |
+| `parameters` | the formal parameters: `name`, `section` (`Input`, `Output`, `InOut`, `Return`), `data_type`, `given` (whether the call gives it). From the block's interface; for an instruction from its instance; for the IEC timers and counters, whose instance types have no sections, their documented parameters (`TON`: `IN`, `PT`, `Q`, `ET`; `CTU`: `CU`, `R`, `PV`, `Q`, `CV`; ...). A parameter not given keeps what the instance holds (inputs and outputs of an FB) |
+
+`call_graph` lists the same calls flat, in the order of the blocks and
+their networks: `{"from": "Main", "from_type": "OB", "network": 6, "kind":
+"block", "to": "ZZFB", "to_type": "FB", "instance_kind": "data_block",
+"instance": "ZZFB_DB"}`; a multi-instance as `#inner`. The tests check
+for every call of every test project that the block is in `blocks`, an FB
+has an instance, an instance data block is one of that FB, a
+multi-instance a member of that FB's type, and every parameter given is a
+formal parameter.
 
 ### Values
 

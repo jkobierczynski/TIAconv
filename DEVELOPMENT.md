@@ -304,6 +304,17 @@ format is only fixed when it is released.
    (RUNTIME in LAD).
 4. **Resolved calls** (about 1 day). Target block, instance (data block or
    multi-instance path) and the mapping of parameters to operands.
+   *Done (unreleased):* `target` on every call (block, instruction or
+   built-in; the instance as a data block or a member path; the formal
+   parameters with section, type and whether given) and `call_graph`. All
+   179 calls of the fixtures and samples resolve; the tests check the
+   consistency of every one (`checkCalls`) and pin the call graphs of
+   `s14_code_rewritten` and `s15_motor`. The parameters of the IEC timers
+   and counters come from their documented interface, as their instance
+   types store no sections. Not met yet: an instance passed as a parameter
+   (an FB's InOut of an FB type), calls through `Block_FB`/`DB_ANY`
+   parameters, and instructions without an instance (`RUNTIME`), whose
+   parameters are not known.
 5. **Run-time model** (about 1 day). Startup and cyclic OBs, process image
    partitions of the I/O addresses.
 6. **Reference behaviour** (one TIA Portal session, if the trial has

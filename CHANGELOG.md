@@ -10,6 +10,12 @@
   read from their definitions, and the system types used (TON_TIME, CTU_INT,
   DTL) with their members. The schema is written by
   `tools/program_schema.py`.
+- Program export: calls resolved. Every call in the tree (and every STL
+  CALL) has `target`: the block, instruction or built-in function it runs,
+  its instance (a data block or a member path of the caller), and the
+  formal parameters with section, type and whether the call gives them.
+  `call_graph` lists all calls; a call of a block that is not in the
+  program is listed under `not_simulatable`.
 - Program export: the code as a tree. Every network has `statements`, the
   same form for SCL, LAD, FBD and STL: assignments, calls with their
   parameters, IF, CASE, FOR, WHILE, REPEAT, regions; expressions with every

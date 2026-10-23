@@ -691,7 +691,7 @@ TypeDescriptor describe(const std::string& dataType, int depth) {
 // constants, and the system types met on the way.
 class Types {
 public:
-    Types(const ProgramData& prog, const std::string& plc) : prog_(prog), plc_(plc) {
+    Types(const ProgramData& prog, const std::string& plc) {
         for (const BlockInfo& b : prog.blockList)
             if (b.plc == plc || b.plc.empty()) blocks_.emplace(b.name, &b);
         for (const Constant& c : prog.constants)
@@ -786,8 +786,6 @@ public:
     }
 
 private:
-    const ProgramData& prog_;
-    std::string plc_;
     std::map<std::string, const BlockInfo*> blocks_;
     std::map<std::string, std::string> globals_;
     std::map<std::string, Found> found_;
@@ -1030,7 +1028,266 @@ void element(Json& j, const NetworkElement& e, const ConstantValues& cv) {
     j.endObject();
 }
 
-void exprJson(Json& j, const CodeExpr& e) {
+// What a call runs: the block, instruction or built-in function, its
+// instance, and the formal parameters with whether the call gives them.
+struct CallTarget {
+    std::string kind;  // block, instruction, builtin, unknown
+    std::string blockType, name, version;
+    bool hasNumber = false;
+    int64_t number = 0;
+    // the instance: "data_block", "multi_instance", "unknown"; empty for none
+    std::string instanceKind, instanceName, instanceOf, instanceType;
+    bool instanceHasNumber = false;
+    int64_t instanceNumber = 0;
+    std::vector<CodeReference::Step> path;
+    struct Param {
+        std::string name, section, dataType;
+        bool given = false;
+    };
+    std::vector<Param> params;
+};
+
+struct CallEdge {
+    std::string from, fromType;
+    size_t network = 0;
+    CallTarget target;
+};
+
+class CallResolver {
+public:
+    CallResolver(const ProgramData& prog, const std::string& plc, const InstructionVersions& versions)
+        : versions_(versions) {
+        for (const BlockInfo& b : prog.blockList)
+            if (b.plc == plc) blocks_[b.name] = &b;
+        for (const DataBlock& d : prog.blocks)
+            if (d.plc == plc) dbs_[d.name] = &d;
+    }
+
+    void block(const BlockInfo* caller, const BlockCode* code) {
+        caller_ = caller;
+        refs_.clear();
+        if (code)
+            for (const CodeReference& r : code->references) refs_[r.refId] = &r;
+    }
+    void network(size_t n) { network_ = n; }
+    std::vector<CallEdge>& edges() { return edges_; }
+    std::set<std::string>& missing() { return missing_; }
+
+    const CodeReference* ref(int64_t id) const {
+        auto it = refs_.find(id);
+        return it == refs_.end() ? nullptr : it->second;
+    }
+
+    CallTarget resolve(int64_t calleeRef, int64_t instanceRef, const std::string& name,
+                       const std::vector<CodeExpr>& args) {
+        CallTarget t;
+        const CodeReference* callee = calleeRef ? ref(calleeRef) : nullptr;
+        const std::vector<BlockMember>* formal = nullptr;
+        if (!calleeRef) {
+            t.kind = "builtin";  // INT_TO_WORD, ABS, ...: a function of the language
+            t.name = name;
+        } else if (!callee) {
+            t.kind = "unknown";
+            t.name = name;
+        } else {
+            t.name = !callee->dataType.empty() && callee->kind == "block" ? callee->dataType
+                                                                          : (callee->name.empty() ? unquote(callee->text) : callee->name);
+            auto b = blocks_.find(t.name);
+            const bool library = b != blocks_.end() && (b->second->protection == "system" || b->second->system);
+            if (callee->kind == "instruction" || library) {
+                t.kind = "instruction";
+                auto v = versions_.find(t.name);
+                if (v != versions_.end()) t.version = v->second;
+                if (b != blocks_.end()) t.blockType = b->second->type;
+            } else if (b != blocks_.end() && (b->second->type == "FB" || b->second->type == "FC")) {
+                t.kind = "block";
+                t.blockType = b->second->type;
+                t.hasNumber = b->second->hasNumber;
+                t.number = b->second->number;
+                if (b->second->declarationsRead) formal = &b->second->declarations;
+            } else {
+                t.kind = "unknown";
+                missing_.insert(t.name);
+            }
+        }
+        if (instanceRef) instance(instanceRef, t, formal);
+        if (t.kind == "instruction" && iecParameters(t, formal)) formal = nullptr;
+        for (auto& p : t.params)
+            for (const CodeExpr& a : args)
+                if (sameName(a.name, p.name)) p.given = true;
+        if (formal)
+            for (const BlockMember& m : *formal) {
+                if (m.section != "Input" && m.section != "Output" && m.section != "InOut" && m.section != "Return")
+                    continue;
+                if (m.section == "Return" && (m.dataType == "Void" || m.dataType.empty())) continue;
+                CallTarget::Param p;
+                p.name = m.section == "Return" ? "Ret_Val" : m.name;
+                p.section = m.section;
+                p.dataType = m.dataType;
+                for (const CodeExpr& a : args)
+                    if (sameName(a.name, p.name)) p.given = true;
+                t.params.push_back(std::move(p));
+            }
+        if (caller_) edges_.push_back({caller_->name, caller_->type, network_, t});
+        return t;
+    }
+
+private:
+    const InstructionVersions& versions_;
+    std::map<std::string, const BlockInfo*> blocks_;
+    std::map<std::string, const DataBlock*> dbs_;
+    std::map<int64_t, const CodeReference*> refs_;
+    const BlockInfo* caller_ = nullptr;
+    size_t network_ = 0;
+    std::vector<CallEdge> edges_;
+    std::set<std::string> missing_;
+
+    // The IEC timers and counters: their instances (IEC_TIMER, TON_TIME,
+    // CTU_INT, ...) are system types without sections, so the parameters
+    // are those of the instruction, with the types of the instance.
+    static bool iecParameters(CallTarget& t, const std::vector<BlockMember>* instance) {
+        static const std::map<std::string, std::vector<std::pair<const char*, const char*>>> table = {
+            {"TON", {{"IN", "Input"}, {"PT", "Input"}, {"Q", "Output"}, {"ET", "Output"}}},
+            {"TOF", {{"IN", "Input"}, {"PT", "Input"}, {"Q", "Output"}, {"ET", "Output"}}},
+            {"TP", {{"IN", "Input"}, {"PT", "Input"}, {"Q", "Output"}, {"ET", "Output"}}},
+            {"TONR", {{"IN", "Input"}, {"R", "Input"}, {"PT", "Input"}, {"Q", "Output"}, {"ET", "Output"}}},
+            {"CTU", {{"CU", "Input"}, {"R", "Input"}, {"PV", "Input"}, {"Q", "Output"}, {"CV", "Output"}}},
+            {"CTD", {{"CD", "Input"}, {"LD", "Input"}, {"PV", "Input"}, {"Q", "Output"}, {"CV", "Output"}}},
+            {"CTUD", {{"CU", "Input"}, {"CD", "Input"}, {"R", "Input"}, {"LD", "Input"}, {"PV", "Input"},
+                      {"QU", "Output"}, {"QD", "Output"}, {"CV", "Output"}}},
+        };
+        auto it = table.find(t.name);
+        if (it == table.end()) return false;
+        for (const auto& e : it->second) {
+            CallTarget::Param p;
+            p.name = e.first;
+            p.section = e.second;
+            // Q of CTU and CTD is kept as QU and QD in the instance
+            std::string member = p.name;
+            if (member == "Q" && (t.name == "CTU" || t.name == "CTD")) member = t.name == "CTU" ? "QU" : "QD";
+            if (instance)
+                for (const BlockMember& m : *instance)
+                    if (m.name == member) p.dataType = m.dataType;
+            if (p.dataType.empty() && (p.name == "IN" || p.name == "R" || p.name[0] == 'Q' || p.name == "CU" ||
+                                       p.name == "CD" || p.name == "LD"))
+                p.dataType = "Bool";
+            t.params.push_back(std::move(p));
+        }
+        return true;
+    }
+
+    static std::string unquote(const std::string& s) {
+        return s.size() >= 2 && s.front() == '"' && s.back() == '"' ? s.substr(1, s.size() - 2) : s;
+    }
+    static bool sameName(const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) return false;
+        return true;
+    }
+
+    // The instance: a data block of the program, or a member of the
+    // caller's interface (a multi-instance, also one inside a structure or
+    // an array). An instruction has its formal parameters from there.
+    void instance(int64_t id, CallTarget& t, const std::vector<BlockMember>*& formal) {
+        const CodeReference* r = ref(id);
+        if (!r) {
+            t.instanceKind = "unknown";
+            return;
+        }
+        if (r->kind == "instance data block" || r->kind == "data block") {
+            t.instanceName = r->name.empty() ? unquote(r->text) : r->name;
+            auto d = dbs_.find(t.instanceName);
+            if (d == dbs_.end()) {
+                t.instanceKind = "unknown";
+                return;
+            }
+            t.instanceKind = "data_block";
+            t.instanceHasNumber = d->second->hasNumber;
+            t.instanceNumber = d->second->number;
+            t.instanceOf = d->second->instanceOf;
+            if (!formal) formal = &d->second->members;
+            return;
+        }
+        // #inst, #a.b, #arr[3]
+        t.path = r->path;
+        if (t.path.empty()) {
+            CodeReference::Step s;
+            s.name = r->name.empty() ? r->text : r->name;
+            if (!s.name.empty() && s.name[0] == '#') s.name = s.name.substr(1);
+            t.path.push_back(s);
+        }
+        t.instanceName = t.path.back().name;
+        const std::vector<BlockMember>* level = caller_ && caller_->declarationsRead ? &caller_->declarations : nullptr;
+        const BlockMember* m = nullptr;
+        for (const auto& step : t.path) {
+            m = nullptr;
+            if (level)
+                for (const BlockMember& x : *level)
+                    if (x.name == step.name) m = &x;
+            if (!m) break;
+            level = &m->members;
+        }
+        if (!m) {
+            t.instanceKind = "unknown";
+            return;
+        }
+        t.instanceKind = "multi_instance";
+        t.instanceType = m->dataType;
+        if (!formal) formal = &m->members;
+    }
+};
+
+void targetJson(Json& j, const CallTarget& t) {
+    j.beginObject();
+    j.key("kind").value(t.kind);
+    j.key("block_type").text(t.blockType);
+    j.key("name").text(t.name);
+    j.key("number");
+    if (t.hasNumber) j.value(t.number);
+    else j.null();
+    j.key("version").text(t.version);
+    j.key("instance");
+    if (t.instanceKind.empty()) {
+        j.null();
+    } else {
+        j.beginObject(true);
+        j.key("kind").value(t.instanceKind);
+        j.key("name").text(t.instanceName);
+        j.key("number");
+        if (t.instanceHasNumber) j.value(t.instanceNumber);
+        else j.null();
+        j.key("instance_of").text(t.instanceOf);
+        j.key("data_type").text(t.instanceType);
+        j.key("path");
+        j.beginArray();
+        for (const auto& s : t.path) {
+            j.beginObject(true);
+            j.key("name").value(s.name);
+            j.key("index");
+            j.beginArray();
+            for (int64_t i : s.index) j.value(i);
+            j.endArray();
+            j.endObject();
+        }
+        j.endArray();
+        j.endObject();
+    }
+    j.key("parameters");
+    j.beginArray();
+    for (const auto& p : t.params) {
+        j.beginObject(true);
+        j.key("name").value(p.name);
+        j.key("section").value(p.section);
+        j.key("data_type").text(p.dataType);
+        j.key("given").value(p.given);
+        j.endObject();
+    }
+    j.endArray();
+    j.endObject();
+}
+
+void exprJson(Json& j, const CodeExpr& e, CallResolver* calls) {
     j.beginObject(e.args.empty());
     j.key("op").value(e.op);
     j.key("ref_id");
@@ -1050,49 +1307,61 @@ void exprJson(Json& j, const CodeExpr& e) {
     }
     j.key("args");
     j.beginArray();
-    for (const auto& a : e.args) exprJson(j, a);
+    for (const auto& a : e.args) exprJson(j, a, calls);
     j.endArray();
+    j.key("target");
+    if (e.op == "call" && calls) targetJson(j, calls->resolve(e.refId, e.instanceRefId, e.name, e.args));
+    else j.null();
     j.endObject();
 }
 
-void stmtsJson(Json& j, const std::vector<CodeStmt>& list);
+void stmtsJson(Json& j, const std::vector<CodeStmt>& list, CallResolver* calls);
 
-void stmtJson(Json& j, const CodeStmt& s) {
+void stmtJson(Json& j, const CodeStmt& s, CallResolver* calls) {
     j.beginObject();
     j.key("op").value(s.op);
     j.key("name").text(s.name);
     j.key("exprs");
     j.beginArray();
-    for (const auto& e : s.exprs) exprJson(j, e);
+    for (const auto& e : s.exprs) exprJson(j, e, calls);
     j.endArray();
+    // STL: CALL "Block", "Instance_DB" with its parameters
+    j.key("target");
+    if (s.op == "stl" && s.name == "CALL" && !s.exprs.empty() && s.exprs[0].op == "ref" && calls) {
+        int64_t instance = 0;
+        if (s.exprs.size() > 1 && s.exprs[1].op == "ref") instance = s.exprs[1].refId;
+        targetJson(j, calls->resolve(s.exprs[0].refId, instance, s.exprs[0].name, s.exprs));
+    } else {
+        j.null();
+    }
     j.key("branches");
     j.beginArray();
     for (const auto& b : s.branches) {
         j.beginObject();
         j.key("exprs");
         j.beginArray();
-        for (const auto& e : b.exprs) exprJson(j, e);
+        for (const auto& e : b.exprs) exprJson(j, e, calls);
         j.endArray();
         j.key("body");
-        stmtsJson(j, b.body);
+        stmtsJson(j, b.body, calls);
         j.endObject();
     }
     j.endArray();
     j.key("body");
-    stmtsJson(j, s.body);
+    stmtsJson(j, s.body, calls);
     j.key("else");
-    if (s.hasElse) stmtsJson(j, s.elseBody);
+    if (s.hasElse) stmtsJson(j, s.elseBody, calls);
     else j.null();
     j.endObject();
 }
 
-void stmtsJson(Json& j, const std::vector<CodeStmt>& list) {
+void stmtsJson(Json& j, const std::vector<CodeStmt>& list, CallResolver* calls) {
     j.beginArray();
-    for (const auto& s : list) stmtJson(j, s);
+    for (const auto& s : list) stmtJson(j, s, calls);
     j.endArray();
 }
 
-void blockCode(Json& j, const BlockCode& c, const ConstantValues& cv) {
+void blockCode(Json& j, const BlockCode& c, const ConstantValues& cv, CallResolver& calls) {
     j.beginObject();
     j.key("networks");
     j.beginArray();
@@ -1113,7 +1382,8 @@ void blockCode(Json& j, const BlockCode& c, const ConstantValues& cv) {
         for (const auto& e : n.elements) element(j, e, cv);
         j.endArray();
         j.key("statements");
-        if (n.treeRead) stmtsJson(j, n.statements);
+        calls.network(n.number);
+        if (n.treeRead) stmtsJson(j, n.statements, &calls);
         else j.null();
         j.key("tree_notes").strings(n.treeNotes);
         j.key("notes").strings(n.notes);
@@ -1339,6 +1609,7 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
 
     std::map<std::string, std::string> used;  // instructions: name -> version
     const InstructionVersions versions = instructionVersionsOf(prog, plc);
+    CallResolver calls(prog, plc, versions);
     j.key("blocks");
     j.beginArray();
     for (const BlockInfo& b : prog.blockList) {
@@ -1374,7 +1645,11 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
             if (b.declarationsRead)
                 for (const BlockMember& m : b.declarations)
                     if (m.section == "Constant") cv.locals[m.name] = &m;
-            blockCode(j, *c, cv);
+            calls.block(&b, c);
+            calls.missing().clear();
+            blockCode(j, *c, cv, calls);
+            for (const std::string& m : calls.missing())
+                reasons.push_back({b.name, b.type, "calls \"" + m + "\", which is not in the program"});
         }
         else j.null();
         j.endObject();
@@ -1395,6 +1670,28 @@ void writeProgramJson(std::ostream& out, const std::string& plc, const Inventory
         j.beginObject(true);
         j.key("name").value(u.first);
         j.key("version").text(u.second);
+        j.endObject();
+    }
+    j.endArray();
+
+    // who calls what, with which instance
+    j.key("call_graph");
+    j.beginArray();
+    for (const CallEdge& e : calls.edges()) {
+        j.beginObject(true);
+        j.key("from").value(e.from);
+        j.key("from_type").value(e.fromType);
+        j.key("network").value(static_cast<uint64_t>(e.network));
+        j.key("kind").value(e.target.kind);
+        j.key("to").text(e.target.name);
+        j.key("to_type").text(e.target.blockType);
+        j.key("instance_kind").text(e.target.instanceKind);
+        std::string inst = e.target.instanceName;
+        if (e.target.instanceKind == "multi_instance") {
+            inst.clear();
+            for (const auto& s : e.target.path) inst += (inst.empty() ? "#" : ".") + s.name;
+        }
+        j.key("instance").text(inst);
         j.endObject();
     }
     j.endArray();

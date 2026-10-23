@@ -1194,6 +1194,67 @@ std::vector<std::string> treeOf(const jsontest::Value& doc, const std::string& b
     return t.lines;
 }
 
+// The calls below `v`: every one resolved. A block is in `blocks`, an FB
+// has an instance, an instance data block is one of that FB, a
+// multi-instance a member of its type, and every parameter given is one of
+// the formal parameters. Returns the number of calls.
+size_t checkCalls(const jsontest::Value& v, const jsontest::Value& doc, std::vector<std::string>& bad) {
+    size_t n = 0;
+    if (v.type == jsontest::Value::Array) {
+        for (const auto& x : v.items) n += checkCalls(x, doc, bad);
+        return n;
+    }
+    if (v.type != jsontest::Value::Object) return 0;
+    const jsontest::Value* target = v.get("target");
+    if (target && target->type == jsontest::Value::Object) {
+        ++n;
+        const jsontest::Value& t = *target;
+        const std::string& kind = t["kind"].s;
+        const std::string what = kind + " " + t["name"].s;
+        if (kind == "unknown") bad.push_back(what + ": not resolved");
+        if (kind == "block") {
+            bool found = false;
+            for (const auto& b : doc["blocks"].items)
+                found = found || (b["name"].s == t["name"].s && b["type"].s == t["block_type"].s);
+            if (!found) bad.push_back(what + ": not in blocks");
+        }
+        const jsontest::Value& inst = t["instance"];
+        if (kind == "block" && t["block_type"].s == "FB" && inst.type == jsontest::Value::Null)
+            bad.push_back(what + ": an FB without an instance");
+        if (inst.type == jsontest::Value::Object) {
+            if (inst["kind"].s == "unknown") bad.push_back(what + ": instance not resolved");
+            if (inst["kind"].s == "data_block") {
+                bool found = false;
+                for (const auto& d : doc["data_blocks"].items) found = found || d["name"].s == inst["name"].s;
+                if (!found) bad.push_back(what + ": instance not in data_blocks");
+                if (kind == "block" && inst["instance_of"].s != t["name"].s)
+                    bad.push_back(what + ": instance of " + inst["instance_of"].s);
+            }
+            if (inst["kind"].s == "multi_instance" && kind == "block" && inst["data_type"].s != "\"" + t["name"].s + "\"")
+                bad.push_back(what + ": multi-instance of type " + inst["data_type"].s);
+        }
+        if (!t["parameters"].items.empty() && v.get("args"))
+            for (const auto& a : v["args"].items) {
+                if (a["name"].type == jsontest::Value::Null || a["name"].s == "ENO") continue;
+                bool formal = false;
+                for (const auto& p : t["parameters"].items) formal = formal || p["name"].s == a["name"].s;
+                if (!formal) bad.push_back(what + ": parameter " + a["name"].s + " not a formal parameter");
+            }
+    }
+    for (const auto& m : v.members)
+        if (m.first != "target") n += checkCalls(m.second, doc, bad);
+    return n;
+}
+
+// The call graph as "from/network -> kind to [instance]".
+std::vector<std::string> callGraph(const jsontest::Value& doc) {
+    std::vector<std::string> out;
+    for (const auto& e : doc["call_graph"].items)
+        out.push_back(e["from"].s + "/" + std::to_string(e["network"].i()) + " -> " + e["kind"].s + " " + e["to"].s +
+                      (e["instance"].type == jsontest::Value::Null ? "" : " [" + e["instance"].s + "]"));
+    return out;
+}
+
 // The tree of `block` as expected; prints what it is when not.
 bool sameTree(const jsontest::Value& doc, const std::string& block, const std::vector<std::string>& expected) {
     const std::vector<std::string> t = treeOf(doc, block);
@@ -1283,7 +1344,7 @@ void testProgramJson() {
     for (const auto& d : std::filesystem::directory_iterator(TIACONV_FIXTURES))
         if (d.is_directory()) fixtures.push_back(d.path().filename().string());
     std::sort(fixtures.begin(), fixtures.end());
-    size_t files = 0, operandsSeen = 0, typesSeen = 0, valuesSeen = 0, treeNodes = 0;
+    size_t files = 0, operandsSeen = 0, typesSeen = 0, valuesSeen = 0, treeNodes = 0, callsSeen = 0;
     for (const std::string& name : fixtures) {
         const ProgramExport e = loadExport(name);
         for (const std::string& plc : tia::programPlcs(e.prog)) {
@@ -1389,6 +1450,14 @@ void testProgramJson() {
             }
             CHECK(doc["organization_blocks"].items.size() == obs && doc["blocks"].items.size() == blocks);
             CHECK(operands == docOperands);
+            // calls resolved, and one entry of the call graph for each
+            std::vector<std::string> badCalls;
+            size_t callsHere = 0;
+            for (const auto& b : doc["blocks"].items)
+                if (b["code"].type == jsontest::Value::Object) callsHere += checkCalls(b["code"]["networks"], doc, badCalls);
+            CHECK(badCalls.empty() && callsHere == doc["call_graph"].items.size());
+            for (const auto& bc : badCalls) std::fprintf(stderr, "    %s\n", bc.c_str());
+            callsSeen += callsHere;
             operandsSeen += docOperands;
         }
     }
@@ -1398,6 +1467,7 @@ void testProgramJson() {
     CHECK(typesSeen >= 600);
     CHECK(valuesSeen >= 1400);
     CHECK(treeNodes >= 380);
+    CHECK(callsSeen >= 25);
 
     // what the TIA Portal sessions set
     {
@@ -1533,6 +1603,10 @@ void testCodeTree() {
         const std::vector<std::string> lad = treeOf(doc, "MotorLAD"), scl = treeOf(doc, "MotorSCL");
         CHECK(sameTree(doc, "MotorLAD", std::vector<std::string>{"#1", "#run := (((#start OR #run) AND #stop) AND #interlock);", "#2", "#delay/TON(IN := #run, PT := T#5S, Q => <22.Q>);", "#motor := <22.Q>;", "#3", "IF P(#run, #runEdge) THEN", "  \"MotorData\".starts := (\"MotorData\".starts + 1);", "END_IF;", "#4"}));
         CHECK(sameTree(doc, "MotorSCL", std::vector<std::string>{"#1", "#run := (((#start OR #run) AND #stop) AND #interlock);", "#delay/TON(IN := #run, PT := T#5S);", "#motor := #delay.Q;", "IF (#run AND NOT #runOld) THEN", "  \"MotorData\".starts := (\"MotorData\".starts + 1);", "END_IF;", "#runOld := #run;"}));
+        CHECK(callGraph(doc) == (std::vector<std::string>{"Main/1 -> block MotorLAD [MotorLAD_DB]",
+                                                           "Main/2 -> block MotorSCL [MotorSCL_DB]",
+                                                           "MotorLAD/2 -> instruction TON [#delay]",
+                                                           "MotorSCL/1 -> instruction TON [#delay]"}));
         // the seal-in: one network of LAD, one statement of SCL, one tree
         CHECK(lad.size() > 1 && scl.size() > 1 && lad[1] == scl[1]);
         CHECK(sameTree(doc, "Main", {"#1", "\"MotorLAD_DB\"/\"MotorLAD\"(start := \"StartPB\", stop := \"StopPB\", interlock := \"Guard\", motor => \"MotorLadOut\");", "#2", "\"MotorSCL_DB\"/\"MotorSCL\"(start := \"StartPB\", stop := \"StopPB\", interlock := \"Guard\", motor => \"MotorSclOut\");", "#3"}));
@@ -1541,6 +1615,18 @@ void testCodeTree() {
         const ProgramExport e = loadExport("s14_code_rewritten");
         current = "s14_code_rewritten code tree";
         const jsontest::Value doc = exportOf(e, "ZZPLC", "s14_code_rewritten");
+        // every call with what it runs and its instance: data blocks,
+        // multi-instances of an FB and of instructions, STL CALLs; the
+        // protected ZZSCL is a block too, listed under not_simulatable
+        CHECK(callGraph(doc) == (std::vector<std::string>{
+                                    "Main/5 -> instruction TON [IEC_Timer_0_DB]", "Main/6 -> block ZZFB [ZZFB_DB]",
+                                    "Main/7 -> block ZZFBD", "Main/7 -> block ZZSCL", "Main/7 -> block ZZSTL",
+                                    "Main/8 -> block ZZOUTER [ZZOUTER_DB]", "Main/9 -> block ZZSCL2",
+                                    "Main/9 -> block ZZSTL2", "Main/9 -> block ZZLAD2 [ZZLAD2_DB]",
+                                    "Main/10 -> block ZZSTD [ZZSTD_DB]", "ZZOUTER/1 -> block ZZFB [#inner]",
+                                    "ZZLAD2/4 -> instruction CTU [#IEC_Counter_0_Instance]",
+                                    "ZZLAD2/5 -> instruction TON [#IEC_Timer_0_Instance]", "ZZSTL2/2 -> block ZZFBD",
+                                    "ZZSTL2/3 -> block ZZFB [ZZFB_DB]"}));
         CHECK(sameTree(doc, "Main", {"#1", "\"ZZOUT\" := (\"ZZALPHA\" AND NOT \"ZZC\");", "#2", "\"ZZOUT\" := \"ZZC\";", "#3", "IF (\"ZZN1\" > 100) THEN", "  \"ZZDATA\".speed := \"ZZN2\";", "END_IF;", "#4", "\"ZZN3\" := (\"ZZN1\" + 5);", "#5", "\"IEC_Timer_0_DB\"/TON(IN := \"ZZALPHA\", PT := T#5S, Q => <25.Q>);", "\"ZZC\" := <25.Q>;", "#6", "\"ZZFB_DB\"/\"ZZFB\"(in1 := \"ZZALPHA\", io1 :=: \"ZZN2\", out1 => \"ZZC\");", "#7", "\"ZZFBD\"(ENO => <23.eno>);", "IF <23.eno> THEN", "  \"ZZSCL\"(ENO => <25.eno>);", "ELSE", "  <25.eno> := FALSE;", "END_IF;", "IF <25.eno> THEN", "  \"ZZSTL\"();", "END_IF;", "#8", "\"ZZOUTER_DB\"/\"ZZOUTER\"();", "#9", "\"ZZSCL2\"(ENO => <23.eno>);", "IF <23.eno> THEN", "  \"ZZSTL2\"(ENO => <25.eno>);", "ELSE", "  <25.eno> := FALSE;", "END_IF;", "IF <25.eno> THEN", "  \"ZZLAD2_DB\"/\"ZZLAD2\"();", "END_IF;", "#10", "\"ZZSTD_DB\"/\"ZZSTD\"();", "#11", "\"ZZN3\" := \"ZZK\";", "#12"}));
         CHECK(sameTree(doc, "ZZLAD2", {"#1", "\"ZZOUT\" := NOT \"ZZALPHA\";", "#2", "\"ZZC\" := P(\"ZZB\", #edgeP);", "#3", "\"ZZC\" := N(\"ZZB\", #memN);", "#4", "#IEC_Counter_0_Instance/CTU(CU := \"ZZALPHA\", R := \"ZZB\", PV := 10, CV => \"ZZN3\", Q => <22.Q>);", "\"ZZOUT\" := <22.Q>;", "#5", "#IEC_Timer_0_Instance/TON(IN := \"ZZALPHA\", PT := T#2S, Q => <22.Q>);", "\"ZZOUT\" := <22.Q>;", "#6"}));
         CHECK(sameTree(doc, "ZZFBD", {"#1", "\"ZZDATA\".run := (\"ZZALPHA\" AND NOT \"ZZB\");", "#2"}));

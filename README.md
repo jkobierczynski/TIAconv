@@ -848,6 +848,8 @@ JSON Schema [docs/program.schema.json](docs/program.schema.json)):
   STL), as the LAD/FBD graph with each operand linked to what it names,
   and as one tree for all languages, statements and expressions with every
   operand as a reference, ready for an interpreter;
+- every call resolved: the block or instruction it runs, its instance and
+  its parameters, and the call graph;
 - the instructions used, with their library versions;
 - what cannot be simulated from the file (`not_simulatable`): know-how
   protected blocks, which have neither interface nor code in it,
