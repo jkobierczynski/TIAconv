@@ -465,6 +465,57 @@ defaults. TIA Portal V21, one action per save:
 of the interface of `MotorSCL` with every column (Setpoint not ticked for
 `delay`), and of the compile result.
 
+`s16_stl` is a new project for the STL of the simulator: absolute and
+indirect addressing, the address registers, local data by address, S5
+timers and counters in STL, LAD and FBD, and one block typed with the German
+mnemonics. One S7-1500 CPU, `S16PLC` (CPU 1511-1 PN, 6ES7 511-1AL03-0AB0,
+firmware V4.1), security wizard at its defaults; the STL blocks and the DB
+without optimized access. TIA Portal V21. `s16_stl/BUILD.md` is the plan it
+was built from; the saves as they really went:
+
+| save | action in TIA Portal V21 |
+|---|---|
+| 3 | the CPU added and named `S16PLC` |
+| 4 | Default tag table: 18 tags, among them `RunOn` Timer %T7 and `Parts` Counter %C3 |
+| 5 | global DB `S16Data`, number 5, standard access: `b0`, `b1` Bool, `by` Byte, `w` Int, `d` DInt, `r` Real, `s` String[4], `arr` Array[1..3] of Int |
+| 6 | FC `StlLogic`, STL, three networks; the M addresses typed became tags `Tag_1` … `Tag_5` |
+| 7 | FC `StlAbs`, STL, three networks (`Tag_6` … `Tag_11`) |
+| 8 | FC `StlS5`, STL, the S5 timer and counter networks (`Tag_12` … `Tag_17`); the MCR network refused and removed |
+| 9 | FC `StlGerman`, typed with the German mnemonics (`Tag_18` … `Tag_21`) |
+| 10 | FB `LadS5`, LAD, networks 1–6 |
+| 11 | `LadS5` finished, networks 7–9; a single instance `IEC_Timer_0_DB` appeared |
+| 12 | FC `FbdS5`, FBD, one network |
+| 13 | Main calls the six blocks; instance DB `LadS5_DB` |
+| 14 | compiled with errors; network 3 of `StlAbs` was symbolized by the compile |
+| 15 | an `OPN "S16Data"` added where the compiler asked for one; compiled: no errors, three warnings; `IEC_Timer_0_DB` removed by the compile |
+
+What the project shows:
+
+- An address typed in M, T, C or Q without a tag gets a tag `Tag_n`. A
+  fully qualified `%DB5.DBW2` is shown and stored as `"S16Data".w`; `%DBX0.1`,
+  `%DBW2` with an open DB stay absolute.
+- The register-indirect address is stored as `DBW [AR1,P#2.0 ]`, and the
+  memory-indirect `DBW[%MD44]` as `DBW ["Tag_7" ]` once MD44 has its tag.
+- Absolute local accesses get the warning "The address is not occupied by
+  a tag"; the compile symbolized `%LW0` to `#a` and `%LW4` to `#c`; only
+  `%L2.1` stays absolute.
+- MCR is refused on the S7-1500: "The instruction is not supported by the
+  current CPU".
+- The S7-1500 compiler wants a data block opened in the same network, also
+  after a fully qualified access: "The instruction accesses the DB or the
+  DI register. However, you have not opened a data block in this register."
+- The mnemonic setting is not stored in the project; the code is stored
+  without mnemonics, but a tag address keeps what was typed (`%A1.0`,
+  `%Z4`), which tiaconv writes as `%Q1.0` and `%C4`.
+- The S5 boxes are stored as `Sd` (S_ODT), `Cud` (S_CUD) and `Sp`
+  (S_PULSE), with the pins `timer`, `s`, `tv`, `r`, `q`, `rt`, `rtbcd` and
+  `counter`, `cu`, `cd`, `s`, `pv`, `r`, `cv`, `q`; the coils as `SdCoil`,
+  `CuCoil` and `ScCoil` with `in`, `operand` and `value`.
+- The offsets of `S16Data` are 0.0, 0.1, 1.0, 2.0, 4.0, 8.0, 12.0 and 18.0.
+
+`s16_stl/exports/*.awl` are the sources TIA Portal generated for the four
+STL blocks after save 15; tiaconv's sources are the same, byte for byte.
+
 All passwords in these projects are throwaway test passwords.
 
 `tests/fixtures_test.cpp` checks these facts.

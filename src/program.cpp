@@ -15,6 +15,28 @@
 namespace tia {
 namespace {
 
+// A tag's address is stored as it was typed, in the mnemonics set at the
+// time: %A1.0, %EW4, %Z4 in German. TIA Portal shows it in the mnemonics
+// set now; tiaconv writes the international ones (%Q1.0, %IW4, %C4).
+std::string internationalAddress(const std::string& a) {
+    if (a.size() < 2 || a[0] != '%') return a;
+    static const std::pair<const char*, const char*> german[] = {
+        {"PE", "PI"}, {"PA", "PQ"}, {"E", "I"}, {"A", "Q"}, {"Z", "C"}};
+    for (const auto& g : german) {
+        const size_t n = std::char_traits<char>::length(g.first);
+        if (a.compare(1, n, g.first) != 0) continue;
+        // the area must be followed by a size or a number: %AW2, %A1.0, %Z4
+        const char next = a.size() > 1 + n ? a[1 + n] : '\0';
+        if (!(next == 'B' || next == 'W' || next == 'D' || next == 'X' || (next >= '0' && next <= '9'))) continue;
+        return "%" + std::string(g.second) + a.substr(1 + n);
+    }
+    return a;
+}
+
+}  // namespace
+
+namespace {
+
 using Key = std::pair<uint32_t, uint64_t>;
 
 constexpr int kMaxDepth = 16;
@@ -863,7 +885,7 @@ private:
         Tag t;
         t.id = o.id;
         t.name = attrStr(o, "ICoreAttributes", "Name");
-        t.address = attrStr(o, "ITagAddress", "LogicalAddress");
+        t.address = internationalAddress(attrStr(o, "ITagAddress", "LogicalAddress"));
         t.comment = attrText(o, "ICoreAttributes", "Comment");
         t.dataType = attrStr(o, "IStructureItem", "DisplayTypeName");
         if (t.dataType.empty()) t.dataType = attrStr(o, "IStructureItem", "DataTypeRefName");

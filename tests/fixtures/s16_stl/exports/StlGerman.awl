@@ -1,0 +1,19 @@
+﻿FUNCTION "StlGerman" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE = (SE in German is the on delay; A 1.0 is the output Q1.0)
+      A "Start";
+      L S5T#2S;
+      SD "Tag_18";
+      A "Tag_18";
+      = "Tag_19";
+      A "Level";
+      CU "Tag_20";
+      L "Tag_20";
+      T "Tag_21";
+
+END_FUNCTION
+

@@ -1685,7 +1685,7 @@ void testCodeTree() {
         CHECK(sameTree(doc, "ZZOUTER", {"#1", "#inner/\"ZZFB\"(in1 := \"ZZB\", io1 :=: \"ZZN1\", out1 => \"ZZOUT\");", "#2"}));
         CHECK(sameTree(doc, "ZZSCL2", {"#1", "WHILE (\"ZZN1\" < 10) DO", "  \"ZZN1\" := (\"ZZN1\" + 1);", "END_WHILE;", "REPEAT", "  \"ZZN2\" := (\"ZZN2\" + 1);", "UNTIL (\"ZZN2\" > 5) END_REPEAT;", "CASE \"ZZN3\" OF", "  1..5:", "    \"ZZOUT\" := TRUE;", "  6, 8:", "    \"ZZOUT\" := FALSE;", "  ELSE", "    \"ZZC\" := TRUE;", "END_CASE;"}));
         CHECK(sameTree(doc, "ZZSTL", {"#1", "A \"ZZALPHA\"", "AN \"ZZB\"", "= \"ZZOUT\"", "#2", "L \"ZZN1\"", "L 5", "+I", "T \"ZZN3\""}));
-        CHECK(sameTree(doc, "ZZSTL2", {"#1", "A \"ZZALPHA\"", "JC M001", "L 1", "T \"ZZN1\"", "M001:", "NOP 0", "#2", "CALL \"ZZFBD\"", "#3", "CALL \"ZZFB\", \"ZZFB_DB\", in1 := \"ZZB\", out1 => \"ZZC\", io1 :=: \"ZZN2\""}));
+        CHECK(sameTree(doc, "ZZSTL2", {"#1", "A \"ZZALPHA\"", "JC M001", "L 1", "T \"ZZN1\"", "M001:", "NOP", "#2", "CALL \"ZZFBD\"", "#3", "CALL \"ZZFB\", \"ZZFB_DB\", in1 := \"ZZB\", out1 => \"ZZC\", io1 :=: \"ZZN2\""}));
         // the operands of STL as the editor shows them
         {
             std::vector<std::string> texts;
@@ -1785,6 +1785,82 @@ void testMotor() {
         if (b.name == "MotorSCL")
             for (const auto& m : b.declarations)
                 if (m.name == "delay") CHECK(m.flags == 527 && !tia::memberAccess(m).setpoint);
+}
+
+// s16_stl: STL with absolute and indirect addressing, local data by address,
+// S5 timers and counters in STL, LAD and FBD; one block typed with the
+// German mnemonics (tests/fixtures/s16_stl/BUILD.md and README.md).
+void testStl16() {
+    const tia::History h = history("s16_stl");
+    CHECK(h.saves.size() == 15);
+    // the German mnemonic is a setting of TIA Portal, not of the project: the
+    // tags typed then keep their address as typed (%A1.0, %Z4), tiaconv
+    // writes the international one
+    std::multiset<std::string> tags;
+    for (const auto& s : h.saves)
+        for (const auto& c : s.changes) {
+            const std::string t = stepText(c);
+            if (t.find("|tag|S16PLC / Default tag table / Tag_19|") != std::string::npos ||
+                t.find("|tag|S16PLC / Default tag table / Tag_20|") != std::string::npos)
+                tags.insert(std::to_string(s.number) + "|" + t);
+        }
+    CHECK(same(tags, std::multiset<std::string>{"9|+|tag|S16PLC / Default tag table / Tag_19|Bool, %Q1.0",
+                                                 "9|+|tag|S16PLC / Default tag table / Tag_20|Counter, %C4"}));
+
+    // the STL blocks as TIA Portal generated their sources after save 15
+    const LoadedCode code = loadCode("s16_stl");
+    for (const char* b : {"StlLogic", "StlAbs", "StlS5", "StlGerman"})
+        CHECK(sourceText(code, b, &code.prog) == fixtureFile(std::string("s16_stl/exports/") + b + ".awl"));
+
+    const ProgramExport e = loadExport("s16_stl");
+    current = "s16_stl program export";
+    const jsontest::Value doc = exportOf(e, "S16PLC", "s16_stl");
+    // the operands of StlAbs as the editor shows them; an access by address
+    // is of the kind "address", P##c a "pointer"
+    std::vector<std::string> texts, kinds;
+    if (const jsontest::Value* b = named(doc["blocks"], "StlAbs")) {
+        std::map<int64_t, std::string> kindOf;
+        for (const auto& r : (*b)["code"]["references"].items) kindOf[r["ref_id"].i()] = r["kind"].s;
+        for (const auto& n : (*b)["code"]["networks"].items)
+            for (const auto& st : n["statements"].items) {
+                if (st["op"].s != "stl" || st["text"].s.empty()) continue;
+                texts.push_back(st["name"].s + " " + st["text"].s);
+                for (const auto& x : st["exprs"].items)
+                    if (x["op"].s == "ref" && (kindOf[x["ref_id"].i()] == "address" || kindOf[x["ref_id"].i()] == "pointer"))
+                        kinds.push_back(x["name"].s + "|" + kindOf[x["ref_id"].i()]);
+            }
+    }
+    CHECK(texts == std::vector<std::string>({
+        "OPN \"S16Data\"", "= %DBX0.1", "L 7", "T %DBB1", "L 1234", "T %DBW2", "L \"S16Data\".w", "+ 1",
+        "T \"S16Data\".arr[1]", "OPN \"S16Data\"", "L 2.5", "T %DBD8", "L DBNO", "T \"Tag_6\"",
+        "OPN \"S16Data\"", "L P#20.0", "L 42", "T DBW [AR1,P#2.0 ]", "L P#M40.0", "L 99", "T W [AR2,P#0.0 ]",
+        "L 16", "T \"Tag_7\"", "L DBW [\"Tag_7\" ]", "T \"Tag_8\"",
+        "L 5", "T #a", "L #a", "+ 1", "T #c", "= %L2.1", "A %L2.1", "= \"Tag_9\"", "L 42", "T #x", "L #x",
+        "T \"Tag_10\"", "L P##c", "L 77", "T W [AR1,P#0.0 ]", "L #c", "T \"Tag_11\""}));
+    CHECK(kinds == std::vector<std::string>({"%DBX0.1|address", "%DBB1|address", "%DBW2|address", "%DBD8|address",
+                                              "%L2.1|address", "%L2.1|address", "P##c|pointer"}));
+    // the S5 timers and counters of LAD and FBD as the project stores them
+    CHECK(sameTree(doc, "LadS5", {
+        "#1", "Sd(r := \"Rst\", s := \"Start\", timer := \"Tag_22\", tv := S5T#3S, q => <27.q>, rt => \"Tag_23\", rtbcd => \"Tag_24\");",
+        "\"Out8\" := <27.q>;",
+        "#2", "SdCoil(in := \"Level\", value := S5T#500ms, operand := \"Tag_25\");",
+        "#3", "\"Tag_26\" := \"Tag_25\";",
+        "#4", "IF \"Rst\" THEN", "  \"Tag_25\" := FALSE;", "END_IF;",
+        "#5", "Cud(cd := \"Down\", counter := \"Tag_27\", cu := \"Up\", pv := C#7, r := \"Rst\", s := \"SetC\", cv => \"Tag_29\", q => <23.q>);",
+        "\"Tag_28\" := <23.q>;",
+        "#6", "CuCoil(in := \"Up\", operand := \"Tag_30\");",
+        "#7", "ScCoil(in := \"SetC\", value := C#3, operand := \"Tag_30\");",
+        "#8", "\"Tag_31\" := \"Tag_30\";", "#9"}));
+    CHECK(sameTree(doc, "FbdS5", {"#1", "Sp(s := \"Start\", timer := \"Tag_32\", tv := S5T#1s, q => <22.q>);",
+                                  "\"Tag_33\" := <22.q>;", "#2"}));
+    // the timer and counter tags; the DB with standard access and its offsets
+    const jsontest::Value* timer = named(doc["tags"], "RunOn");
+    const jsontest::Value* counter = named(doc["tags"], "Parts");
+    CHECK(timer && (*timer)["address"].s == "%T7" && counter && (*counter)["address"].s == "%C3");
+    std::vector<std::string> offsets;
+    if (const jsontest::Value* db = named(doc["data_blocks"], "S16Data"))
+        for (const auto& m : (*db)["members"].items) offsets.push_back(m["name"].s + "@" + std::to_string(m["offset_bits"].i()));
+    CHECK(offsets == std::vector<std::string>({"b0@0", "b1@1", "by@8", "w@16", "d@32", "r@64", "s@96", "arr@144"}));
 }
 
 // The block sources against the ones TIA Portal generated for these blocks.
@@ -3327,6 +3403,7 @@ int main() {
     testCode();
     testSources();
     testMotor();
+    testStl16();
     testOperands();
     testProgramJson();
     testCodeTree();

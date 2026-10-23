@@ -534,6 +534,34 @@ ParsedValue parseValue(const std::string& text, const TypeDescriptor* type) {
                 }
                 return p;
             }
+        } else if (prefix == "C") {
+            // a count of an S5 counter, 0 to 999: C#5
+            if (wholeOf(t, p) && p.integer >= 0 && p.integer <= 999) return p;
+        } else if (prefix == "P") {
+            // a pointer: P#2.0 (bit address 2*8+0), P#M40.0 (with the area in
+            // the high byte: 16#83000140)
+            static const std::pair<const char*, int64_t> areas[] = {
+                {"PI", 0x80}, {"PE", 0x80}, {"PQ", 0x80}, {"PA", 0x80}, {"P", 0x80}, {"I", 0x81}, {"E", 0x81},
+                {"Q", 0x82}, {"A", 0x82}, {"M", 0x83}, {"DBX", 0x84}, {"DIX", 0x85}, {"L", 0x86}, {"V", 0x87}};
+            std::string rest = upper(t);
+            int64_t area = 0;
+            for (const auto& a : areas) {
+                const size_t n = std::char_traits<char>::length(a.first);
+                if (rest.compare(0, n, a.first) == 0 && rest.size() > n &&
+                    std::isdigit(static_cast<unsigned char>(rest[n]))) {
+                    area = a.second;
+                    rest = rest.substr(n);
+                    break;
+                }
+            }
+            const size_t dot = rest.find('.');
+            ParsedValue byte, bit;
+            if (dot != std::string::npos && wholeOf(rest.substr(0, dot), byte) && wholeOf(rest.substr(dot + 1), bit) &&
+                byte.integer >= 0 && byte.integer <= 65535 && bit.integer >= 0 && bit.integer <= 7) {
+                p.kind = "int";
+                p.integer = (area << 24) | (byte.integer << 3) | bit.integer;
+                return p;
+            }
         } else if (prefix == "BOOL") {
             const std::string u = upper(t);
             if (u == "TRUE" || u == "1" || u == "FALSE" || u == "0") {
@@ -1428,6 +1456,19 @@ void blockCode(Json& j, const BlockCode& c, const ConstantValues& cv, CallResolv
         }
         j.endArray();
         j.key("modifier").text(r.modifier == "undef" || r.modifier == "None" ? std::string() : r.modifier);
+        // an access by address: the area, the bit offset in it (a timer's or
+        // counter's number) and the size; a pointer P##x: the entry it names
+        j.key("address");
+        if (r.kind == "address") {
+            j.beginObject(true);
+            j.key("area").value(referenceArea(r));
+            j.key("bit_offset").value(r.bitOffset);
+            j.key("bits").value(r.bits);
+            j.endObject();
+        } else j.null();
+        j.key("points_to");
+        if (r.kind == "pointer" && r.pointsTo) j.value(r.pointsTo);
+        else j.null();
         j.endObject();
     }
     j.endArray();

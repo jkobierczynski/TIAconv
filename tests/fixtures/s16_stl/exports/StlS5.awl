@@ -1,0 +1,42 @@
+﻿FUNCTION "StlS5" : Void
+{ S7_Optimized_Access := 'FALSE' }
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE = S5 timers, by address and by tag:
+      A "Start";
+      L S5T#2S;
+      SD "Tag_12";
+      A "Tag_12";
+      = "Out4";
+      L "Tag_12";
+      T "Tag_13";
+      LC "Tag_12";
+      T "Tag_14";
+      A "Stop";
+      L S5T#1S;
+      SF "RunOn";
+      A "RunOn";
+      = "Out5";
+      A "Rst";
+      R "Tag_12";
+NETWORK
+TITLE = an S5 counter by tag:
+      A "Up";
+      CU "Parts";
+      A "Down";
+      CD "Parts";
+      A "SetC";
+      L C#5;
+      S "Parts";
+      A "Rst";
+      R "Parts";
+      A "Parts";
+      = "Out6";
+      L "Parts";
+      T "Tag_15";
+      LC "Parts";
+      T "Tag_16";
+END_FUNCTION
+

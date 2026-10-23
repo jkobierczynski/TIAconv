@@ -155,10 +155,53 @@ std::string pathText(const std::map<int64_t, size_t>& index, const std::vector<C
 }
 
 // How the entry is written in code.
+// An access by address as the editor writes it: %DBW2, %M20.0, %L2.1, %T1.
+std::string addressArea(const CodeReference& r) {
+    if (r.bitOffset < 0) return std::string();
+    static const std::pair<const char*, const char*> areas[] = {
+        {"Input", "I"}, {"Output", "Q"}, {"Memory", "M"}, {"Data", "DB"}, {"Instance", "DI"}, {"Local", "L"},
+        {"Timer", "T"}, {"Counter", "C"}};
+    std::string a;
+    if (r.kindStored == "InterfaceAccess") a = "L";
+    for (const auto& x : areas)
+        if (r.area == x.first) a = x.second;
+    return a;
+}
+
+std::string addressText(const CodeReference& r) {
+    if (r.bitOffset < 0) return std::string();
+    static const std::pair<const char*, const char*> areas[] = {
+        {"Input", "I"}, {"Output", "Q"}, {"Memory", "M"}, {"Data", "DB"}, {"Instance", "DI"}, {"Local", "L"},
+        {"Timer", "T"}, {"Counter", "C"}};
+    std::string a;
+    if (r.kindStored == "InterfaceAccess") a = "L";
+    for (const auto& x : areas)
+        if (r.area == x.first) a = x.second;
+    if (a.empty()) return std::string();
+    if (a == "T" || a == "C") return "%" + a + std::to_string(r.bitOffset);
+    const int64_t byte = r.bitOffset / 8, bit = r.bitOffset % 8;
+    const bool db = a == "DB" || a == "DI";
+    switch (r.bits) {
+        case 1: return "%" + a + (db ? "X" : "") + std::to_string(byte) + "." + std::to_string(bit);
+        case 8: return "%" + a + "B" + std::to_string(byte);
+        case 16: return "%" + a + "W" + std::to_string(byte);
+        case 32: return "%" + a + "D" + std::to_string(byte);
+        case 64: return "%" + a + "L" + std::to_string(byte);
+        default: return std::string();
+    }
+}
+
 std::string refText(const std::map<int64_t, size_t>& index, const std::vector<CodeReference>& refs,
                     const CodeReference& r, int depth) {
     std::string out;
     const std::string& k = r.kindStored;
+    const std::string address = r.name.empty() && r.path.empty() ? addressText(r) : std::string();
+    if (!address.empty()) return address;
+    if (k == "Address" && r.pointsTo) {
+        // P##c: a pointer to the variable of the entry it names
+        const CodeReference* to = findRef(index, refs, r.pointsTo);
+        if (to && depth < 8) return "P#" + refText(index, refs, *to, depth + 1);
+    }
     if (k == "GlobalAccess") {
         out = r.path.empty() ? quoted(r.name) : pathText(index, refs, r, "", true, depth);
     } else if (k == "InterfaceAccess" || k == "MultInstAccess") {
@@ -867,6 +910,15 @@ struct GPart {
     int label = 0;
 };
 
+// The S5 timers and counters of LAD and FBD as the project stores them: the
+// boxes Sp (S_PULSE), Se, Sd (S_ODT), Ss, Sf, Cu, Cd, Cud (S_CUD) and the
+// coils SpCoil ... SfCoil, CuCoil, CdCoil, ScCoil; written as calls
+bool s5Box(const std::string& gate) {
+    static const std::set<std::string> known = {"Sp", "Se", "Sd", "Ss", "Sf", "Cu", "Cd", "Cud", "SpCoil", "SeCoil",
+                                                "SdCoil", "SsCoil", "SfCoil", "CuCoil", "CdCoil", "ScCoil"};
+    return known.count(gate) > 0;
+}
+
 bool isCoil(const std::string& gate) { return gate.size() >= 4 && gate.compare(gate.size() - 4, 4, "Coil") == 0; }
 
 const char* compareOperator(const std::string& gate) {
@@ -1530,7 +1582,7 @@ private:
             s.op = "call";
             s.exprs.push_back(std::move(c));
             out.push_back(std::move(s));
-            if (unknownTree_.insert(p.name).second)
+            if (!s5Box(p.name) && unknownTree_.insert(p.name).second)
                 treeNotes_->push_back("the coil '" + p.name + "' is written as a call of that name");
         }
     }
@@ -1675,7 +1727,7 @@ private:
             s.exprs.push_back(std::move(c));
             body.push_back(std::move(s));
             for (auto& a : after) body.push_back(std::move(a));
-            if (p.kind == "gate" && unknownTree_.insert(p.name).second)
+            if (p.kind == "gate" && !s5Box(p.name) && unknownTree_.insert(p.name).second)
                 treeNotes_->push_back("the box '" + p.name + "' is written as a call of that name");
         }
         if (operation) {
@@ -2166,7 +2218,7 @@ private:
             }
         }
         const bool stl = lt != std::string::npos && doc.compare(lt, 11, "<Statements") == 0;
-        if (stl && stlText(doc, code.references, n.lines, n.notes, &n.statements)) {
+        if (stl && stlText(doc, code.references, n.lines, n.notes, &n.statements, &n.trailingEmptyLines)) {
             n.content = n.lines.empty() ? "empty" : "stl";
             n.treeRead = true;
             return;
@@ -2247,10 +2299,16 @@ void parseReferencePart(const std::string& xml, std::vector<CodeReference>& out)
                 r.uses.push_back(std::move(u));
             }
         }
-        if (const XmlNode* od = e->child("OD"))
+        if (const XmlNode* od = e->child("OD")) {
             if (const XmlNode* td = od->child("TD")) r.dataType = typeName(td->attrOr("T", ""));
+            r.bits = intAttr(*od, "S", 0);
+        }
+        if (const XmlNode* sad = e->child("SAD")) r.area = sad->attrOr("R", "");
+        if (const XmlNode* ad = e->child("AD")) r.pointsTo = intAttr(*ad, "SSRID", 0);
         if (const XmlNode* ssd = e->child("SSD")) {
             r.modifier = ssd->attrOr("AM", "");
+            // the address: the bit offset in the area, for an entry without a name
+            if (r.name.empty()) r.bitOffset = intAttr(*ssd, "AO", -1);
             if (const XmlNode* aos = ssd->child("AOS")) {
                 for (const auto& ao : aos->children) {
                     if (ao->name != "AO") continue;
@@ -2273,6 +2331,7 @@ void parseReferencePart(const std::string& xml, std::vector<CodeReference>& out)
                 // a literal is written as it was entered; a named constant keeps its name
                 if (r.name.empty()) r.name = value;
                 if (r.dataType.empty()) r.dataType = cb->attrOr("T", "");
+                if (r.kindStored == "Address") r.pointerValue = cb->attrOr("V", "");
             }
         }
         out.push_back(std::move(r));
@@ -2309,6 +2368,8 @@ void finishReferences(std::vector<CodeReference>& refs, const std::vector<Networ
     for (const Network& n : networks) position.emplace(n.networkId, n.number);
     for (CodeReference& r : refs) {
         r.kind = kindName(r.kindStored);
+        if (r.name.empty() && r.path.empty() && !addressText(r).empty()) r.kind = "address";
+        if (r.kindStored == "Address" && r.pointsTo) r.kind = "pointer";
         // only accesses can be told to be a reading one when nothing is stated
         const bool statesKind = !(r.kind == "data block member" || r.kind == "local" || r.kind == "tag" ||
                                   r.kind == "constant" || r.kind == "local constant" || r.kind == "user constant" ||
@@ -2390,7 +2451,7 @@ bool hasLabel(const XmlNode& statement) {
 }  // namespace
 
 bool stlText(const std::string& xml, const std::vector<CodeReference>& references, std::vector<std::string>& lines,
-             std::vector<std::string>& notes, std::vector<CodeStmt>* tree) {
+             std::vector<std::string>& notes, std::vector<CodeStmt>* tree, size_t* trailingEmptyLines) {
     std::unique_ptr<XmlNode> root;
     try {
         root = parseXml(xml);
@@ -2501,7 +2562,10 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
             if (!named) {
                 named = true;
                 stl.name = piece->attrOr("DispName", piece->attrOr("TE", piece->attrOr("Text", kw ? *kw : std::string())));
-            } else {
+            } else if (piece->attr("RefId")) {
+                // the operands that are entries of the reference table; the
+                // address syntax around them (DBW [AR1, ...], DBNO, OV) is in
+                // the operand text only
                 stl.exprs.push_back(refExpr(*piece));
             }
             const size_t before = line.size();
@@ -2542,7 +2606,12 @@ bool stlText(const std::string& xml, const std::vector<CodeReference>& reference
         for (const auto& p : parameters)
             lines.push_back("      " + p.first + std::string(width + 1 - p.first.size(), ' ') + ":=" + p.second);
     }
-    while (!lines.empty() && lines.back().find_first_not_of(' ') == std::string::npos) lines.pop_back();
+    size_t trailing = 0;
+    while (!lines.empty() && lines.back().find_first_not_of(' ') == std::string::npos) {
+        lines.pop_back();
+        ++trailing;
+    }
+    if (trailingEmptyLines) *trailingEmptyLines = lines.empty() ? 0 : trailing;
     return true;
 }
 
@@ -2867,5 +2936,7 @@ void linkOperands(BlockCode& code, const ProgramData& prog) { OperandLinker(code
 CodeData buildCode(const Project& project, const ProgramData& prog, const ProtectedVersions* protectedUpTo) {
     return CodeBuilder(project, prog, protectedUpTo).run();
 }
+
+std::string referenceArea(const CodeReference& r) { return addressArea(r); }
 
 }  // namespace tia

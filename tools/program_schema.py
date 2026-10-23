@@ -151,6 +151,11 @@ defs["reference"]=O({
  "path":A(O({"name":S(),"index":A(I(),"ref_ids of the index expressions")}),
           "an access: the names along it; a data block member starts with the data block, a local with the member of the interface"),
  "modifier":NS("the part of the variable meant: b0 (byte 0), x3 (bit 3), w1, d0"),
+ "address":{"oneOf":[O({"area":{"enum":["I","Q","M","DB","DI","L","T","C"]},
+                         "bit_offset":I("the bit offset in the area; a timer or counter: its number"),
+                         "bits":I("the size: 1, 8, 16, 32, 64; 0 for a timer or counter")}),{"type":"null"}],
+            "description":"kind address (%DBW2, %L2.1, %T1): where it is; null otherwise"},
+ "points_to":{"oneOf":[I(),{"type":"null"}],"description":"kind pointer (P##c): the ref_id of the variable it points to"},
 })
 defs["code"]=O({"networks":A(R("network")),"references":A(R("reference"),"what the block's code refers to")})
 defs["block"]=O({

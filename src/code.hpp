@@ -78,6 +78,16 @@ struct CodeReference {
     std::string declaredAs;
     // "call interface": the parameters of the called block, in order
     std::vector<std::string> parameters;
+    // An access by address (STL %DBW2, %L2.1, LAD %M10.0 without a tag):
+    // the memory area as stored (Input, Output, Memory, Data, Timer, Counter;
+    // empty for local data), the bit offset in it (a timer or counter: its
+    // number) and the size in bits. -1: not an access by address.
+    std::string area;
+    int64_t bitOffset = -1;
+    int64_t bits = 0;
+    // A pointer to a variable (STL P##c): the entry it points to, and its value
+    int64_t pointsTo = 0;
+    std::string pointerValue;
 };
 
 // A part of a LAD or FBD network: a contact, a coil, a box, a call.
@@ -289,9 +299,11 @@ bool sclTree(const std::string& xml, const SclContext& ctx, std::vector<CodeStmt
              std::vector<std::string>& notes);
 
 // The lines of an STL network from its stored document. Returns false when
-// the document is not STL statements.
+// the document is not STL statements. `trailingEmptyLines`: the empty lines
+// stored after the last statement (not in `lines`).
 bool stlText(const std::string& xml, const std::vector<CodeReference>& references, std::vector<std::string>& lines,
-             std::vector<std::string>& notes, std::vector<CodeStmt>* tree = nullptr);
+             std::vector<std::string>& notes, std::vector<CodeStmt>* tree = nullptr,
+             size_t* trailingEmptyLines = nullptr);
 
 // The parts of a LAD or FBD network from its stored document, and the
 // listing. Returns false when the document is not such a network.
@@ -324,5 +336,9 @@ void finishReferences(std::vector<CodeReference>& refs, const std::vector<Networ
 // "_x0031_0" -> "10": names and values the project stores with characters
 // written as _xHHHH_.
 std::string decodeXmlName(const std::string& s);
+
+// The area of an access by address as the editor writes it (I, Q, M, DB, DI,
+// L, T, C); empty for any other reference.
+std::string referenceArea(const CodeReference& r);
 
 }  // namespace tia

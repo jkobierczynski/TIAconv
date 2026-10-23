@@ -147,7 +147,7 @@ written in code, `"power rail"`, or another part's pin as
 |---|---|
 | `text` | as written in code |
 | `ref_id`, `linked` | its entry in the block's `references`, and whether that was found |
-| `kind` | `tag`, `data block member`, `local`, `constant`, `local constant`, `user constant`, `multi-instance` |
+| `kind` | `tag`, `data block member`, `local`, `constant`, `local constant`, `user constant`, `multi-instance`, `address` (an access by address: `%DBW2`), `pointer` (`P##c`) |
 | `data_type` | the entry's; a literal stored without a type takes the pin's (`data_type_from_pin`) |
 | `data_block` | of a data block member |
 | `address` | a tag's; a member of a data block with standard access as `%DB1.DBX60.0`, `%DB2.DBW4`, `%DB3.DBD8` (elementary types up to 4 bytes) |
@@ -161,7 +161,12 @@ How each of these is derived is in [FORMAT.md](FORMAT.md) ("Operand links").
 an operand), `data_block`, `name` (of the tag, block or data block named),
 `scope`, `path` (an access as its names: `["MotorData", "starts"]` for
 `"MotorData".starts`, `["delay", "Q"]` for `#delay.Q`, each step with the
-`ref_id`s of its array indices), `modifier` (the part meant: `b0`, `x3`), `declared_as` (a
+`ref_id`s of its array indices), `modifier` (the part meant: `b0`, `x3`),
+`address` (kind `address`, an access by address such as `%DBW2`, `%L2.1`,
+`%T1`: `{"area": "DB", "bit_offset": 16, "bits": 16}`, the area one of `I`,
+`Q`, `M`, `DB` (the open data block), `DI`, `L`, `T`, `C`, a timer's or
+counter's number as its bit offset and 0 as its size), `points_to` (kind
+`pointer`, `P##c`: the `ref_id` of `#c`), `declared_as` (a
 multi-instance: the member declared with this block as its type). The
 `ref_id` of an operand or element points into it.
 
@@ -317,7 +322,7 @@ with the field of its kind set and the others null:
 | kind | field | from |
 |---|---|---|
 | `bool` | `bool` | `TRUE`, `false`, `BOOL#1`; `1` and `0` for a Bool |
-| `int` | `int` | `5`, `-5`, `16#FF`, `2#1010_1010`, `W#16#8600`, `DW#16#...`, `INT#-7`; also the hardware identifiers and other numbers. A ULInt or LWord above 2^63-1 is written as the unsigned number |
+| `int` | `int` | `5`, `-5`, `16#FF`, `C#5` (a counter value), `P#M40.0` (a pointer: area code << 24 \| byte << 3 \| bit, the area codes of the S7 pointer: 16#81 I, 16#82 Q, 16#83 M, 16#84 DB, 16#85 DI, 16#86 L), `2#1010_1010`, `W#16#8600`, `DW#16#...`, `INT#-7`; also the hardware identifiers and other numbers. A ULInt or LWord above 2^63-1 is written as the unsigned number |
 | `real` | `real` | `0.1`, `-3.402822E+38`, `REAL#2`; a whole number for a Real or LReal (`1` is 1.0) |
 | `duration` | `ns`, nanoseconds | `T#5s`, `T#1D_2H_3M_4S_5MS`, `T#-1.5S`, `LTIME#10US_5NS`, `S5T#10S`; a whole number for a Time counts milliseconds, for an LTime nanoseconds |
 | `date` | `days` since 1990-01-01, as the PLC keeps a Date | `D#1990-01-31` (30) |

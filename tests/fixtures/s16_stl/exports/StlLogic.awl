@@ -1,0 +1,56 @@
+﻿FUNCTION "StlLogic" : Void
+{ S7_Optimized_Access := 'FALSE' }
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE = AND before OR and a bracket:
+      A "Start";
+      A "Stop";
+      O;
+      A "Level";
+      AN "Rst";
+      = "Out1";
+      A "Start";
+      O(;
+      A "Level";
+      A "Up";
+      );
+      = "Out2";
+NETWORK
+TITLE = an edge, a jump, a jump list:
+      A "Up";
+      FP "Tag_1";
+      JCN M001;
+      L "Tag_2";
+      + 1;
+      T "Tag_2";
+M001:      L "Sel";
+      JL LST;
+      JU L0;
+      JU L1;
+LST:      JU L2;
+L0:      L 10;
+      T "Tag_3";
+      JU END;
+L1:      L 11;
+      T "Tag_3";
+      JU END;
+L2:      L 12;
+      T "Tag_3";
+END:      NOP 0;
+NETWORK
+TITLE = arithmetic, a comparison, RND:
+      L "Tag_2";
+      L 3;
+      *I;
+      T "Tag_4";
+      L "Tag_4";
+      L 10;
+      >I;
+      = "Out3";
+      L 2.5;
+      RND;
+      T "Tag_5";
+END_FUNCTION
+

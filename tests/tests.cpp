@@ -2865,6 +2865,7 @@ void testGraphicTreeCases() {
         // a P_TRIG whose output goes nowhere still updates its edge memory
         {"t7", {"eval edge_pos(ref#1:#a ref#6:#m)"}},
         // -| a |-(SD)- x with the time value k: a call of the coil with its pins
+        // (a known coil: no note)
         {"t8", {"call call:SdCoil(in:in(ref#1:#a) in:operand(ref#4:#x) in:value(ref#13:#k))"}},
     };
     for (const auto& c : cases) {
@@ -2873,8 +2874,7 @@ void testGraphicTreeCases() {
         std::vector<tia::CodeStmt> tree;
         CHECK(tia::graphicNetwork(c.second, refs, elements, lines, notes, &tree, &treeNotes));
         treeLines(tree, "", t);
-        const bool coil = std::string(c.first) == "t8";  // says it is written as a call
-        CHECK(t == expected.at(c.first) && treeNotes.size() == (coil ? 1u : 0u));
+        CHECK(t == expected.at(c.first) && treeNotes.empty());
         // the listing negates the negated output too
         if (std::string(c.first) == "t5") CHECK(joinLines(lines) == "1: #y := NOT (#a AND #b)\n");
         if (t != expected.at(c.first)) {

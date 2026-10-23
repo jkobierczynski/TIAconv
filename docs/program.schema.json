@@ -1640,7 +1640,9 @@
         "name",
         "scope",
         "path",
-        "modifier"
+        "modifier",
+        "address",
+        "points_to"
       ],
       "properties": {
         "ref_id": {
@@ -1732,6 +1734,56 @@
             "null"
           ],
           "description": "the part of the variable meant: b0 (byte 0), x3 (bit 3), w1, d0"
+        },
+        "address": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "area",
+                "bit_offset",
+                "bits"
+              ],
+              "properties": {
+                "area": {
+                  "enum": [
+                    "I",
+                    "Q",
+                    "M",
+                    "DB",
+                    "DI",
+                    "L",
+                    "T",
+                    "C"
+                  ]
+                },
+                "bit_offset": {
+                  "type": "integer",
+                  "description": "the bit offset in the area; a timer or counter: its number"
+                },
+                "bits": {
+                  "type": "integer",
+                  "description": "the size: 1, 8, 16, 32, 64; 0 for a timer or counter"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "kind address (%DBW2, %L2.1, %T1): where it is; null otherwise"
+        },
+        "points_to": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "kind pointer (P##c): the ref_id of the variable it points to"
         }
       }
     },

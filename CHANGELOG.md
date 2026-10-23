@@ -9,7 +9,21 @@
 - Program export: an STL statement has `text`, its operand as the editor
   shows it, so that absolute and indirect addresses, S5 timers and counters
   and pointers reach a simulator even where the code tree has no node for
-  them.
+  them. An STL statement's `exprs` hold only its operands that are
+  references; address syntax and keywords are only in `text`.
+- Program export: an access by address (`%DBX0.1`, `%DBW2`, `%L2.1`, `%T1`)
+  is a reference of the kind `address` with `area`, `bit_offset` and
+  `bits`, and its name the address as the editor shows it; `P##c` is of the
+  kind `pointer`. The values `C#5` and `P#M40.0` are parsed (a pointer as
+  area << 24 | byte << 3 | bit).
+- A tag's address typed with the German mnemonics (`%A1.0`, `%E0.0`,
+  `%Z4`, `%PEW256`) is written with the international ones (`%Q1.0`,
+  `%I0.0`, `%C4`, `%PIW256`).
+- STL sources: labels at the start of the line, indirect addresses as
+  `DBW[ AR1, P#2.0]`, the blank lines the project keeps after a network;
+  the sources of the s16 blocks are the same as TIA Portal's.
+- New test project `s16_stl` (STL, S5 timers and counters, absolute and
+  indirect addressing; tests/fixtures/README.md).
 
 - Program export, schema version 2 (in progress toward a format a
   simulator can interpret without parsing TIA Portal's notation; see

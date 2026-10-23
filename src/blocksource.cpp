@@ -13,6 +13,22 @@ namespace tia {
 
 namespace {
 
+// The parameter types as a source writes them (the project stores ANY,
+// POINTER in capitals)
+std::string sourceTypeName(const std::string& t) {
+    static const char* const names[] = {"Any", "Pointer", "Variant", "Block_FB", "Block_FC", "Block_DB", "Block_SDB"};
+    for (const char* n : names) {
+        const std::string name = n;
+        if (t.size() != name.size()) continue;
+        bool same = true;
+        for (size_t k = 0; k < t.size() && same; ++k)
+            same = std::toupper(static_cast<unsigned char>(t[k])) == std::toupper(static_cast<unsigned char>(name[k]));
+        if (same) return name;
+    }
+    return t;
+}
+
+
 const char kIndent[] = "   ";  // one level, as TIA Portal's sources indent
 
 bool plainIdentifier(const std::string& s) {
@@ -101,7 +117,7 @@ void memberLines(const std::vector<BlockMember>& members, const std::string& ind
             out.push_back(indent + "END_STRUCT;");
             continue;
         }
-        line += m.dataType;
+        line += sourceTypeName(m.dataType);
         if (m.hasStartValue) line += " := " + m.startValue;
         line += ";";
         if (!m.comment.empty()) line += "   // " + m.comment;
@@ -136,6 +152,15 @@ std::string stlSourceLine(const std::string& line) {
     if (line.empty()) return line;
     if (line.compare(0, 2, "//") == 0) return "      " + line;
     std::string s = line;
+    // a label stands at the start of the line: "M001:      L \"Sel\";"
+    std::string label;
+    const size_t colon = s.find(':');
+    if (colon != std::string::npos && colon > 0 && s.find_first_of(" \"'", 0) > colon) {
+        label = s.substr(0, colon + 1);
+        const size_t rest = s.find_first_not_of(' ', colon + 1);
+        if (rest == std::string::npos) return label;
+        s = s.substr(rest);
+    }
     const size_t gap = s.find(' ');
     if (gap != std::string::npos) {
         const size_t next = s.find_first_not_of(' ', gap);
@@ -148,7 +173,17 @@ std::string stlSourceLine(const std::string& line) {
         comment = s.substr(c);
         s = s.substr(0, c);
     }
-    return "      " + s + ";" + comment;
+    // an indirect address as the source writes it: DBW[ AR1, P#2.0]
+    if (s.find(" [") != std::string::npos) {
+        auto replaceAll = [&](const std::string& from, const std::string& to) {
+            for (size_t p = s.find(from); p != std::string::npos; p = s.find(from, p + to.size())) s.replace(p, from.size(), to);
+        };
+        replaceAll(" [ ", "[ ");
+        replaceAll(" [", "[ ");
+        replaceAll(" , ", ", ");
+        replaceAll(" ]", "]");
+    }
+    return (label.empty() ? std::string("      ") : label + "      ") + s + ";" + comment;
 }
 
 
@@ -271,10 +306,9 @@ BlockSource blockSource(const BlockInfo& info, const BlockCode& code, const Inst
             out.push_back("TITLE = " + n.title);
             commentLines(n.comment, "", out);
             for (const auto& l : n.lines) out.push_back(stlSourceLine(l));
+            // the empty lines the network keeps after its statements
+            for (size_t i = 0; i < n.trailingEmptyLines; ++i) out.push_back(std::string());
         }
-        // a blank line after the statements of the last network, none after
-        // an empty one (the two sources TIA Portal wrote here)
-        if (!code.networks.empty() && !code.networks.back().lines.empty()) out.push_back(std::string());
     } else {
         for (const auto& n : code.networks) {
             out.push_back("NETWORK " + std::to_string(n.number) + (n.title.empty() ? "" : "  " + n.title) + "  (" +
