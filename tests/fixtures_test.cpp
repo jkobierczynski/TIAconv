@@ -1342,7 +1342,9 @@ void testProgramJson() {
 
     std::vector<std::string> fixtures;
     for (const auto& d : std::filesystem::directory_iterator(TIACONV_FIXTURES))
-        if (d.is_directory()) fixtures.push_back(d.path().filename().string());
+        // a folder with only its BUILD.md is a project not built yet
+        if (d.is_directory() && std::filesystem::exists(d.path() / "System" / "PEData.plf"))
+            fixtures.push_back(d.path().filename().string());
     std::sort(fixtures.begin(), fixtures.end());
     size_t files = 0, operandsSeen = 0, typesSeen = 0, valuesSeen = 0, treeNodes = 0, callsSeen = 0;
     for (const std::string& name : fixtures) {

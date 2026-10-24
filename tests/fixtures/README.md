@@ -516,6 +516,11 @@ What the project shows:
 `s16_stl/exports/*.awl` are the sources TIA Portal generated for the four
 STL blocks after save 15; tiaconv's sources are the same, byte for byte.
 
+`s17_interrupts/BUILD.md` is the plan of the next project, for the
+interrupt OBs (time delay, time of day, hardware, time error) and the
+instructions that start them; the folder gets its `System/PEData.plf` when
+it is built. Until then the fixture tests leave it out.
+
 All passwords in these projects are throwaway test passwords.
 
 `tests/fixtures_test.cpp` checks these facts.
